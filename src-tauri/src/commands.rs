@@ -402,6 +402,15 @@ pub async fn update_setting(db: State<'_, Db>, key: String, value: String) -> Re
     db::set_setting(&c, &key, &value).map_err(err)
 }
 
+/// Danger zone: drop every table and rebuild the schema + seed defaults.
+/// Wipes projects, refs, reviews, actions, chats AND settings (onboarding,
+/// lock hash, LLM config) so the app re-runs the first-run setup wizard.
+#[tauri::command]
+pub async fn reset_database(db: State<'_, Db>) -> Result<(), String> {
+    let c = db.0.lock().await;
+    db::recreate(&c).map_err(err)
+}
+
 // ---------- Logging ----------
 /// Append a timestamped line to the app's log file (in the hidden data dir).
 /// Replaces the temporary /tmp/rc-diag.log mechanism with a persistent log.

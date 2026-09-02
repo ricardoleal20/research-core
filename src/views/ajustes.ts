@@ -40,6 +40,12 @@ export async function renderAjustes(view: HTMLElement) {
         </select></div>
       </section>
 
+      <section class="pane aj-section aj-danger">
+        <div class="aj-head"><h3>${ico.shield} Zona de peligro</h3><span class="aj-sub">acciones irreversibles</span></div>
+        <p class="aj-danger-desc">Borra <b>toda</b> la base de datos —proyectos, referencias, revisiones, acciones, chats y ajustes— y la recrea desde cero. Tras reiniciar, la app volverá al asistente de configuración inicial. No se puede deshacer.</p>
+        <button class="btn btn-danger" id="aj-reset">Borrar base de datos y reiniciar</button>
+      </section>
+
       <div class="aj-actions">
         <button class="btn btn-primary" id="aj-save">Guardar ajustes</button>
         <span class="aj-status" id="aj-status"></span>
@@ -48,6 +54,31 @@ export async function renderAjustes(view: HTMLElement) {
   </div>`;
   wireToggles();
   $("#aj-save")!.addEventListener("click", save);
+  $("#aj-reset")!.addEventListener("click", confirmReset);
+}
+
+async function confirmReset() {
+  const btn = $("#aj-reset")!;
+  // Two-step confirm: first click arms (text changes), second click within 4s fires.
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "¿Seguro? Clic otra vez para confirmar";
+    window.setTimeout(() => { if (btn.dataset.armed === "1") { btn.dataset.armed = "0"; btn.textContent = "Borrar base de datos y reiniciar"; } }, 4000);
+    return;
+  }
+  btn.dataset.armed = "0";
+  btn.textContent = "Reiniciando…";
+  btn.setAttribute("disabled", "true");
+  try {
+    await api.resetDatabase();
+    toast("Base de datos recreada. Reiniciando…");
+    await api.appLog("reset: database recreated by user");
+    setTimeout(() => location.reload(), 900);
+  } catch (e) {
+    btn.removeAttribute("disabled");
+    btn.textContent = "Borrar base de datos y reiniciar";
+    toast("No se pudo reiniciar: " + e);
+  }
 }
 
 function toggle(key: string, label: string, desc: string) {

@@ -133,6 +133,7 @@ pub fn run() {
             commands::list_mcp_tools,
             commands::get_settings,
             commands::update_setting,
+            commands::reset_database,
             commands::app_log,
             commands::get_app_paths,
             commands::reveal_path,

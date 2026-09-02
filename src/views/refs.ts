@@ -194,7 +194,7 @@ export function openRefForm(r?: Ref) {
     };
     try {
       if (r) { await api.updateRef({ id: r.id, ...data }); toast("Referencia actualizada"); }
-      else { await api.createRef({ project_id: pid, ...data }); toast("Referencia creada"); }
+      else { await api.createRef({ projectId: pid, ...data }); toast("Referencia creada"); }
       close();
       await renderList(pid);
       if (r) selectRef(r.id);

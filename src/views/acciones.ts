@@ -106,7 +106,7 @@ function openActionForm(a?: Action) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   $("#ac-save")!.addEventListener("click", async () => {
     const data = {
-      project_id: pid,
+      projectId: pid,
       code: val("ac-code"), title: val("ac-title"), description: val("ac-desc"),
       priority: val("ac-prio"), origin: a?.origin ?? "manual",
       due: val("ac-due"), location: val("ac-loc"), notes: val("ac-notes"),

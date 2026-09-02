@@ -736,3 +736,38 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .tut-btn{padding:12px 28px;font-size:14px}
 @media (max-width:920px){.setup-card{width:auto;min-width:0;padding:24px 20px}.cli-grid{grid-template-columns:1fr}.tut-grid{grid-template-columns:1fr 1fr}.lock-card{width:auto}.tut-hero{max-width:100%}}
 
+/* Fix: bare .chev SVG inside .picker-btn had no sizing rule and ballooned. */
+.picker-btn .chev{width:14px;height:14px;color:var(--muted);flex:0 0 14px}
+
+/* ===== AJUSTES (global settings) ===== */
+.ajustes-body{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
+.ajustes-scroll{flex:1;min-height:0;overflow-y:auto;padding:28px 32px 40px;max-width:760px;width:100%;margin:0 auto;box-sizing:border-box}
+.aj-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 22px 18px;box-shadow:0 1px 3px rgba(20,25,50,.03)}
+.aj-section + .aj-section{margin-top:14px}
+.aj-head{margin-bottom:16px}
+.aj-head h3{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--fg);margin:0}
+.aj-head h3 svg{width:17px;height:17px;color:var(--accent)}
+.aj-sub{display:block;font-size:12px;color:var(--muted);margin-top:3px;font-weight:400}
+.aj-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.aj-grid .field{margin-bottom:0}
+.aj-wide{grid-column:1 / -1}
+.aj-note{display:flex;align-items:center;gap:7px;margin-top:14px;padding-top:14px;border-top:1px solid color-mix(in oklch,var(--border) 60%,transparent);font-size:12px;color:var(--muted);line-height:1.5}
+.aj-note svg{width:14px;height:14px;flex:0 0 14px;color:var(--st-read)}
+.aj-toggles{display:flex;flex-direction:column;gap:4px}
+.aj-toggle{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid color-mix(in oklch,var(--border) 50%,transparent)}
+.aj-toggle:last-child{border-bottom:0}
+.aj-toggle-info{min-width:0}
+.aj-toggle-label{font-size:13.5px;font-weight:600;color:var(--fg)}
+.aj-toggle-desc{font-size:12px;color:var(--muted);margin-top:2px;line-height:1.4}
+.aj-actions{display:flex;align-items:center;gap:14px;margin-top:18px}
+.aj-status{font-size:12.5px;color:var(--st-read);font-weight:500}
+
+/* Danger zone — reset database */
+.aj-danger{background:color-mix(in oklch,#c0392b 6%,var(--surface));border:1px solid color-mix(in oklch,#c0392b 30%,var(--border))}
+.aj-danger .aj-head h3{color:#c0392b}
+.aj-danger .aj-head h3 svg{color:#c0392b}
+.aj-danger-desc{font-size:12.5px;color:var(--muted);line-height:1.55;margin-bottom:14px}
+.btn-danger{background:#c0392b;color:#fff;border-color:#c0392b}
+.btn-danger:hover{background:#a93226}
+@media (max-width:680px){.aj-grid{grid-template-columns:1fr}.ajustes-scroll{padding:20px 16px 32px}}
+

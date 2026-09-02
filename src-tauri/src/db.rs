@@ -338,6 +338,34 @@ fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
 
 // ---- query helpers returning serde_json::Value ----
 
+/// Wipe every table and rebuild the schema + seed defaults from scratch.
+/// Also deletes the auto-seeded demo project so the user lands on a truly
+/// clean first-run state (no active project, onboarding flags gone → the
+/// setup wizard re-runs). Called by the `reset_database` command.
+pub fn recreate(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         DROP TABLE IF EXISTS messages;
+         DROP TABLE IF EXISTS chats;
+         DROP TABLE IF EXISTS actions;
+         DROP TABLE IF EXISTS findings;
+         DROP TABLE IF EXISTS reviews;
+         DROP TABLE IF EXISTS ref_usages;
+         DROP TABLE IF EXISTS refs;
+         DROP TABLE IF EXISTS collections;
+         DROP TABLE IF EXISTS projects;
+         DROP TABLE IF EXISTS agents;
+         DROP TABLE IF EXISTS mcp_servers;
+         DROP TABLE IF EXISTS settings;
+         PRAGMA foreign_keys=ON;",
+    )?;
+    Db::migrate(conn)?;
+    Db::seed(conn)?;
+    // Remove the demo seed project so the user starts with no projects.
+    conn.execute("DELETE FROM projects", [])?;
+    Ok(())
+}
+
 pub fn row_to_value(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     use rusqlite::types::ValueRef;
     let stmt: &rusqlite::Statement = r.as_ref();
