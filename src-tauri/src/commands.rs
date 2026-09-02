@@ -1,8 +1,10 @@
 use crate::agent;
 use crate::db::{self, Db};
 use crate::mcp::{self, McpRegistry, McpServerDef};
+use crate::AppPaths;
 use rusqlite::params;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 fn now() -> String { chrono::Utc::now().to_rfc3339() }
@@ -400,14 +402,138 @@ pub async fn update_setting(db: State<'_, Db>, key: String, value: String) -> Re
     db::set_setting(&c, &key, &value).map_err(err)
 }
 
-// ---------- Diagnostics (temporary, for debugging blank-screen) ----------
+// ---------- Logging ----------
+/// Append a timestamped line to the app's log file (in the hidden data dir).
+/// Replaces the temporary /tmp/rc-diag.log mechanism with a persistent log.
 #[tauri::command]
-pub async fn diag_log(message: String) -> Result<(), String> {
+pub async fn app_log(paths: State<'_, AppPaths>, message: String) -> Result<(), String> {
     use std::io::Write;
     let line = format!("[{}] {}\n", chrono::Utc::now().to_rfc3339(), message);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/rc-diag.log") {
+    let path = paths.log_dir.join("app.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = f.write_all(line.as_bytes());
     }
     Ok(())
+}
+
+/// Return the resolved data + log dir paths so the UI can display them.
+#[tauri::command]
+pub async fn get_app_paths(paths: State<'_, AppPaths>) -> Result<Value, String> {
+    Ok(json!({
+        "data_dir": paths.data_dir.display().to_string(),
+        "log_dir": paths.log_dir.display().to_string(),
+    }))
+}
+
+/// Reveal a path in Finder (used by the setup wizard "Mostrar en Finder").
+#[tauri::command]
+pub async fn reveal_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Native folder picker for the setup wizard / project creation.
+#[tauri::command]
+pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app.dialog().file().set_title("Selecciona una carpeta").blocking_pick_folder();
+    Ok(picked.map(|p| p.to_string()))
+}
+
+// ---------- Local access key (lock policy) ----------
+/// Hash a key with a fresh random salt. Returns (hex_hash, hex_salt).
+/// Used at wizard Step 3 to persist the local access key without storing it
+/// in plaintext.
+pub fn hash_key(key: &str) -> (String, String) {
+    let mut salt = [0u8; 16];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut salt);
+    let salt_hex = hex::encode(&salt);
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(key.as_bytes());
+    (hex::encode(hasher.finalize()), salt_hex)
+}
+
+/// Verify a key against stored hash+salt.
+pub fn verify_hash(key: &str, hash: &str, salt_hex: &str) -> bool {
+    let salt = match hex::decode(salt_hex) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(key.as_bytes());
+    hex::encode(hasher.finalize()) == hash
+}
+
+/// Verify the supplied key against the persisted lock_hash + lock_salt.
+#[tauri::command]
+pub async fn verify_key(db: State<'_, Db>, key: String) -> Result<bool, String> {
+    let (hash, salt) = {
+        let c = db.0.lock().await;
+        (db::get_setting(&c, "lock_hash"), db::get_setting(&c, "lock_salt"))
+    };
+    // No lock configured yet -> always allow (first-run / wizard not done).
+    if hash.is_empty() || salt.is_empty() {
+        return Ok(true);
+    }
+    Ok(verify_hash(&key, &hash, &salt))
+}
+
+/// Hash + persist the local access key (called once from the wizard Step 3).
+#[tauri::command]
+pub async fn set_lock_key(db: State<'_, Db>, key: String) -> Result<(), String> {
+    // If the user left the key blank at login, don't configure a lock.
+    if key.trim().is_empty() {
+        return Ok(());
+    }
+    let (hash, salt) = hash_key(&key);
+    let c = db.0.lock().await;
+    db::set_setting(&c, "lock_hash", &hash).map_err(err)?;
+    db::set_setting(&c, "lock_salt", &salt).map_err(err)?;
+    Ok(())
+}
+
+/// Return the current lock policy + whether a lock is configured, so the
+/// frontend can decide whether to show a lock screen on boot.
+#[tauri::command]
+pub async fn lock_state(db: State<'_, Db>) -> Result<Value, String> {
+    let c = db.0.lock().await;
+    Ok(json!({
+        "policy": db::get_setting(&c, "lock_policy"),         // never|on_launch|idle|sensitive
+        "idle_min": db::get_setting(&c, "lock_idle_min"),
+        "configured": !db::get_setting(&c, "lock_hash").is_empty(),
+    }))
+}
+
+// ---------- LLM CLI detection (wizard Step 4) ----------
+/// Probe whether a given CLI binary (claude/codex/opencode) is reachable on
+/// PATH. Returns its resolved absolute path, or null if not found.
+#[tauri::command]
+pub async fn test_cli(command: String) -> Result<Value, String> {
+    let path = which_cli(&command);
+    Ok(json!({ "command": command, "path": path }))
+}
+
+fn which_cli(cmd: &str) -> Option<String> {
+    // Use the same augmented PATH the MCP spawner uses, so GUI .app bundles
+    // can find Homebrew/nvm-installed CLIs.
+    let path_env = mcp::augmented_path();
+    for dir in path_env.split(':') {
+        if dir.is_empty() { continue; }
+        let candidate = std::path::Path::new(dir).join(cmd);
+        if candidate.is_file() {
+            return Some(candidate.display().to_string());
+        }
+    }
+    None
 }
 

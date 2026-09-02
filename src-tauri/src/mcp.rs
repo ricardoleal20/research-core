@@ -183,7 +183,7 @@ fn expand_tilde(s: &str) -> String {
 /// so stdio MCP servers can spawn `npx` even when the app is launched as a
 /// GUI .app bundle (which inherits a minimal PATH). Existing PATH entries are
 /// preserved and de-duplicated.
-fn augmented_path() -> String {
+pub fn augmented_path() -> String {
     let mut dirs: Vec<String> = vec![
         "/opt/homebrew/bin".into(),
         "/opt/homebrew/sbin".into(),

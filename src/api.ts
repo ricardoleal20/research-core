@@ -59,6 +59,17 @@ export const api = {
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   updateSetting: (key: string, value: string) => invoke<void>("update_setting", { key, value }),
 
-  // diagnostics
-  diagLog: (message: string) => invoke<void>("diag_log", { message }).catch(() => {}),
+  // logging + paths
+  appLog: (message: string) => invoke<void>("app_log", { message }).catch(() => {}),
+  getAppPaths: () => invoke<{ data_dir: string; log_dir: string }>("get_app_paths"),
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  pickFolder: () => invoke<string | null>("pick_folder"),
+
+  // local access key (lock policy)
+  verifyKey: (key: string) => invoke<boolean>("verify_key", { key }),
+  setLockKey: (key: string) => invoke<void>("set_lock_key", { key }),
+  lockState: () => invoke<{ policy: string; idle_min: string; configured: boolean }>("lock_state"),
+
+  // LLM CLI detection
+  testCli: (command: string) => invoke<{ command: string; path: string | null }>("test_cli", { command }),
 };

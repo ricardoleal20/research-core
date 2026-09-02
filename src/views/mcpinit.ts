@@ -84,7 +84,7 @@ export async function runMcpInit(host: HTMLElement, onDone: () => void): Promise
     fill.style.width = "100%";
     // Diagnostic: record each step's final phase so boot status is observable
     // from /tmp/rc-diag.log without needing to see the UI.
-    api.diagLog("mcpinit: " + steps.map((s) => `${s.id}=${s.phase}`).join(" "));
+    api.appLog("mcpinit: " + steps.map((s) => `${s.id}=${s.phase}`).join(" "));
     setTimeout(() => {
       host.style.transition = "opacity .3s ease";
       host.style.opacity = "0";
@@ -128,10 +128,10 @@ export async function runMcpInit(host: HTMLElement, onDone: () => void): Promise
       try {
         const res = await withTimeout(api.testMcpServer(s.serverId), 6000);
         setStep(s.id, res?.ok ? "ok" : "fail");
-        if (!res?.ok) api.diagLog(`mcpinit: ${s.id} fail (no-ok)`);
+        if (!res?.ok) api.appLog(`mcpinit: ${s.id} fail (no-ok)`);
       } catch (e) {
         setStep(s.id, "fail");
-        api.diagLog(`mcpinit: ${s.id} fail (${String(e).slice(0, 120)})`);
+        api.appLog(`mcpinit: ${s.id} fail (${String(e).slice(0, 120)})`);
       }
     } else {
       // stdio: visualize coming online; connect on demand.

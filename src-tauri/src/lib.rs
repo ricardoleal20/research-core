@@ -7,9 +7,16 @@ use db::Db;
 use mcp::McpRegistry;
 use tauri::Manager;
 
+/// Resolved on-disk locations, managed as Tauri state.
+pub struct AppPaths {
+    pub data_dir: std::path::PathBuf,
+    pub log_dir: std::path::PathBuf,
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Resolve data dir: ~/Library/Application Support/Research Core/db.sqlite
             let data_dir = app
@@ -17,6 +24,10 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&data_dir).ok();
+            // Logs live in a hidden subdir alongside the DB.
+            let log_dir = data_dir.join("logs");
+            std::fs::create_dir_all(&log_dir).ok();
+            app.manage(AppPaths { data_dir: data_dir.clone(), log_dir });
             let db_path = data_dir.join("research-core.sqlite");
             let db = Db::open(&db_path).expect("failed to open database");
             app.manage(db);
@@ -122,7 +133,14 @@ pub fn run() {
             commands::list_mcp_tools,
             commands::get_settings,
             commands::update_setting,
-            commands::diag_log,
+            commands::app_log,
+            commands::get_app_paths,
+            commands::reveal_path,
+            commands::pick_folder,
+            commands::verify_key,
+            commands::set_lock_key,
+            commands::lock_state,
+            commands::test_cli,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
