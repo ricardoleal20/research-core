@@ -4,7 +4,9 @@ import { ico } from "../icons";
 import { runMcpInit } from "./mcpinit";
 
 // Shared animated background markup (orbs + grid + floating research shapes).
-const BG = `<div class="welcome-bg" aria-hidden="true">
+// Reused by the splash, setup wizard, lock screen and tutorial so every
+// pre-shell surface shares the same ambient identity.
+export const BG = `<div class="welcome-bg" aria-hidden="true">
   <div class="welcome-grid"></div>
   <div class="welcome-orb o1"></div><div class="welcome-orb o2"></div><div class="welcome-orb o3"></div>
   <svg class="welcome-poly p1" width="46" height="40" viewBox="0 0 46 40" fill="none"><path d="M23 8 Q14 4 6 6 L6 32 Q14 30 23 34 Q32 30 40 32 L40 6 Q32 4 23 8 Z" stroke="var(--accent)" stroke-width="1.5" opacity="0.22" fill="none"/><path d="M23 8 L23 34" stroke="var(--accent)" stroke-width="1.5" opacity="0.18"/></svg>
@@ -17,7 +19,7 @@ const BG = `<div class="welcome-bg" aria-hidden="true">
   <svg class="welcome-poly p8" width="38" height="34" viewBox="0 0 38 34" fill="none"><rect x="4" y="11" width="14" height="12" rx="6" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18" fill="none"/><rect x="20" y="11" width="14" height="12" rx="6" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18" fill="none"/><path d="M18 17 L20 17" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18"/></svg>
 </div>`;
 
-const WIN_CONTROLS = `<div class="welcome-win-controls" aria-hidden="true"><span class="wc" style="background:#FF5F57"></span><span class="wc" style="background:#FEBC2E"></span><span class="wc" style="background:#28C840"></span></div>`;
+export const WIN_CONTROLS = `<div class="welcome-win-controls" aria-hidden="true"><span class="wc" style="background:#FF5F57"></span><span class="wc" style="background:#FEBC2E"></span><span class="wc" style="background:#28C840"></span></div>`;
 
 const LANGS = [
   { flag: "🇪🇸", name: "Español", native: "Español", code: "es" },

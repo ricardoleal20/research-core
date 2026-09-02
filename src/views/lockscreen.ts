@@ -8,14 +8,15 @@ import { ico } from "../icons";
  * On success calls `onUnlock`.
  */
 export function showLockScreen(app: HTMLElement, onUnlock: () => void) {
-  const overlay = el(`<div class="lock-overlay" id="lock-overlay"><div class="lock-card">
-    <div class="lock-logo">${ico.shield}</div>
-    <h1 class="lock-title">Research Core bloqueado</h1>
-    <p class="lock-sub">Escribe tu clave de acceso local para continuar.</p>
-    <div class="lock-field"><input id="lock-key" type="password" placeholder="••••••••" autocomplete="off"/></div>
-    <div id="lock-error"></div>
-    <button class="btn btn-primary lock-btn" id="lock-unlock">Desbloquear</button>
-  </div></div>`);
+  const overlay = el(`<div class="lock-overlay" id="lock-overlay"><div class="lock-bg" aria-hidden="true"></div>
+    <div class="lock-card">
+      <div class="lock-logo">${ico.shield}</div>
+      <h2 class="lock-title">Research Core bloqueado</h2>
+      <p class="lock-subtitle">Escribe tu clave de acceso local para continuar.</p>
+      <div class="lock-field"><input id="lock-key" type="password" placeholder="••••••••" autocomplete="off" aria-label="Clave de acceso local"/></div>
+      <div id="lock-error"></div>
+      <button class="btn btn-primary lock-btn" id="lock-unlock" type="button">Desbloquear</button>
+    </div></div>`);
   app.appendChild(overlay);
   const input = $("#lock-key", overlay) as HTMLInputElement;
   input.focus();
