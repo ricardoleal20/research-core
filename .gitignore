@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+src-tauri/target/
+target/
+dist/
+
+# Build artifacts
+*.dmg
+*.app
+.DS_Store
+
+# Local env / secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+/tmp/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp

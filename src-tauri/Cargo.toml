@@ -1,0 +1,31 @@
+[package]
+name = "research-core"
+version = "0.1.0"
+description = "Research Core — local-first research & paper management"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "research_core_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+once_cell = "1"
+dirs = "5"
+
+[features]
+# Enables a simulated LLM/MCP when no provider key is configured (default on).
+default = []
