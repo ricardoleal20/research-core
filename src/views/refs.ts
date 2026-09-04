@@ -1,6 +1,7 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showSplitSkeleton } from "../skeleton";
 import type { Ref } from "../types";
 
 let filter = "all";
@@ -9,6 +10,10 @@ let query = "";
 
 export async function renderRefs(view: HTMLElement) {
   const p = state.active!;
+  // Split-pane skeleton while refs + collections load.
+  const wait = showSplitSkeleton(view);
+  await wait();
+
   view.innerHTML = `<div class="refs-body">
     <aside class="pane pane-sidebar" id="refs-sidebar"></aside>
     <section class="pane pane-list" id="refs-list"></section>
@@ -194,7 +199,7 @@ export function openRefForm(r?: Ref) {
     };
     try {
       if (r) { await api.updateRef({ id: r.id, ...data }); toast("Referencia actualizada"); }
-      else { await api.createRef({ project_id: pid, ...data }); toast("Referencia creada"); }
+      else { await api.createRef({ projectId: pid, ...data }); toast("Referencia creada"); }
       close();
       await renderList(pid);
       if (r) selectRef(r.id);

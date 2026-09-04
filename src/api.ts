@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Ref, Chat, Agent, McpServer, Review, Action, Project } from "./types";
+import { mockApi, mockActive } from "./mock-backend";
 
-export const api = {
+// When the Tauri runtime is absent (plain browser via `vite`), fall back to an
+// in-memory mock so the UI can boot and be iterated on without the Rust backend.
+export const api = mockActive ? mockApi : {
   // projects
   listProjects: () => invoke<Project[]>("list_projects"),
   getActiveProject: () => invoke<Project | null>("get_active_project"),
@@ -13,34 +16,34 @@ export const api = {
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
 
   // dashboard
-  getDashboard: (project_id: string) => invoke<any>("get_dashboard", { project_id }),
+  getDashboard: (projectId: string) => invoke<any>("get_dashboard", { projectId }),
 
   // refs
-  listRefs: (project_id: string, filter?: string) => invoke<Ref[]>("list_refs", { project_id, filter: filter ?? null }),
+  listRefs: (projectId: string, filter?: string) => invoke<Ref[]>("list_refs", { projectId, filter: filter ?? null }),
   getRef: (id: string) => invoke<Ref>("get_ref", { id }),
   createRef: (r: any) => invoke<Ref>("create_ref", r),
   updateRef: (r: any) => invoke<void>("update_ref", r),
   deleteRef: (id: string) => invoke<void>("delete_ref", { id }),
-  searchRefs: (project_id: string, q: string) => invoke<Ref[]>("search_refs", { project_id, q }),
+  searchRefs: (projectId: string, q: string) => invoke<Ref[]>("search_refs", { projectId, q }),
   searchRefsExternal: (q: string) => invoke<any[]>("search_refs_external", { q }),
-  listCollections: (project_id: string) => invoke<any[]>("list_collections", { project_id }),
+  listCollections: (projectId: string) => invoke<any[]>("list_collections", { projectId }),
 
   // reviews
-  listReviews: (project_id: string) => invoke<Review[]>("list_reviews", { project_id }),
-  runReview: (project_id: string, focus: string) => invoke<any>("run_review", { project_id, focus }),
+  listReviews: (projectId: string) => invoke<Review[]>("list_reviews", { projectId }),
+  runReview: (projectId: string, focus: string) => invoke<any>("run_review", { projectId, focus }),
 
   // actions
-  listActions: (project_id: string, done: boolean) => invoke<Action[]>("list_actions", { project_id, done }),
+  listActions: (projectId: string, done: boolean) => invoke<Action[]>("list_actions", { projectId, done }),
   createAction: (a: any) => invoke<Action>("create_action", a),
   toggleAction: (id: string, done: boolean) => invoke<void>("toggle_action", { id, done }),
   updateAction: (a: any) => invoke<void>("update_action", a),
   deleteAction: (id: string) => invoke<void>("delete_action", { id }),
 
   // chats
-  listChats: (project_id: string, kind?: string) => invoke<Chat[]>("list_chats", { project_id, kind: kind ?? null }),
-  createChat: (project_id: string, kind: string, title: string) => invoke<Chat>("create_chat", { project_id, kind, title }),
+  listChats: (projectId: string, kind?: string) => invoke<Chat[]>("list_chats", { projectId, kind: kind ?? null }),
+  createChat: (projectId: string, kind: string, title: string) => invoke<Chat>("create_chat", { projectId, kind, title }),
   getChat: (id: string) => invoke<Chat>("get_chat", { id }),
-  sendMessage: (chat_id: string, content: string) => invoke<any>("send_message", { chat_id, content }),
+  sendMessage: (chatId: string, content: string) => invoke<any>("send_message", { chatId, content }),
   deleteChat: (id: string) => invoke<void>("delete_chat", { id }),
 
   // agents
@@ -59,6 +62,20 @@ export const api = {
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   updateSetting: (key: string, value: string) => invoke<void>("update_setting", { key, value }),
 
-  // diagnostics
-  diagLog: (message: string) => invoke<void>("diag_log", { message }).catch(() => {}),
+  // logging + paths
+  appLog: (message: string) => invoke<void>("app_log", { message }).catch(() => {}),
+  getAppPaths: () => invoke<{ data_dir: string; log_dir: string }>("get_app_paths"),
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  pickFolder: () => invoke<string | null>("pick_folder"),
+
+  // local access key (lock policy)
+  verifyKey: (key: string) => invoke<boolean>("verify_key", { key }),
+  setLockKey: (key: string) => invoke<void>("set_lock_key", { key }),
+  lockState: () => invoke<{ policy: string; idle_min: string; configured: boolean }>("lock_state"),
+
+  // LLM CLI detection
+  testCli: (command: string) => invoke<{ command: string; path: string | null }>("test_cli", { command }),
+
+  // danger zone — wipe & recreate the database from scratch
+  resetDatabase: () => invoke<void>("reset_database"),
 };

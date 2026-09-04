@@ -1,12 +1,17 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showContentSkeleton } from "../skeleton";
 import type { Agent, McpServer } from "../types";
 
 const TRANSPORT_ICONS: Record<string, string> = { stdio: ico.server, http: ico.server };
 
 export async function renderStatus(view: HTMLElement) {
   const p = state.active!;
+  // Skeleton while MCP servers, agents and project status load.
+  const wait = showContentSkeleton(view, 3);
+  await wait();
+
   view.innerHTML = `<div class="status-body">
     <section class="pane status-section">
       <div class="ss-head"><h3>${ico.server} Servidores MCP</h3>

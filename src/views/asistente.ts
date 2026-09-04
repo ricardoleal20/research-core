@@ -1,12 +1,17 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showSplitSkeleton } from "../skeleton";
 import type { Chat, Message } from "../types";
 
 let currentChat: Chat | null = null;
 
 export async function renderAsistente(view: HTMLElement) {
   const p = state.active!;
+  // Split-pane skeleton while conversations load.
+  const wait = showSplitSkeleton(view);
+  await wait();
+
   view.innerHTML = `<div class="asistente-body">
     <aside class="pane pane-sidebar" id="as-sidebar"></aside>
     <section class="as-main">

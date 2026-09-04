@@ -1,12 +1,17 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showContentSkeleton } from "../skeleton";
 import type { Action } from "../types";
 
 let showDone = false;
 
 export async function renderAcciones(view: HTMLElement) {
   const p = state.active!;
+  // Skeleton while the actions list loads.
+  const wait = showContentSkeleton(view, 4);
+  await wait();
+
   view.innerHTML = `<div class="acciones-body pane">
     <div class="acciones-head">
       <div class="ah-left"><h3>Acciones</h3><span class="ah-sub" id="ah-sub">cargando…</span></div>
@@ -106,7 +111,7 @@ function openActionForm(a?: Action) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   $("#ac-save")!.addEventListener("click", async () => {
     const data = {
-      project_id: pid,
+      projectId: pid,
       code: val("ac-code"), title: val("ac-title"), description: val("ac-desc"),
       priority: val("ac-prio"), origin: a?.origin ?? "manual",
       due: val("ac-due"), location: val("ac-loc"), notes: val("ac-notes"),

@@ -1,10 +1,12 @@
 import { state, el, esc, toast } from "../main";
 import { api } from "../api";
-import { ico } from "../icons";
+import { ico, appLogo } from "../icons";
 import { runMcpInit } from "./mcpinit";
 
 // Shared animated background markup (orbs + grid + floating research shapes).
-const BG = `<div class="welcome-bg" aria-hidden="true">
+// Reused by the splash, setup wizard, lock screen and tutorial so every
+// pre-shell surface shares the same ambient identity.
+export const BG = `<div class="welcome-bg" aria-hidden="true">
   <div class="welcome-grid"></div>
   <div class="welcome-orb o1"></div><div class="welcome-orb o2"></div><div class="welcome-orb o3"></div>
   <svg class="welcome-poly p1" width="46" height="40" viewBox="0 0 46 40" fill="none"><path d="M23 8 Q14 4 6 6 L6 32 Q14 30 23 34 Q32 30 40 32 L40 6 Q32 4 23 8 Z" stroke="var(--accent)" stroke-width="1.5" opacity="0.22" fill="none"/><path d="M23 8 L23 34" stroke="var(--accent)" stroke-width="1.5" opacity="0.18"/></svg>
@@ -17,7 +19,10 @@ const BG = `<div class="welcome-bg" aria-hidden="true">
   <svg class="welcome-poly p8" width="38" height="34" viewBox="0 0 38 34" fill="none"><rect x="4" y="11" width="14" height="12" rx="6" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18" fill="none"/><rect x="20" y="11" width="14" height="12" rx="6" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18" fill="none"/><path d="M18 17 L20 17" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18"/></svg>
 </div>`;
 
-const WIN_CONTROLS = `<div class="welcome-win-controls" aria-hidden="true"><span class="wc" style="background:#FF5F57"></span><span class="wc" style="background:#FEBC2E"></span><span class="wc" style="background:#28C840"></span></div>`;
+// Native window decorations are disabled (decorations:false in tauri.conf),
+// so the faux macOS traffic lights are no longer rendered. Kept as an empty
+// export so legacy `${WIN_CONTROLS}` template sites stay valid.
+export const WIN_CONTROLS = "";
 
 const LANGS = [
   { flag: "🇪🇸", name: "Español", native: "Español", code: "es" },
@@ -36,7 +41,7 @@ export function renderSplash(app: HTMLElement, onNext: () => void) {
     <div class="splash-body">
       ${BG}
       <div class="splash-hero">
-        <div class="splash-logo">${ico.bookLogo}</div>
+        <div class="splash-logo">${appLogo()}</div>
         <h1 class="splash-title">Research Core</h1>
         <p class="splash-subtitle">Tu gestor de investigación local-first. Papers, referencias, revisiones y síntesis — todo en un solo lugar, siempre en tu equipo.</p>
         <div class="splash-init" id="splash-init"></div>
@@ -57,7 +62,7 @@ export function renderLogin(app: HTMLElement, onEnter: (name: string, key: strin
       ${BG}
       <div class="welcome-composer">
         <div class="welcome-card">
-          <div class="welcome-logo">${ico.bookLogo}</div>
+          <div class="welcome-logo">${appLogo()}</div>
           <h1 class="welcome-title">Research Core</h1>
           <p class="welcome-subtitle">Tu gestor de investigación local-first. Papers, referencias y revisiones en un solo lugar.</p>
           <div class="welcome-field"><label for="login-name">Nombre</label><input id="login-name" type="text" value="${esc(last)}" placeholder="Tu nombre" autocomplete="off"/></div>

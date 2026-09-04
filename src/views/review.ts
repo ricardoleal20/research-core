@@ -1,6 +1,7 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showContentSkeleton } from "../skeleton";
 import type { Agent, Chat, Message } from "../types";
 
 let currentChat: Chat | null = null;
@@ -12,6 +13,10 @@ const AGENT_ICONS: Record<string, string> = {
 
 export async function renderReview(view: HTMLElement) {
   const p = state.active!;
+  // Skeleton while agents + chat load.
+  const wait = showContentSkeleton(view, 3, { header: false });
+  await wait();
+
   view.innerHTML = `<div class="review-chat-body">
     <div class="review-chat-main">
       <div class="review-composer">

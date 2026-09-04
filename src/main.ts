@@ -10,6 +10,9 @@ import { renderAcciones } from "./views/acciones";
 import { renderStatus } from "./views/status";
 import { renderAjustes } from "./views/ajustes";
 import { renderSplash, renderLogin } from "./views/welcome";
+import { renderWizard } from "./views/wizard";
+import { renderTutorial } from "./views/tutorial";
+import { showLockScreen } from "./views/lockscreen";
 
 export type Tab = "investigacion" | "refs" | "ai-review" | "asistente" | "acciones" | "status" | "ajustes";
 
@@ -20,6 +23,9 @@ export const state: {
   settings: Record<string, string>;
   onboarded: boolean;
   mcpInitShown: boolean;
+  /** Pending local access key captured at login, consumed by the wizard Step 3
+   *  to hash + persist the lock policy. Cleared after the wizard completes. */
+  pendingKey: string;
 } = {
   projects: [],
   active: null,
@@ -27,6 +33,7 @@ export const state: {
   settings: {},
   onboarded: false,
   mcpInitShown: false,
+  pendingKey: "",
 };
 
 export const $ = (sel: string, root: ParentNode = document) => root.querySelector<HTMLElement>(sel);
@@ -73,8 +80,7 @@ const TABS: { id: Tab; label: string }[] = [
 function navTabsHtml() {
   return TABS.map((t) =>
     `<button class="nav-tab ${state.tab === t.id ? "is-active" : ""}" data-tab="${t.id}">${t.label}</button>`
-  ).join("") + `<div class="nav-spacer"></div>` +
-    `<button class="nav-tab is-global ${state.tab === "ajustes" ? "is-active" : ""}" data-tab="ajustes">Ajustes</button>`;
+  ).join("");
 }
 
 function projSelectorHtml() {
@@ -91,12 +97,11 @@ function projSelectorHtml() {
 export function renderShell() {
   const app = $("#app")!;
   app.innerHTML = `<div class="app-window">
-    <header class="app-nav">
-      <div class="brand"><span class="brand-chip">${ico.brain}</span>Research Core</div>
-      <div class="nav-divider"></div>
+    <header class="app-nav" data-tauri-drag-region>
       ${projSelectorHtml()}
-      <div class="nav-divider"></div>
       <nav class="nav-tabs" aria-label="Pestañas del proyecto">${navTabsHtml()}</nav>
+      <div class="nav-spacer" data-tauri-drag-region></div>
+      <button class="nav-tab is-global ${state.tab === "ajustes" ? "is-active" : ""}" data-tab="ajustes">Ajustes</button>
       <div class="identity-chip" title="Usuario">RC</div>
     </header>
     <div id="subheader"></div>
@@ -301,7 +306,7 @@ export async function reloadProjects() {
 function fatalError(stage: string, e: unknown) {
   const msg = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
   console.error(`[fatal:${stage}]`, e);
-  try { api.diagLog("FATAL " + stage + ": " + msg); } catch {}
+  try { api.appLog("FATAL " + stage + ": " + msg); } catch {}
   const app = document.getElementById("app");
   if (app) {
     app.innerHTML = `<div style="font-family:Inter,system-ui,sans-serif;padding:40px;color:#1a1a1a;max-width:680px;margin:0 auto">
@@ -317,62 +322,114 @@ window.addEventListener("error", (e) => fatalError("window.error", e.error ?? e.
 window.addEventListener("unhandledrejection", (e) => fatalError("promise", e.reason));
 
 // Module-load marker — confirms the JS bundle executed at all.
-api.diagLog("module: loaded");
+api.appLog("module: loaded");
 
 async function boot() {
-  await api.diagLog("boot: start");
+  await api.appLog("boot: start");
   try {
     state.settings = await api.getSettings();
-    await api.diagLog("boot: settings loaded keys=" + Object.keys(state.settings).length);
+    await api.appLog("boot: settings loaded keys=" + Object.keys(state.settings).length);
   } catch (e) {
-    await api.diagLog("boot: settings FAILED " + String(e));
+    await api.appLog("boot: settings FAILED " + String(e));
     state.settings = {};
   }
   state.onboarded = state.settings.onboarded === "true";
   try {
     await reloadProjects();
-    await api.diagLog("boot: projects loaded count=" + state.projects.length + " active=" + (state.active?.id ?? "none"));
+    await api.appLog("boot: projects loaded count=" + state.projects.length + " active=" + (state.active?.id ?? "none"));
   } catch (e) {
-    await api.diagLog("boot: projects FAILED " + String(e));
+    await api.appLog("boot: projects FAILED " + String(e));
   }
   try {
-    await api.diagLog("boot: showing splash + mcp init");
-    // The splash runs the MCP init visualization in place of a start button;
-    // on completion (or skip) it routes to login (first run) or the shell.
-    renderSplash($("#app")!, () => {
-      if (!state.onboarded) renderLogin($("#app")!, handleLogin);
-      else enterApp();
-    });
-    await api.diagLog("boot: routed");
+    await api.appLog("boot: showing splash + mcp init");
+    // Splash runs the MCP init visualization; on completion (or skip) it
+    // routes into the onboarding/app flow.
+    renderSplash($("#app")!, onSplashDone);
+    await api.appLog("boot: routed");
   } catch (e) {
-    await api.diagLog("boot: THREW " + String(e));
+    await api.appLog("boot: THREW " + String(e));
     fatalError("boot-route", e);
   }
 }
 
-/** Login submit — persist name + onboarded flag, then enter the app. */
-async function handleLogin(name: string, _key: string) {
+/** Called when the splash + MCP init finishes. Routes to the next screen. */
+async function onSplashDone() {
+  // Returning user with on_launch lock → challenge before anything else.
+  if (state.onboarded && state.settings.onboarding_complete === "true") {
+    const lock = await api.lockState().catch(() => ({ policy: "never", idle_min: "", configured: false }));
+    if (lock.policy === "on_launch" && lock.configured) {
+      showLockScreen($("#app")!, () => enterApp());
+      return;
+    }
+    enterApp();
+    return;
+  }
+  // First run (or wizard not finished): login → wizard → tutorial → shell.
+  if (!state.onboarded) {
+    renderLogin($("#app")!, handleLogin);
+  } else {
+    // Onboarded but wizard incomplete — resume the wizard.
+    startWizard(state.pendingKey);
+  }
+}
+
+/** Login submit — persist name + onboarded flag, stash the key for the wizard,
+ *  then start the setup wizard. */
+async function handleLogin(name: string, key: string) {
   try {
     await api.updateSetting("user_name", name);
     await api.updateSetting("onboarded", "true");
     state.settings.user_name = name;
+    state.pendingKey = key;
   } catch (e) {
     toast("No se pudo guardar: " + e);
   }
-  enterApp();
+  startWizard(key);
 }
 
-/** Transition from login into the main app shell. */
+/** Launch the setup wizard. The key is the local access key captured at login,
+ *  consumed by Step 3 to configure the lock policy. */
+function startWizard(key: string) {
+  renderWizard($("#app")!, key, () => {
+    // Wizard complete → tutorial (if unseen) → shell.
+    if (state.settings.tutorial_seen !== "true") {
+      renderTutorial($("#app")!, enterApp);
+    } else {
+      enterApp();
+    }
+  });
+}
+
+/** Transition into the main app shell. Sets up the idle-lock timer if the
+ *  policy demands it. */
 async function enterApp() {
   try {
     state.settings = await api.getSettings();
     state.onboarded = true;
     await reloadProjects();
     renderShell();
-    await api.diagLog("enterApp: shell rendered, active=" + (state.active?.id ?? "none"));
+    await api.appLog("enterApp: shell rendered, active=" + (state.active?.id ?? "none"));
+    armIdleLock();
   } catch (e) {
     fatalError("enterApp", e);
   }
+}
+
+/** If the lock policy is "idle", re-lock after X minutes of no interaction. */
+function armIdleLock() {
+  const policy = state.settings.lock_policy;
+  const min = parseInt(state.settings.lock_idle_min || "0", 10);
+  if (policy !== "idle" || !min || !state.settings.lock_hash) return;
+  let timer: number | undefined;
+  const reset = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      api.appLog("lock: idle timeout");
+      showLockScreen($("#app")!, () => enterApp());
+    }, min * 60 * 1000);
+  };
+  ["mousemove", "keydown", "click"].forEach((ev) => window.addEventListener(ev, reset, { passive: true }));
+  reset();
 }
 
 boot().catch((e) => { fatalError("boot", e); });

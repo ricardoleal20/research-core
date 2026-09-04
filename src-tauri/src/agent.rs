@@ -17,6 +17,10 @@ pub struct AgentConfig {
     pub api_key: String,
     pub model: String,
     pub agent_path: String,
+    /// "cli" | "provider" | "simulate" (empty/missing => legacy auto behavior).
+    pub llm_mode: String,
+    pub llm_cli: String,
+    pub llm_cli_model: String,
 }
 
 pub fn load_config(conn: &rusqlite::Connection) -> AgentConfig {
@@ -25,6 +29,26 @@ pub fn load_config(conn: &rusqlite::Connection) -> AgentConfig {
         api_key: db::get_setting(conn, "api_key"),
         model: db::get_setting(conn, "model"),
         agent_path: db::get_setting(conn, "agent_path"),
+        llm_mode: db::get_setting(conn, "llm_mode"),
+        llm_cli: db::get_setting(conn, "llm_cli"),
+        llm_cli_model: db::get_setting(conn, "llm_cli_model"),
+    }
+}
+
+/// Resolve the effective mode. Empty/legacy settings fall back to the original
+/// auto behavior: real provider if key+base_url set, else simulate.
+fn effective_mode(cfg: &AgentConfig) -> &'static str {
+    match cfg.llm_mode.as_str() {
+        "cli" => "cli",
+        "provider" => "provider",
+        "simulate" => "simulate",
+        _ => {
+            if !cfg.api_key.trim().is_empty() && !cfg.base_url.trim().is_empty() {
+                "provider"
+            } else {
+                "simulate"
+            }
+        }
     }
 }
 
@@ -62,14 +86,19 @@ pub async fn assistant_reply(
         proj_name, ref_list.join("\n")
     );
 
-    if has_real_provider(&cfg) {
-        chat_completion(&cfg, &system, history).await
-            .map(|c| (c, None))
-    } else {
-        // Simulated but contextual reply
-        let last = history.last().map(|m| m.content.as_str()).unwrap_or("");
-        let reply = simulate_assistant(last, &ref_list.join("\n"));
-        Ok((reply, None))
+    match effective_mode(&cfg) {
+        "provider" if has_real_provider(&cfg) => {
+            chat_completion(&cfg, &system, history).await.map(|c| (c, None))
+        }
+        "cli" => {
+            chat_via_cli(&cfg, &system, history).await.map(|c| (c, None))
+        }
+        _ => {
+            // Simulated but contextual reply
+            let last = history.last().map(|m| m.content.as_str()).unwrap_or("");
+            let reply = simulate_assistant(last, &ref_list.join("\n"));
+            Ok((reply, None))
+        }
     }
 }
 
@@ -105,10 +134,12 @@ pub async fn run_review(
 
     let judge_names: Vec<String> = judges.iter().filter_map(|j| j.get("name").and_then(|v| v.as_str()).map(String::from)).collect();
 
-    let (score, dims, findings, verdict) = if has_real_provider(&cfg) {
-        run_review_via_llm(&cfg, project_id, focus, &judge_names, refs_count).await?
-    } else {
-        simulate_review(focus, &judge_names, refs_count, prev_score)
+    let (score, dims, findings, verdict) = match effective_mode(&cfg) {
+        "provider" if has_real_provider(&cfg) => {
+            run_review_via_llm(&cfg, project_id, focus, &judge_names, refs_count).await?
+        }
+        "cli" => run_review_via_cli(&cfg, project_id, focus, &judge_names, refs_count).await?,
+        _ => simulate_review(focus, &judge_names, refs_count, prev_score),
     };
 
     // persist review
@@ -187,7 +218,7 @@ async fn run_review_via_llm(
     );
     let msgs = vec![ChatMsg { role: "user".into(), content: format!("Revisa: {}", focus) }];
     let raw = chat_completion(cfg, &system, msgs).await?;
-    let parsed: Value = serde_json::from_str(raw.trim().trim_matches('`'))
+    let parsed: Value = serde_json::from_str(&extract_json(&raw))
         .unwrap_or_else(|_| json!({}));
     let dims: Vec<Dim> = parsed.get("dims").cloned()
         .map(|v| serde_json::from_value(v).unwrap_or_default()).unwrap_or_default();
@@ -255,3 +286,165 @@ async fn chat_completion(cfg: &AgentConfig, system: &str, history: Vec<ChatMsg>)
 }
 
 fn now() -> String { chrono::Utc::now().to_rfc3339() }
+
+// ---------- CLI LLM adapter ----------
+// Spawns a local coding CLI (claude / codex / opencode) to generate completions.
+// Local-first: no HTTP, no API key. The system prompt + conversation are passed
+// as the prompt; stdout is captured as the completion.
+
+/// Which CLI binary to use, falling back to a sensible default.
+fn cli_command(cfg: &AgentConfig) -> &str {
+    let c = cfg.llm_cli.trim();
+    if c.is_empty() { "claude" } else { c }
+}
+
+/// Build the prompt string the CLI receives (system + history collapsed).
+fn cli_prompt(system: &str, history: &[ChatMsg]) -> String {
+    let mut out = String::new();
+    if !system.trim().is_empty() {
+        out.push_str(system);
+        out.push_str("\n\n");
+    }
+    for m in history {
+        let who = match m.role.as_str() {
+            "assistant" => "Asistente",
+            _ => "Tú",
+        };
+        out.push_str(&format!("{}: {}\n", who, m.content));
+    }
+    out.push_str("Asistente:");
+    out
+}
+
+async fn chat_via_cli(cfg: &AgentConfig, system: &str, history: Vec<ChatMsg>) -> Result<String, String> {
+    let cmd = cli_command(cfg);
+    let prompt = cli_prompt(system, &history);
+    run_cli(cmd, &cfg.llm_cli_model, &prompt).await
+}
+
+/// Run a CLI: `claude -p "<prompt>"` (with optional `--model`). For codex /
+/// opencode we use the same shape (`codex exec`, `opencode`), since all three
+/// accept a prompt and print the result to stdout.
+async fn run_cli(cmd: &str, model: &str, prompt: &str) -> Result<String, String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    // Resolve the binary via the augmented PATH (finds Homebrew/nvm installs
+    // even when launched as a GUI .app bundle).
+    let resolved = crate::mcp::augmented_path();
+    let mut command = match cmd {
+        "codex" => {
+            let mut c = tokio::process::Command::new("codex");
+            c.arg("exec");
+            c
+        }
+        "opencode" => {
+            let mut c = tokio::process::Command::new("opencode");
+            c.arg("run");
+            c
+        }
+        _ => {
+            // claude (default): `claude -p "<prompt>" [--model X]`
+            let mut c = tokio::process::Command::new("claude");
+            c.arg("-p");
+            if !model.trim().is_empty() {
+                c.arg("--model").arg(model);
+            }
+            c
+        }
+    };
+    command.env("PATH", resolved);
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // For claude/opencode the prompt is a CLI arg; for codex it's on stdin.
+    let prompt_owned = prompt.to_string();
+    let model_owned = model.to_string();
+    let cmd_owned = cmd.to_string();
+    let mut child = command.spawn().map_err(|e| format!("spawn {cmd_owned}: {e} (¿instalado y en PATH?)"))?;
+
+    // codex reads the prompt from stdin; the others got it as an arg already.
+    if cmd_owned == "codex" {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(prompt_owned.as_bytes()).await.map_err(|e| e.to_string())?;
+            stdin.flush().await.map_err(|e| e.to_string())?;
+            // dropping stdin closes it
+        }
+    }
+    let _ = model_owned;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("{cmd_owned} timed out (>120s)"))?
+    .map_err(|e| format!("{cmd_owned}: {e}"))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{cmd_owned} failed: {}", err.chars().take(300).collect::<String>()));
+    }
+    let out = String::from_utf8_lossy(&output.stdout).to_string();
+    if out.trim().is_empty() {
+        return Err(format!("{cmd_owned} produced no output"));
+    }
+    Ok(out)
+}
+
+/// Mirror of run_review_via_llm but routing through the CLI adapter.
+async fn run_review_via_cli(
+    cfg: &AgentConfig, _project_id: &str, focus: &str,
+    judges: &[String], refs_count: i64,
+) -> Result<(f64, Vec<Dim>, Vec<Finding>, String), String> {
+    let system = format!(
+        "Eres un orquestador de revisión académica. Devuelve EXCLUSIVAMENTE JSON válido con esta forma: \
+        {{\"dims\":[{{\"name\":string,\"score\":number}}],\"findings\":[{{\"severity\":\"high|med|low\",\"location\":string,\"text\":string}}],\"verdict\":string}}. \
+        Usa los jueces: {}. Hay {} referencias. Foco de la revisión: «{}». \
+        Responde solo con el JSON, sin texto adicional ni fences.",
+        judges.join(", "), refs_count, focus
+    );
+    let msgs = vec![ChatMsg { role: "user".into(), content: format!("Revisa: {}", focus) }];
+    let raw = chat_via_cli(cfg, &system, msgs).await?;
+    // Tolerate surrounding prose: extract the first {...} block.
+    let json_str = extract_json(&raw);
+    let parsed: Value = serde_json::from_str(&json_str).unwrap_or_else(|_| json!({}));
+    let dims: Vec<Dim> = parsed.get("dims").cloned()
+        .map(|v| serde_json::from_value(v).unwrap_or_default()).unwrap_or_default();
+    let findings: Vec<Finding> = parsed.get("findings").cloned()
+        .map(|v| serde_json::from_value(v).unwrap_or_default()).unwrap_or_default();
+    let verdict = parsed.get("verdict").and_then(|v| v.as_str()).unwrap_or("Revisión completada.").to_string();
+    let score = if dims.is_empty() { 7.5 } else { dims.iter().map(|d| d.score).sum::<f64>() / dims.len() as f64 };
+    Ok((score, dims, findings, verdict))
+}
+
+/// Extract the first balanced `{...}` JSON object from a free-text response.
+fn extract_json(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut start = None;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            if esc { esc = false; }
+            else if b == b'\\' { esc = true; }
+            else if b == b'"' { in_str = false; }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => {
+                if start.is_none() { start = Some(i); }
+                depth += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(st) = start {
+                        return s[st..=i].to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    s.trim().trim_matches('`').to_string()
+}

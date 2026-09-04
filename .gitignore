@@ -8,6 +8,8 @@ dist/
 *.dmg
 *.app
 .DS_Store
+*.rmeta
+src-tauri/librust_out*
 
 # Local env / secrets (never commit)
 .env
