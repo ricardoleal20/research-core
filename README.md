@@ -153,8 +153,13 @@ Manage connection status and add your own from the **Status y config** tab.
 
 ## 📄 License
 
-This project is currently source-available for personal and research use. See the
-repository for current licensing terms.
+Research Core is released under the **MIT License** — the same permissive license
+used by [Temporal](https://github.com/temporalio/temporal). See
+[`LICENSE`](LICENSE) for the full text. You're free to use, modify, and
+distribute it, including commercially, with attribution.
+
+Contributions are welcome under the same license — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
