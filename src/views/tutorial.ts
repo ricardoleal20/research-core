@@ -1,6 +1,6 @@
 import { el } from "../main";
 import { api } from "../api";
-import { ico } from "../icons";
+import { ico, appLogo } from "../icons";
 import { BG, WIN_CONTROLS } from "./welcome";
 
 const CARDS = [
@@ -22,7 +22,7 @@ export function renderTutorial(app: HTMLElement, onDone: () => void) {
   const wrap = el(`<div class="app-window">${WIN_CONTROLS}
       <div class="tut-body">${BG}
         <div class="tut-hero">
-          <div class="tut-logo">${ico.bookLogo}</div>
+          <div class="tut-logo">${appLogo()}</div>
           <h1 class="tut-title">Bienvenido a Research Core</h1>
           <p class="tut-subtitle">Un tour rápido por lo que puedes hacer. Después podrás empezar a investigar.</p>
           <div class="tut-grid" id="tut-cards"></div>

@@ -1,6 +1,6 @@
 import { state, el, esc, toast } from "../main";
 import { api } from "../api";
-import { ico } from "../icons";
+import { ico, appLogo } from "../icons";
 import { runMcpInit } from "./mcpinit";
 
 // Shared animated background markup (orbs + grid + floating research shapes).
@@ -41,7 +41,7 @@ export function renderSplash(app: HTMLElement, onNext: () => void) {
     <div class="splash-body">
       ${BG}
       <div class="splash-hero">
-        <div class="splash-logo">${ico.bookLogo}</div>
+        <div class="splash-logo">${appLogo()}</div>
         <h1 class="splash-title">Research Core</h1>
         <p class="splash-subtitle">Tu gestor de investigación local-first. Papers, referencias, revisiones y síntesis — todo en un solo lugar, siempre en tu equipo.</p>
         <div class="splash-init" id="splash-init"></div>
@@ -62,7 +62,7 @@ export function renderLogin(app: HTMLElement, onEnter: (name: string, key: strin
       ${BG}
       <div class="welcome-composer">
         <div class="welcome-card">
-          <div class="welcome-logo">${ico.bookLogo}</div>
+          <div class="welcome-logo">${appLogo()}</div>
           <h1 class="welcome-title">Research Core</h1>
           <p class="welcome-subtitle">Tu gestor de investigación local-first. Papers, referencias y revisiones en un solo lugar.</p>
           <div class="welcome-field"><label for="login-name">Nombre</label><input id="login-name" type="text" value="${esc(last)}" placeholder="Tu nombre" autocomplete="off"/></div>

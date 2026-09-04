@@ -2,6 +2,7 @@ import { api } from "../api";
 import { state, setTab, esc, el, toast } from "../main";
 import { ico } from "../icons";
 import { t, setLang, getLang } from "../i18n";
+import { showSettingsSkeleton } from "../skeleton";
 import type { McpServer } from "../types";
 
 const APP_VERSION = "0.1.0";
@@ -23,9 +24,24 @@ const IA_CHILDREN: { id: string; label: string }[] = [
 
 export async function renderAjustes(view: HTMLElement) {
   ajView = view;
-  settings = { ...state.settings, ...(await api.getSettings()) };
+
+  // Show a skeleton placeholder while data loads, guaranteed visible for at
+  // least SKELETON_MIN (500ms) even on instant loads.
+  const waitSkeleton = showSettingsSkeleton(view, 3);
+
+  // Load data in parallel with the minimum skeleton dwell time.
+  const [loaded] = await Promise.all([
+    (async () => {
+      const s = { ...state.settings, ...(await api.getSettings()) };
+      let sv: McpServer[] = [];
+      try { sv = await api.listMcpServers(); } catch { sv = []; }
+      return { s, sv };
+    })(),
+    waitSkeleton(),
+  ]);
+  settings = loaded.s;
+  servers = loaded.sv;
   setLang(settings.lang || "es");
-  try { servers = await api.listMcpServers(); } catch { servers = []; }
 
   view.innerHTML = `<div class="settings-body">
     <aside class="settings-side">

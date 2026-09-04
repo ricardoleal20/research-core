@@ -575,6 +575,9 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .splash-hero{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;text-align:center;max-width:440px;padding:0 24px}
 .splash-logo{width:56px;height:56px;border-radius:14px;background:var(--accent);color:var(--surface);display:grid;place-items:center;margin-bottom:20px;box-shadow:0 8px 28px color-mix(in oklch,var(--accent) 40%,transparent);animation:hero-rise .8s cubic-bezier(.2,.7,.3,1) both}
 .splash-logo svg{width:28px;height:28px}
+/* Brand mark (full-color app icon) inside logo containers. */
+.app-mark{display:block;width:100%;height:100%;object-fit:contain;border-radius:inherit;pointer-events:none;user-select:none;-webkit-user-drag:none}
+.splash-logo:has(.app-mark),.welcome-logo:has(.app-mark),.tut-logo:has(.app-mark){background:transparent}
 .splash-title{font-size:38px;font-weight:700;letter-spacing:-0.03em;color:var(--fg);margin-bottom:10px;animation:hero-rise .8s cubic-bezier(.2,.7,.3,1) .12s both}
 .splash-subtitle{font-size:15px;color:var(--muted);line-height:1.6;margin-bottom:32px;max-width:340px;animation:hero-rise .8s cubic-bezier(.2,.7,.3,1) .24s both}
 .splash-btn{padding:13px 32px;font-size:15px;font-weight:600;animation:hero-rise .8s cubic-bezier(.2,.7,.3,1) .36s both}
@@ -823,3 +826,18 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .btn-danger:hover{background:#a93226}
 @media (max-width:680px){.aj-grid{grid-template-columns:1fr}.ajustes-scroll{padding:20px 16px 32px}}
 
+
+/* SKELETON — loading placeholders */
+.sk{display:block;background:linear-gradient(100deg,var(--surface-2) 30%,color-mix(in oklch,var(--surface-2) 60%,var(--surface)) 50%,var(--surface-2) 70%);background-size:200% 100%;border-radius:var(--r-input);animation:sk-shimmer 1.4s ease-in-out infinite}
+@keyframes sk-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.sk-card{border:1px solid var(--border)}
+.sk-card-head{margin-bottom:16px}
+.sk-title{width:42%;height:16px}
+.sk-field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
+.sk-label{width:22%;height:11px}
+.sk-input{width:100%;height:34px}
+.sk-h2{width:120px;height:22px;margin-bottom:8px}
+.sk-sub{width:280px;height:13px}
+.sk-btn{width:120px;height:30px}
+.sk-sb-label{width:60px;height:15px;margin-bottom:16px}
+.sk-nav-item{height:30px;margin-bottom:4px}

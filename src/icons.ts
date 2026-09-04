@@ -2,6 +2,14 @@
 const s = (paths: string, vb = "0 0 24 24", sw = 2) =>
   `<svg viewBox="${vb}" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 
+// The app's brand icon (full-color PNG), bundled by Vite. Used wherever the
+// app's identity mark appears inside the UI (splash, welcome, tutorial).
+import appIconUrl from "./assets/app-icon.png";
+
+/** Brand mark <img> to drop into logo containers in place of a book glyph. */
+export const appLogo = (alt = "Research Core") =>
+  `<img class="app-mark" src="${appIconUrl}" alt="${alt}" draggable="false">`;
+
 export const ico = {
   chevron: '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
   folder: s('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
