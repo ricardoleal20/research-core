@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Ref, Chat, Agent, McpServer, Review, Action, Project } from "./types";
+import { mockApi, mockActive } from "./mock-backend";
 
-export const api = {
+// When the Tauri runtime is absent (plain browser via `vite`), fall back to an
+// in-memory mock so the UI can boot and be iterated on without the Rust backend.
+export const api = mockActive ? mockApi : {
   // projects
   listProjects: () => invoke<Project[]>("list_projects"),
   getActiveProject: () => invoke<Project | null>("get_active_project"),

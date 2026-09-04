@@ -19,7 +19,10 @@ export const BG = `<div class="welcome-bg" aria-hidden="true">
   <svg class="welcome-poly p8" width="38" height="34" viewBox="0 0 38 34" fill="none"><rect x="4" y="11" width="14" height="12" rx="6" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18" fill="none"/><rect x="20" y="11" width="14" height="12" rx="6" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18" fill="none"/><path d="M18 17 L20 17" stroke="var(--dot-2)" stroke-width="1.5" opacity="0.18"/></svg>
 </div>`;
 
-export const WIN_CONTROLS = `<div class="welcome-win-controls" aria-hidden="true"><span class="wc" style="background:#FF5F57"></span><span class="wc" style="background:#FEBC2E"></span><span class="wc" style="background:#28C840"></span></div>`;
+// Native window decorations are disabled (decorations:false in tauri.conf),
+// so the faux macOS traffic lights are no longer rendered. Kept as an empty
+// export so legacy `${WIN_CONTROLS}` template sites stay valid.
+export const WIN_CONTROLS = "";
 
 const LANGS = [
   { flag: "🇪🇸", name: "Español", native: "Español", code: "es" },

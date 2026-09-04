@@ -435,7 +435,8 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .settings-sub{font-size:13px;color:var(--muted);margin-bottom:24px;line-height:1.5}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow-card);padding:20px 22px;margin-bottom:18px}
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
-.card-title{font-size:15px;font-weight:600;color:var(--fg)}
+.card-title{font-size:15px;font-weight:600;color:var(--fg);display:flex;align-items:center;gap:9px}
+.card-title svg{width:17px;height:17px;flex:0 0 17px;color:var(--accent);stroke-width:1.9}
 .mcp-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid var(--border)}
 .mcp-row:last-child{border-bottom:0}
 .mcp-icon{width:32px;height:32px;display:grid;place-items:center;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--muted);flex:0 0 32px}
@@ -473,6 +474,56 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .copy-btn{flex:0 0 auto;padding:5px 11px;border:1px solid var(--border-2);border-radius:5px;background:var(--surface);font-size:12px;color:var(--fg);display:inline-flex;align-items:center;gap:5px}
 .copy-btn:hover{border-color:var(--accent);color:var(--accent-text)}
 .copy-btn svg{width:12px;height:12px}
+
+/* SETTINGS — sections, sidebar groups, save animation */
+.settings-nav-ico{display:inline-flex;width:16px;height:16px;flex:0 0 16px;color:currentColor}
+.settings-nav-ico svg{width:16px;height:16px}
+.aj-section{display:none}
+.aj-section.is-active{display:block}
+
+/* Sidebar groups (IA sub-items under a label) */
+.settings-nav-sep{border:0;border-top:1px solid var(--border);margin:10px 4px}
+.settings-nav-group{margin-top:10px;display:flex;flex-direction:column;gap:2px}
+.settings-nav-subtitle{font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);padding:6px 12px 4px}
+.settings-nav-sub{padding-left:28px;font-size:12.5px}
+
+/* Save button states */
+.btn-spin{width:13px;height:13px;flex:0 0 13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:btn-spin .7s linear infinite;opacity:.9}
+@keyframes btn-spin{to{transform:rotate(360deg)}}
+#aj-save.is-saving{opacity:.92;cursor:progress}
+#aj-save.is-saved{background:var(--accent);border-color:var(--accent)}
+#aj-save.is-saved svg{width:14px;height:14px}
+
+/* Security / change-key block */
+.field.is-hidden{display:none}
+.sec-key{margin-top:18px;padding-top:18px;border-top:1px solid var(--border)}
+.sec-key-title{font-size:13px;font-weight:600;color:var(--fg);margin-bottom:14px}
+
+/* App info card */
+.app-info-grid{display:flex;flex-direction:column;gap:2px}
+.app-info-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 0;border-bottom:1px solid var(--border)}
+.app-info-row:last-child{border-bottom:0}
+.app-info-label{font-size:13.5px;font-weight:500;color:var(--fg)}
+.app-info-value{font-size:13px;color:var(--muted)}
+.app-info-link{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--accent-text);text-decoration:none;transition:opacity .12s ease}
+.app-info-link:hover{opacity:.8;text-decoration:underline}
+.app-info-link svg{width:14px;height:14px;flex:0 0 14px}
+
+/* Danger reset confirmation modal */
+.aj-reset-overlay{z-index:60}
+.aj-reset-modal{width:480px;max-width:92vw}
+.aj-reset-modal .modal-head{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);padding:18px 22px}
+.aj-reset-ic{width:38px;height:38px;flex:0 0 38px;border-radius:9px;display:grid;place-items:center;background:color-mix(in oklch,#c0392b 12%,var(--surface));color:#c0392b}
+.aj-reset-ic svg{width:19px;height:19px}
+.aj-reset-modal .modal-title{color:#c0392b;margin-bottom:0}
+.aj-reset-warn{font-size:13.5px;color:var(--fg);line-height:1.6;margin-bottom:10px}
+.aj-reset-irrev{font-size:12.5px;color:#c0392b;font-weight:600}
+.aj-reset-confirm{position:relative;min-width:150px}
+.aj-reset-confirm .aj-reset-label{display:inline}
+.aj-reset-confirm .aj-reset-wait{display:inline;margin-left:8px;font-weight:400;opacity:.85}
+.aj-reset-confirm[disabled]{opacity:.7;cursor:not-allowed}
+.aj-reset-confirm.is-ready{animation:aj-reset-pulse .6s ease-out}
+@keyframes aj-reset-pulse{0%{box-shadow:0 0 0 0 color-mix(in oklch,#c0392b 50%,transparent)}100%{box-shadow:0 0 0 8px transparent}}
 
 /* REVIEW DETAIL (history) */
 .pane-reviews{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column}

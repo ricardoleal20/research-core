@@ -97,10 +97,10 @@ function projSelectorHtml() {
 export function renderShell() {
   const app = $("#app")!;
   app.innerHTML = `<div class="app-window">
-    <header class="app-nav">
+    <header class="app-nav" data-tauri-drag-region>
       ${projSelectorHtml()}
       <nav class="nav-tabs" aria-label="Pestañas del proyecto">${navTabsHtml()}</nav>
-      <div class="nav-spacer"></div>
+      <div class="nav-spacer" data-tauri-drag-region></div>
       <button class="nav-tab is-global ${state.tab === "ajustes" ? "is-active" : ""}" data-tab="ajustes">Ajustes</button>
       <div class="identity-chip" title="Usuario">RC</div>
     </header>
