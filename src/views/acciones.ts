@@ -1,12 +1,17 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showContentSkeleton } from "../skeleton";
 import type { Action } from "../types";
 
 let showDone = false;
 
 export async function renderAcciones(view: HTMLElement) {
   const p = state.active!;
+  // Skeleton while the actions list loads.
+  const wait = showContentSkeleton(view, 4);
+  await wait();
+
   view.innerHTML = `<div class="acciones-body pane">
     <div class="acciones-head">
       <div class="ah-left"><h3>Acciones</h3><span class="ah-sub" id="ah-sub">cargando…</span></div>

@@ -1,9 +1,23 @@
 import { api } from "../api";
 import { state, el, esc, toast } from "../main";
 import { ico } from "../icons";
+import { showDashboardSkeleton } from "../skeleton";
 
 export async function renderDashboard(view: HTMLElement) {
   const p = state.active!;
+  // Skeleton placeholder, visible for at least SKELETON_MIN while the dashboard
+  // data loads — even on an instant load.
+  const wait = showDashboardSkeleton(view);
+
+  let d: any = null;
+  let errored = false;
+  try {
+    d = await api.getDashboard(p.id);
+  } catch {
+    errored = true;
+  }
+  await wait();
+
   view.innerHTML = `<div class="dash-body pane"><div class="dash-grid" id="dash-grid">
     <div class="dash-card" id="card-review"><h3>${ico.checkCircle}<span>Estado de la revisión</span></h3><p class="card-sub">cargando…</p></div>
     <div class="dash-card" id="card-citations"><h3>${ico.checkCircle}<span>Citas y referencias</span></h3></div>
@@ -11,15 +25,14 @@ export async function renderDashboard(view: HTMLElement) {
     <div class="dash-card" id="card-activity"><h3>${ico.clock}<span>Actividad reciente</span></h3></div>
   </div></div>`;
 
-  try {
-    const d = await api.getDashboard(p.id);
-    renderReviewCard($("#card-review")!, d);
-    renderCitationsCard($("#card-citations")!, d);
-    renderVenuesCard($("#card-venues")!, p);
-    renderActivityCard($("#card-activity")!, d);
-  } catch (e) {
+  if (errored || !d) {
     toast("Error al cargar dashboard");
+    return;
   }
+  renderReviewCard($("#card-review")!, d);
+  renderCitationsCard($("#card-citations")!, d);
+  renderVenuesCard($("#card-venues")!, p);
+  renderActivityCard($("#card-activity")!, d);
 }
 
 function $ (s: string, r: ParentNode = document) { return r.querySelector<HTMLElement>(s); }

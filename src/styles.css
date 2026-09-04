@@ -841,3 +841,15 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .sk-btn{width:120px;height:30px}
 .sk-sb-label{width:60px;height:15px;margin-bottom:16px}
 .sk-nav-item{height:30px;margin-bottom:4px}
+
+/* SKELETON — generic content placeholders (shared across tabs) */
+.sk-content{padding:26px 32px 36px}
+.sk-sec-head{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.sk-block{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow-card);padding:20px 22px;margin-bottom:18px;display:flex;flex-direction:column;gap:10px}
+.sk-block-head{margin-bottom:8px}
+.sk-split-wrap{display:flex;min-height:0}
+.sk-split{display:grid;grid-template-columns:240px 1fr;flex:1;min-height:0}
+.sk-side{background:var(--surface);border-right:1px solid var(--border);padding:18px 16px;display:flex;flex-direction:column;gap:12px}
+.sk-main{padding:26px 32px;display:flex;flex-direction:column;gap:14px}
+.sk-pane{display:flex;flex-direction:column}
+.sk-dash-card{display:flex;flex-direction:column;gap:12px;padding:20px}
