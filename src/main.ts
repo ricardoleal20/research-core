@@ -80,8 +80,7 @@ const TABS: { id: Tab; label: string }[] = [
 function navTabsHtml() {
   return TABS.map((t) =>
     `<button class="nav-tab ${state.tab === t.id ? "is-active" : ""}" data-tab="${t.id}">${t.label}</button>`
-  ).join("") + `<div class="nav-spacer"></div>` +
-    `<button class="nav-tab is-global ${state.tab === "ajustes" ? "is-active" : ""}" data-tab="ajustes">Ajustes</button>`;
+  ).join("");
 }
 
 function projSelectorHtml() {
@@ -99,11 +98,10 @@ export function renderShell() {
   const app = $("#app")!;
   app.innerHTML = `<div class="app-window">
     <header class="app-nav">
-      <div class="brand"><span class="brand-chip">${ico.brain}</span>Research Core</div>
-      <div class="nav-divider"></div>
       ${projSelectorHtml()}
-      <div class="nav-divider"></div>
       <nav class="nav-tabs" aria-label="Pestañas del proyecto">${navTabsHtml()}</nav>
+      <div class="nav-spacer"></div>
+      <button class="nav-tab is-global ${state.tab === "ajustes" ? "is-active" : ""}" data-tab="ajustes">Ajustes</button>
       <div class="identity-chip" title="Usuario">RC</div>
     </header>
     <div id="subheader"></div>
