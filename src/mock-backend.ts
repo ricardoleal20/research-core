@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -54,6 +54,13 @@ const servers: McpServer[] = [
   { id: "m2", name: "semantic-scholar", transport: "http", command: "", args: "", env: "", url: "https://mcp.semanticscholar.org/sse", tags: "search", connected: 0, created_at: "2025-08-02T10:00:00Z" },
 ];
 
+// In-memory chats + messages so the Asistente / AI Review flows work in-browser.
+const chats: Chat[] = [];
+const messages: Record<string, Message[]> = {};
+let chatSeq = 0;
+let msgSeq = 0;
+const nowISO = () => "2025-09-01T12:00:00Z";
+
 const agents: Agent[] = [
   { id: "a1", key: "rigor", name: "Rigor", description: "Detecta fallos metodológicos y lógicos.", icon: "brain", enabled: 1, kind: "judge" },
   { id: "a2", key: "novelty", name: "Novelty", description: "Evalúa la contribución original.", icon: "spark", enabled: 1, kind: "judge" },
@@ -96,11 +103,42 @@ export const mockApi = {
   deleteAction: async () => {},
 
   // chats
-  listChats: async () => [] as Chat[],
-  createChat: async (c: any) => c as Chat,
-  getChat: async () => { throw new Error("not in mock"); },
-  sendMessage: async () => ({ ok: true }),
-  deleteChat: async () => {},
+  listChats: async (_pid: string, kind?: string) => {
+    await delay();
+    return chats.filter((c) => !kind || c.kind === kind);
+  },
+  createChat: async (pid: string, kind: string, title: string) => {
+    await delay();
+    const id = "c" + ++chatSeq;
+    const c: Chat = {
+      id, project_id: pid, kind, title, preview: "",
+      created_at: nowISO(), updated_at: nowISO(),
+    };
+    chats.push(c);
+    messages[id] = [];
+    return c;
+  },
+  getChat: async (id: string) => {
+    await delay();
+    const c = chats.find((x) => x.id === id);
+    if (!c) throw new Error("chat not found");
+    return { ...c, messages: messages[id] ?? [] };
+  },
+  sendMessage: async (chatId: string, content: string) => {
+    await delay(120);
+    const list = messages[chatId] ?? (messages[chatId] = []);
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "user", content, classify_tag: null, meta: null, created_at: nowISO() });
+    // Echo a canned agent reply so the thread feels alive.
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: "(mock) Entendido. Esta es una respuesta de ejemplo del asistente.", classify_tag: null, meta: null, created_at: nowISO() });
+    const c = chats.find((x) => x.id === chatId);
+    if (c) { c.preview = content.slice(0, 80); c.updated_at = nowISO(); }
+    return { ok: true };
+  },
+  deleteChat: async (id: string) => {
+    const i = chats.findIndex((x) => x.id === id);
+    if (i >= 0) chats.splice(i, 1);
+    delete messages[id];
+  },
 
   // agents
   listAgents: async () => { await delay(); return agents; },
