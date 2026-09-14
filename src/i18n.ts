@@ -44,6 +44,10 @@ const DICT: Record<string, Record<Lang, string>> = {
 
   // language
   "lang.title": { es: "Idioma de la interfaz", en: "Interface language", pt: "Idioma da interface", fr: "Langue de l'interface" },
+  "lang.native.es": { es: "Español", en: "Spanish", pt: "Espanhol", fr: "Espagnol" },
+  "lang.native.en": { es: "Inglés", en: "English", pt: "Inglês", fr: "Anglais" },
+  "lang.native.pt": { es: "Portugués", en: "Portuguese", pt: "Português", fr: "Portugais" },
+  "lang.native.fr": { es: "Francés", en: "French", pt: "Francês", fr: "Français" },
 
   // security
   "sec.security": { es: "Seguridad y contraseña", en: "Security & password", pt: "Segurança e palavra-passe", fr: "Sécurité et mot de passe" },
@@ -52,7 +56,13 @@ const DICT: Record<string, Record<Lang, string>> = {
   "sec.policyOnLaunch": { es: "Al abrir la app", en: "On app launch", pt: "Ao abrir a app", fr: "À l'ouverture" },
   "sec.policyIdle": { es: "Tras X minutos de inactividad", en: "After X minutes idle", pt: "Após X minutos inativo", fr: "Après X min d'inactivité" },
   "sec.policySensitive": { es: "Antes de acciones sensibles", en: "Before sensitive actions", pt: "Antes de ações sensíveis", fr: "Avant actions sensibles" },
+  "sec.policyNeverDesc": { es: "La app permanece desbloqueada tras iniciar sesión.", en: "The app stays unlocked after sign-in.", pt: "A app fica desbloqueada após iniciar sessão.", fr: "L'app reste déverrouillée après connexion." },
+  "sec.policyOnLaunchDesc": { es: "Pide la clave cada vez que abres Research Core.", en: "Asks for the key every time you open Research Core.", pt: "Pede a chave cada vez que abres o Research Core.", fr: "Demande la clé à chaque ouverture de Research Core." },
+  "sec.policyIdleDesc": { es: "Bloquea tras un tiempo de inactividad.", en: "Locks after a period of inactivity.", pt: "Bloqueia após um período de inatividade.", fr: "Verrouille après une période d'inactivité." },
+  "sec.policySensitiveDesc": { es: "Pide la clave al borrar proyectos, refs o vaciar acciones.", en: "Asks for the key when deleting projects, refs or clearing actions.", pt: "Pede a chave ao apagar projetos, refs ou limpar ações.", fr: "Demande la clé pour supprimer projets, réf. ou vider les actions." },
   "sec.idleMin": { es: "Minutos de inactividad", en: "Idle minutes", pt: "Minutos de inatividade", fr: "Minutes d'inactivité" },
+  "sec.idleCustom": { es: "Personalizado", en: "Custom", pt: "Personalizado", fr: "Personnalisé" },
+  "sec.idleCustomPh": { es: "Escribe los minutos", en: "Enter minutes", pt: "Escreve os minutos", fr: "Saisir les minutes" },
   "sec.changeKey": { es: "Cambiar clave de acceso", en: "Change access key", pt: "Alterar chave de acesso", fr: "Changer la clé d'accès" },
   "sec.newKey": { es: "Clave nueva", en: "New key", pt: "Nova chave", fr: "Nouvelle clé" },
   "sec.confirmKey": { es: "Confirmar clave", en: "Confirm key", pt: "Confirmar chave", fr: "Confirmer la clé" },

@@ -74,8 +74,7 @@ export async function renderAjustes(view: HTMLElement) {
       </div>
 
       <div class="aj-section ${activeSection === "general" ? "is-active" : ""}" data-section="general" ${activeSection === "general" ? "" : "hidden"}>
-        ${cardProfile()}
-        ${cardLang()}
+        ${cardProfileLang()}
         ${cardSecurity()}
         ${cardLocal()}
         ${cardDanger()}
@@ -90,6 +89,8 @@ export async function renderAjustes(view: HTMLElement) {
   wireSidebar();
   wireToggles();
   wireLang();
+  wireLangSelect();
+  wireLockPolicy();
   wireSecurity();
   $("#aj-save")!.addEventListener("click", save);
   $("#aj-reset")!.addEventListener("click", confirmReset);
@@ -99,44 +100,81 @@ export async function renderAjustes(view: HTMLElement) {
 
 /* ---------- General cards ---------- */
 
-function cardProfile() {
-  return `<div class="card" id="card-profile">
-    <div class="card-head"><div class="card-title">${ico.pen} ${t("profile.title")}</div></div>
-    <div class="field" style="margin-bottom:0"><label>${t("profile.name")}</label><input id="set-user_name" type="text" value="${esc(settings.user_name)}" placeholder="${t("profile.namePh")}"></div>
-  </div>`;
-}
-
-function cardLang() {
+function cardProfileLang() {
   const cur = getLang();
-  const opts: [string, string][] = [
-    ["es", "Español (es-ES)"], ["en", "English (en-US)"],
-    ["pt", "Português (pt-BR)"], ["fr", "Français (fr-FR)"],
-  ];
-  return `<div class="card" id="card-lang">
-    <div class="card-head"><div class="card-title">${ico.globe} ${t("lang.title")}</div></div>
-    <div class="field" style="margin-bottom:0"><label>${t("lang.title")}</label>
-      <select id="set-lang">
-        ${opts.map(([v, l]) => `<option value="${v}" ${cur === v ? "selected" : ""}>${l}</option>`).join("")}
-      </select>
+  const opts: [string, string][] = [["es", "🇲🇽"], ["en", "🇬🇧"]];
+  const curOpt = opts.find(([v]) => v === cur) ?? opts[0];
+  return `<div class="card" id="card-profile-lang">
+    <div class="field-row" style="align-items:flex-start">
+      <div class="field" style="margin-bottom:0"><label>${t("profile.name")}</label><input id="set-user_name" type="text" value="${esc(settings.user_name)}" placeholder="${t("profile.namePh")}"></div>
+      <div class="field" style="margin-bottom:0"><label>${t("lang.title")}</label>
+        <div class="lang-select" id="lang-select">
+          <button class="lang-select-trigger" id="lang-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <span class="lang-select-flag">${curOpt[1]}</span>
+            <span class="lang-select-text">${t("lang.native." + cur)}</span>
+            <span class="lang-select-chev">${ico.chevron}</span>
+          </button>
+          <div class="lang-select-menu" id="lang-menu" role="listbox" hidden>
+            ${opts.map(([v, flag]) =>
+              `<button class="lang-select-item ${v === cur ? "is-active" : ""}" data-lang="${v}" type="button" role="option">
+                <span class="lang-select-flag">${flag}</span>
+                <span class="lang-select-text">${t("lang.native." + v)}</span>
+                <span class="lang-select-check">${ico.check}</span>
+              </button>`
+            ).join("")}
+          </div>
+        </div>
+      </div>
     </div>
   </div>`;
 }
 
 function cardSecurity() {
   const policy = settings.lock_policy || "never";
-  const policies: [string, string][] = [
-    ["never", "sec.policyNever"],
-    ["on_launch", "sec.policyOnLaunch"],
-    ["idle", "sec.policyIdle"],
-    ["sensitive", "sec.policySensitive"],
+  const policies: { id: string; title: string; desc: string }[] = [
+    { id: "never", title: "sec.policyNever", desc: "sec.policyNeverDesc" },
+    { id: "on_launch", title: "sec.policyOnLaunch", desc: "sec.policyOnLaunchDesc" },
+    { id: "idle", title: "sec.policyIdle", desc: "sec.policyIdleDesc" },
+    { id: "sensitive", title: "sec.policySensitive", desc: "sec.policySensitiveDesc" },
   ];
+  // Idle-minute presets: 15 / 30 / 60 / custom.
+  const idlePresets = [
+    { value: "15", label: "15 min" },
+    { value: "30", label: "30 min" },
+    { value: "60", label: "60 min" },
+  ];
+  const idleVal = settings.lock_idle_min || "15";
+  const isCustom = policy === "idle" && !idlePresets.some((p) => p.value === idleVal);
   return `<div class="card" id="card-security">
-    <div class="card-head"><div class="card-title">${ico.lock} ${t("sec.security")}</div></div>
-    <div class="field-row">
-      <div class="field"><label>${t("sec.lockPolicy")}</label><select id="set-lock_policy">
-        ${policies.map(([v, k]) => `<option value="${v}" ${policy === v ? "selected" : ""}>${t(k)}</option>`).join("")}
-      </select></div>
-      <div class="field ${policy === "idle" ? "" : "is-hidden"}" id="sec-idle-wrap"><label>${t("sec.idleMin")}</label><input id="set-lock_idle_min" type="number" min="1" max="240" value="${esc(settings.lock_idle_min || "15")}"></div>
+    <div class="card-head"><div class="card-title">${ico.lock} ${t("sec.lockPolicy")}</div></div>
+    <div class="lock-grid">
+      ${policies.map((p) =>
+        `<button class="lock-opt ${policy === p.id ? "is-active" : ""}" data-policy="${p.id}" type="button">
+          <span class="lock-opt-radio"></span>
+          <span class="lock-opt-body">
+            <span class="lock-opt-title">${t(p.title)}</span>
+            <span class="lock-opt-desc">${t(p.desc)}</span>
+          </span>
+        </button>`
+      ).join("")}
+    </div>
+    <div class="sec-idle-wrap ${policy === "idle" ? "is-open" : ""}" id="sec-idle-wrap" ${policy === "idle" ? "" : "hidden"}>
+      <div class="sec-idle-label">${t("sec.idleMin")}</div>
+      <div class="lock-grid">
+        ${idlePresets.map((p) =>
+          `<button class="lock-opt idle-opt ${idleVal === p.value ? "is-active" : ""}" data-idle="${p.value}" type="button">
+            <span class="lock-opt-radio"></span>
+            <span class="lock-opt-body"><span class="lock-opt-title">${p.label}</span></span>
+          </button>`
+        ).join("")}
+        <button class="lock-opt idle-opt idle-custom ${isCustom ? "is-active" : ""}" data-idle="custom" type="button">
+          <span class="lock-opt-radio"></span>
+          <span class="lock-opt-body">
+            <span class="lock-opt-title">${t("sec.idleCustom")}</span>
+            <input class="idle-custom-input mono" id="set-lock_idle_min" type="number" min="1" max="240" value="${esc(settings.lock_idle_min || "15")}" placeholder="${t("sec.idleCustomPh")}" ${isCustom ? "" : "disabled"}/>
+          </span>
+        </button>
+      </div>
     </div>
     <div class="sec-key">
       <div class="sec-key-title">${t("sec.changeKey")}</div>
@@ -144,7 +182,9 @@ function cardSecurity() {
         <div class="field"><label>${t("sec.newKey")}</label><input id="set-new_key" type="password" class="mono" placeholder="••••••••"></div>
         <div class="field" style="margin-bottom:0"><label>${t("sec.confirmKey")}</label><input id="set-confirm_key" type="password" class="mono" placeholder="••••••••"></div>
       </div>
-      <button class="btn btn-ghost btn-sm" id="aj-change-key" type="button">${t("sec.updateKey")}</button>
+      <button class="btn btn-secondary btn-sm sec-key-btn" id="aj-change-key" type="button">
+        <span class="sec-key-btn-ico">${ico.lock}</span>${t("sec.updateKey")}
+      </button>
     </div>
   </div>`;
 }
@@ -280,27 +320,96 @@ function wireToggles() {
 }
 
 function wireLang() {
-  const sel = $("#set-lang") as HTMLSelectElement | null;
-  if (!sel) return;
-  sel.addEventListener("change", async () => {
-    const code = sel.value;
-    settings.lang = code;
-    state.settings.lang = code;
-    setLang(code);
-    try { await api.updateSetting("lang", code); } catch {}
-    // Re-render so every string adopts the new language; the open section is
-    // preserved (activeSection) and listeners rebind fresh.
-    if (ajView) await renderAjustes(ajView);
+  // Language switching now lives in the shadcn-style dropdown (wireLangSelect).
+  // Kept as a no-op so the render wiring list stays stable.
+}
+
+function wireLangSelect() {
+  const trigger = $("#lang-trigger");
+  const menu = $("#lang-menu");
+  if (!trigger || !menu) return;
+
+  const open = () => {
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => menu.classList.add("is-open"));
+  };
+  const close = () => {
+    menu.classList.remove("is-open");
+    trigger.setAttribute("aria-expanded", "false");
+    setTimeout(() => { menu.hidden = true; }, 140);
+  };
+
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (menu.hidden) open(); else close();
+  });
+
+  $$(".lang-select-item", menu).forEach((item) =>
+    item.addEventListener("click", async () => {
+      const code = item.dataset.lang!;
+      settings.lang = code;
+      state.settings.lang = code;
+      setLang(code);
+      try { await api.updateSetting("lang", code); } catch {}
+      close();
+      if (ajView) await renderAjustes(ajView);
+    }));
+
+  // Close on outside click / Escape.
+  document.addEventListener("click", (e) => {
+    if (!menu.hidden && !$("#lang-select")!.contains(e.target as Node)) close();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) close(); });
+}
+
+function wireLockPolicy() {
+  const cards = $$(".lock-opt[data-policy]");
+  if (!cards.length) return;
+  const idleWrap = $("#sec-idle-wrap");
+
+  cards.forEach((c) =>
+    c.addEventListener("click", () => {
+      const id = c.dataset.policy!;
+      settings.lock_policy = id;
+      cards.forEach((x) => x.classList.toggle("is-active", x === c));
+      // Animate the idle options open/closed.
+      if (id === "idle") {
+        idleWrap?.classList.add("is-open");
+        idleWrap!.hidden = false;
+      } else {
+        idleWrap?.classList.remove("is-open");
+        // Let the collapse animation play before hiding.
+        window.setTimeout(() => { if (settings.lock_policy !== "idle") idleWrap!.hidden = true; }, 220);
+      }
+    }));
+
+  // Idle-minute preset cards (15 / 30 / 60 / custom).
+  const idleOpts = $$(".idle-opt");
+  const customInput = $("#set-lock_idle_min") as HTMLInputElement | null;
+  idleOpts.forEach((o) =>
+    o.addEventListener("click", () => {
+      const val = o.dataset.idle!;
+      idleOpts.forEach((x) => x.classList.toggle("is-active", x === o));
+      if (val === "custom") {
+        customInput!.disabled = false;
+        customInput?.focus();
+      } else {
+        customInput!.disabled = true;
+        settings.lock_idle_min = val;
+        customInput!.value = val;
+      }
+    }));
+  // Typing in the custom field selects the custom card.
+  customInput?.addEventListener("input", () => {
+    const customOpt = $(".idle-custom");
+    idleOpts.forEach((x) => x.classList.toggle("is-active", x === customOpt));
+    settings.lock_idle_min = customInput.value;
   });
 }
 
 function wireSecurity() {
-  const sel = $("#set-lock_policy") as HTMLSelectElement | null;
-  if (!sel) return;
-  sel.addEventListener("change", () => {
-    const idle = $("#sec-idle-wrap")!;
-    idle.classList.toggle("is-hidden", sel.value !== "idle");
-  });
+  // Lock-policy cards are wired in wireLockPolicy. Nothing else here.
 }
 
 async function changeKey() {
@@ -310,9 +419,10 @@ async function changeKey() {
   if (!k1) { toast(t("sec.keyEnter")); return; }
   if (k1.length < 4) { toast(t("sec.keyShort")); return; }
   if (k1 !== k2) { toast(t("sec.keyMismatch")); return; }
-  const prev = btn.textContent;
+  const prev = btn.innerHTML;
   btn.disabled = true;
-  btn.textContent = t("sec.updating");
+  btn.classList.add("is-busy");
+  btn.innerHTML = `<span class="btn-spin"></span> ${t("sec.updating")}`;
   try {
     await api.setLockKey(k1);
     ($("#set-new_key") as HTMLInputElement).value = "";
@@ -322,7 +432,8 @@ async function changeKey() {
     toast(t("sec.keyError") + e);
   } finally {
     btn.disabled = false;
-    btn.textContent = prev;
+    btn.classList.remove("is-busy");
+    btn.innerHTML = prev;
   }
 }
 
