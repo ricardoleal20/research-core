@@ -592,7 +592,20 @@
       "create": "Crear",
       "projectName": "Nombre del proyecto",
       "projectField": "Campo de investigación",
-      "empty": "Aún no hay proyectos"
+      "empty": "Aún no hay proyectos",
+      "npChooseHow": "¿Cómo quieres empezar?",
+      "npNormal": "Nuevo proyecto normal",
+      "npNormalDesc": "Nombre y área, desde cero.",
+      "npYaml": "Nuevo proyecto con .yaml",
+      "npYamlDesc": "Importa la configuración desde un YAML.",
+      "npAi": "Nuevo proyecto con IA",
+      "npAiDesc": "Describe tu proyecto y la IA lo arma.",
+      "npPromptLabel": "Describe tu proyecto",
+      "npYamlDefault": "Proyecto YAML",
+      "npAiDefault": "Proyecto IA",
+      "npFolder": "Carpeta del proyecto",
+      "npFolderHint": "Si no eliges carpeta, se guardará en la carpeta por defecto:",
+      "npDefault": "por defecto"
     }
   },
   "en": {
@@ -920,7 +933,20 @@
       "create": "Create",
       "projectName": "Project name",
       "projectField": "Research field",
-      "empty": "No projects yet"
+      "empty": "No projects yet",
+      "npChooseHow": "How do you want to start?",
+      "npNormal": "New project (normal)",
+      "npNormalDesc": "Name and field, from scratch.",
+      "npYaml": "New project with .yaml",
+      "npYamlDesc": "Import the configuration from a YAML.",
+      "npAi": "New project with AI",
+      "npAiDesc": "Describe your project and the AI builds it.",
+      "npPromptLabel": "Describe your project",
+      "npYamlDefault": "YAML project",
+      "npAiDefault": "AI project",
+      "npFolder": "Project folder",
+      "npFolderHint": "If you don't pick a folder, it will be saved to the default folder:",
+      "npDefault": "default"
     }
   },
   "pt": {
@@ -1248,7 +1274,20 @@
       "create": "Criar",
       "projectName": "Nome do projeto",
       "projectField": "Área de investigação",
-      "empty": "Ainda não há projetos"
+      "empty": "Ainda não há projetos",
+      "npChooseHow": "Como queres começar?",
+      "npNormal": "Novo projeto normal",
+      "npNormalDesc": "Nome e área, do zero.",
+      "npYaml": "Novo projeto com .yaml",
+      "npYamlDesc": "Importa a configuração de um YAML.",
+      "npAi": "Novo projeto com IA",
+      "npAiDesc": "Descreve o teu projeto e a IA monta-o.",
+      "npPromptLabel": "Descreve o teu projeto",
+      "npYamlDefault": "Projeto YAML",
+      "npAiDefault": "Projeto IA",
+      "npFolder": "Pasta do projeto",
+      "npFolderHint": "Se não escolheres uma pasta, será guardado na pasta predefinida:",
+      "npDefault": "predefinida"
     }
   },
   "fr": {
@@ -1576,7 +1615,20 @@
       "create": "Créer",
       "projectName": "Nom du projet",
       "projectField": "Domaine de recherche",
-      "empty": "Aucun projet pour l'instant"
+      "empty": "Aucun projet pour l'instant",
+      "npChooseHow": "Comment voulez-vous commencer ?",
+      "npNormal": "Nouveau projet normal",
+      "npNormalDesc": "Nom et domaine, de zéro.",
+      "npYaml": "Nouveau projet avec .yaml",
+      "npYamlDesc": "Importe la configuration depuis un YAML.",
+      "npAi": "Nouveau projet avec IA",
+      "npAiDesc": "Décrivez votre projet et l'IA l'assemble.",
+      "npPromptLabel": "Décrivez votre projet",
+      "npYamlDefault": "Projet YAML",
+      "npAiDefault": "Projet IA",
+      "npFolder": "Dossier du projet",
+      "npFolderHint": "Si vous ne choisissez pas de dossier, il sera enregistré dans le dossier par défaut :",
+      "npDefault": "par défaut"
     }
   }
 };
@@ -1720,6 +1772,8 @@
       activeProjectId: 'p1',
       projectMenuOpen: false,
       newProjectOpen: false,
+      newProjectMode: null,
+      newProjectFolder: '',
     };
     const savedTheme = localStorage.getItem('rc-theme');
     const savedAccent = localStorage.getItem('rc-accent');
@@ -2904,36 +2958,127 @@
     function openNewProject() {
       state.projectMenuOpen = false;
       state.newProjectOpen = true;
+      state.newProjectMode = null;
+      state.newProjectFolder = '';
       render();
     }
-    function closeNewProject() { state.newProjectOpen = false; render(); }
+    function closeNewProject() { state.newProjectOpen = false; state.newProjectMode = null; state.newProjectFolder = ''; render(); }
+    function setNewProjectMode(mode) { state.newProjectMode = mode; render(); }
+    async function pickNewProjectFolder() {
+      if (window.showDirectoryPicker) {
+        try {
+          const dir = await window.showDirectoryPicker();
+          state.newProjectFolder = dir.name;
+          const inp = document.getElementById('new-proj-folder');
+          if (inp) inp.value = dir.name;
+          return;
+        } catch (e) { /* user cancelled or unsupported */ }
+      }
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.webkitdirectory = true;
+      input.directory = true;
+      input.onchange = (e) => {
+        const files = e.target.files;
+        if (files && files.length) {
+          const path = files[0].webkitRelativePath || files[0].name;
+          const folder = path.split('/')[0] || files[0].name;
+          state.newProjectFolder = folder;
+          const inp = document.getElementById('new-proj-folder');
+          if (inp) inp.value = folder;
+        }
+      };
+      input.click();
+    }
     function createProjectFromDialog() {
-      const name = document.getElementById('new-proj-name')?.value.trim();
-      const field = document.getElementById('new-proj-field')?.value.trim();
-      if (!name) return;
+      const mode = state.newProjectMode || 'normal';
+      let name = '', field = '';
+      if (mode === 'normal') {
+        name = document.getElementById('new-proj-name')?.value.trim() || '';
+        field = document.getElementById('new-proj-field')?.value.trim() || '';
+        if (!name) { const el = document.getElementById('new-proj-name'); if (el) el.focus(); return; }
+      } else if (mode === 'yaml') {
+        const yaml = document.getElementById('new-proj-yaml')?.value.trim() || '';
+        if (!yaml) { const el = document.getElementById('new-proj-yaml'); if (el) el.focus(); return; }
+        const m = yaml.match(/^name:\s*(.+)$/m) || yaml.match(/"name"\s*:\s*"([^"]+)"/);
+        name = m ? m[1].trim().replace(/^["']|["']$/g, '') : t('project.npYamlDefault');
+      } else {
+        const prompt = document.getElementById('new-proj-prompt')?.value.trim() || '';
+        if (!prompt) { const el = document.getElementById('new-proj-prompt'); if (el) el.focus(); return; }
+        name = prompt.length > 42 ? prompt.slice(0, 42).trim() + '…' : prompt;
+      }
+      const folder = document.getElementById('new-proj-folder')?.value.trim() || state.newProjectFolder || state.settings.dataFolder;
       const id = 'p' + (state.projects.length + 1) + Date.now().toString(36).slice(-3);
-      state.projects.push({ id, name, field: field || '—', refs: 0 });
+      state.projects.push({ id, name, field: field || '—', refs: 0, folder });
       state.activeProjectId = id;
       state.settings.projectName = name;
       state.settings.projectField = field || '—';
       state.newProjectOpen = false;
+      state.newProjectMode = null;
+      state.newProjectFolder = '';
       navigate('dashboard');
     }
     function renderNewProjectDialog() {
       const overlay = document.createElement('div');
       overlay.className = 'rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm';
-      overlay.innerHTML = `
-        <div class="min-h-full flex items-center justify-center p-6">
-        <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
-          <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t('project.newProject')}</h3><button onclick="closeNewProject()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button></div>
+      const mode = state.newProjectMode;
+      const modes = [
+        { key: 'normal', emoji: '📄', label: t('project.npNormal'), desc: t('project.npNormalDesc') },
+        { key: 'yaml', emoji: '🧾', label: t('project.npYaml'), desc: t('project.npYamlDesc') },
+        { key: 'ai', emoji: '✨', label: t('project.npAi'), desc: t('project.npAiDesc') },
+      ];
+      const folderBlock = `
+        <div>
+          <label class="block text-sm font-medium mb-1.5">${t('project.npFolder')}</label>
+          <div class="flex gap-2">
+            <input id="new-proj-folder" value="${esc(state.newProjectFolder)}" placeholder="${esc(state.settings.dataFolder)}" class="flex-1 rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
+            <button type="button" onclick="pickNewProjectFolder()" class="inline-flex items-center justify-center rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-gray-50 transition">${t('onboarding.chooseFolder')}</button>
+          </div>
+          <p class="text-xs text-muted mt-1.5">${t('project.npFolderHint')} <span class="font-mono">${esc(state.settings.dataFolder)}</span></p>
+        </div>`;
+      let body = '';
+      if (!mode) {
+        body = `
+          <p class="text-sm text-muted mb-4">${t('project.npChooseHow')}</p>
+          <div class="space-y-3">
+            ${modes.map(m => `
+              <button type="button" onclick="setNewProjectMode('${m.key}')" class="w-full flex items-center gap-4 rounded-xl border border-border p-4 text-left hover:border-primary/40 hover:bg-primary/5 transition">
+                <span class="text-2xl shrink-0">${m.emoji}</span>
+                <span class="min-w-0">
+                  <span class="block text-sm font-medium text-foreground">${m.label}</span>
+                  <span class="block text-xs text-muted mt-0.5">${m.desc}</span>
+                </span>
+              </button>
+            `).join('')}
+          </div>`;
+      } else {
+        const modeLabel = mode === 'normal' ? t('project.npNormal') : mode === 'yaml' ? t('project.npYaml') : t('project.npAi');
+        const modeForm = mode === 'normal' ? `
+          <div><label class="block text-sm font-medium mb-1.5">${t('project.projectName')}</label><input id="new-proj-name" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></div>
+          <div><label class="block text-sm font-medium mb-1.5">${t('project.projectField')}</label><input id="new-proj-field" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`
+        : mode === 'yaml' ? `
+          <div><label class="block text-sm font-medium mb-1.5">${t('onboarding.yamlMode')}</label><textarea id="new-proj-yaml" rows="5" placeholder="${t('onboarding.yamlPlaceholder')}" class="w-full rounded-lg border border-border px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></textarea></div>`
+        : `
+          <div><label class="block text-sm font-medium mb-1.5">${t('project.npPromptLabel')}</label><textarea id="new-proj-prompt" rows="4" placeholder="${t('onboarding.promptPlaceholder')}" class="w-full rounded-lg border border-border px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></textarea></div>`;
+        body = `
           <div class="space-y-4">
-            <div><label class="block text-sm font-medium mb-1.5">${t('project.projectName')}</label><input id="new-proj-name" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('project.projectField')}</label><input id="new-proj-field" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+            <div class="flex items-center gap-2 text-xs text-muted">
+              <button type="button" onclick="setNewProjectMode(null)" class="inline-flex items-center gap-1 text-primary hover:underline">← ${t('onboarding.back')}</button>
+              <span class="font-medium text-foreground">${modeLabel}</span>
+            </div>
+            ${modeForm}
+            ${folderBlock}
           </div>
           <div class="mt-6 flex justify-end gap-2">
             ${btn({ label: t('common.cancel'), variant: 'ghost', onClick: 'closeNewProject()' })}
             ${btn({ label: t('project.create'), variant: 'default', iconName: 'plus', onClick: 'createProjectFromDialog()' })}
-          </div>
+          </div>`;
+      }
+      overlay.innerHTML = `
+        <div class="min-h-full flex items-center justify-center p-6">
+        <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
+          <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t('project.newProject')}</h3><button onclick="closeNewProject()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button></div>
+          ${body}
         </div>
         </div>`;
       document.body.appendChild(overlay);
