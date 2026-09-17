@@ -448,10 +448,16 @@
         "title": "Título",
         "authors": "Autores",
         "year": "Año",
-        "source": "Fuente"
+        "source": "Fuente",
+        "journal": "Revista / Fuente",
+        "doi": "DOI (opcional)",
+        "url": "URL (opcional)",
+        "required": "Campo obligatorio"
       },
       "detail": {
         "venue": "Publicación",
+        "doi": "DOI",
+        "url": "URL",
         "abstract": "Resumen",
         "openPdf": "Abrir PDF",
         "noAbstract": "No hay resumen disponible.",
@@ -788,10 +794,16 @@
         "title": "Title",
         "authors": "Authors",
         "year": "Year",
-        "source": "Source"
+        "source": "Source",
+        "journal": "Journal / Source",
+        "doi": "DOI (optional)",
+        "url": "URL (optional)",
+        "required": "Required field"
       },
       "detail": {
         "venue": "Venue",
+        "doi": "DOI",
+        "url": "URL",
         "abstract": "Abstract",
         "openPdf": "Open PDF",
         "noAbstract": "No abstract available.",
@@ -1128,10 +1140,16 @@
         "title": "Título",
         "authors": "Autores",
         "year": "Ano",
-        "source": "Fonte"
+        "source": "Fonte",
+        "journal": "Revista / Fonte",
+        "doi": "DOI (opcional)",
+        "url": "URL (opcional)",
+        "required": "Campo obrigatório"
       },
       "detail": {
         "venue": "Publicação",
+        "doi": "DOI",
+        "url": "URL",
         "abstract": "Resumo",
         "openPdf": "Abrir PDF",
         "noAbstract": "Nenhum resumo disponível.",
@@ -1468,10 +1486,16 @@
         "title": "Titre",
         "authors": "Auteurs",
         "year": "Année",
-        "source": "Source"
+        "source": "Source",
+        "journal": "Revue / Source",
+        "doi": "DOI (facultatif)",
+        "url": "URL (facultatif)",
+        "required": "Champ obligatoire"
       },
       "detail": {
         "venue": "Lieu de publication",
+        "doi": "DOI",
+        "url": "URL",
         "abstract": "Résumé",
         "openPdf": "Ouvrir le PDF",
         "noAbstract": "Aucun résumé disponible.",
@@ -1702,9 +1726,9 @@
         { role: 'assistant', text: t('assistant.welcome'), tool: null }
       ],
       references: [
-        { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
+        { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', doi: '10.5555/3295222.3295349', url: 'https://arxiv.org/abs/1706.03762', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
         { id: 2, title: 'BERT: Pre-training of Deep Bidirectional Transformers', authors: 'Devlin et al.', year: 2019, source: 'Zotero', tags: ['NLP', 'pretraining'], status: 'reviewed', venue: 'NAACL', abstract: 'A new language representation model which stands for Bidirectional Encoder Representations from Transformers.' },
-        { id: 3, title: 'Scaling Laws for Neural Language Models', authors: 'Kaplan et al.', year: 2020, source: 'arXiv', tags: ['scaling', 'LM'], status: 'to-review', venue: 'arXiv', abstract: 'We study empirical scaling laws for language model performance on the cross-entropy loss.' },
+        { id: 3, title: 'Scaling Laws for Neural Language Models', authors: 'Kaplan et al.', year: 2020, source: 'arXiv', tags: ['scaling', 'LM'], status: 'to-review', venue: 'arXiv', url: 'https://arxiv.org/abs/2001.08361', abstract: 'We study empirical scaling laws for language model performance on the cross-entropy loss.' },
         { id: 4, title: 'Language Models are Few-Shot Learners', authors: 'Brown et al.', year: 2020, source: 'Semantic Scholar', tags: ['GPT-3', 'few-shot'], status: 'reviewed', venue: 'NeurIPS', abstract: 'We demonstrate that scaling up language models greatly improves task-agnostic few-shot performance.' },
         { id: 5, title: 'LoRA: Low-Rank Adaptation of Large Language Models', authors: 'Hu et al.', year: 2021, source: 'arXiv', tags: ['fine-tuning', 'efficiency'], status: 'to-review', venue: 'ICLR', abstract: 'We propose LoRA, an efficient adaptation strategy that injects trainable rank decomposition matrices.' },
         { id: 6, title: 'Chain-of-Thought Prompting Elicits Reasoning', authors: 'Wei et al.', year: 2022, source: 'Zotero', tags: ['prompting', 'reasoning'], status: 'reviewed', venue: 'NeurIPS', abstract: 'Exploring how generating a chain of thought improves ability of large models to perform complex reasoning.' },
@@ -3887,16 +3911,34 @@
     // ========== DIALOGS / DRAWERS ==========
     function openAddRef() { state.addRefOpen = true; render(); }
     function closeAddRef() { state.addRefOpen = false; render(); }
+    function clearRefError(f) {
+      const input = document.getElementById('new-ref-' + f);
+      const err = document.getElementById('new-ref-' + f + '-error');
+      if (input) input.classList.remove('border-red-500');
+      if (err) err.classList.add('hidden');
+    }
+    function showRefError(f) {
+      const input = document.getElementById('new-ref-' + f);
+      const err = document.getElementById('new-ref-' + f + '-error');
+      if (input) input.classList.add('border-red-500');
+      if (err) err.classList.remove('hidden');
+    }
+    const REF_REQUIRED_FIELDS = ['title', 'authors', 'journal'];
     function renderAddRefDialog() {
       const overlay = document.createElement('div');
       overlay.className = 'rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm';
+      const req = ' <span class="text-red-500">*</span>';
+      const errP = (f) => `<p id="new-ref-${f}-error" class="hidden mt-1.5 text-xs text-red-600">${t('references.form.required')}</p>`;
       overlay.innerHTML = `
         <div class="min-h-full flex items-center justify-center p-6">
         <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
           <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t('references.add')}</h3><button onclick="closeAddRef()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button></div>
           <div class="space-y-4">
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.title')}</label><input id="new-ref-title" class="w-full rounded-lg border border-border px-4 py-2 text-sm"></div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.authors')}</label><input id="new-ref-authors" class="w-full rounded-lg border border-border px-4 py-2 text-sm"></div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.title')}${req}</label><input id="new-ref-title" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('title')" autofocus>${errP('title')}</div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.authors')}${req}</label><input id="new-ref-authors" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('authors')">${errP('authors')}</div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.journal')}${req}</label><input id="new-ref-journal" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('journal')" placeholder="${t('references.form.journal')}">${errP('journal')}</div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.doi')}</label><input id="new-ref-doi" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="10.1000/xxxx"></div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.url')}</label><input id="new-ref-url" type="url" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="https://…"></div>
             <div class="grid grid-cols-2 gap-4">
               <div><label class="block text-sm font-medium mb-1.5">${t('references.form.year')}</label><input id="new-ref-year" type="number" class="w-full rounded-lg border border-border px-4 py-2 text-sm"></div>
               <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label><select id="new-ref-source" class="w-full rounded-lg border border-border px-4 py-2 text-sm"><option>Manual</option><option>arXiv</option><option>Zotero</option><option>Semantic Scholar</option></select></div>
@@ -3912,12 +3954,23 @@
       overlay.onclick = (e) => { if (e.target === overlay) closeAddRef(); };
     }
     function saveNewRef() {
-      const title = document.getElementById('new-ref-title').value;
-      if (!title) return;
+      let firstInvalid = null;
+      for (const f of REF_REQUIRED_FIELDS) {
+        const v = document.getElementById('new-ref-' + f)?.value.trim() || '';
+        if (!v) { showRefError(f); if (!firstInvalid) firstInvalid = f; }
+        else clearRefError(f);
+      }
+      if (firstInvalid) { document.getElementById('new-ref-' + firstInvalid)?.focus(); return; }
+      const title = document.getElementById('new-ref-title').value.trim();
+      const authors = document.getElementById('new-ref-authors').value.trim();
+      const journal = document.getElementById('new-ref-journal').value.trim();
       state.references.unshift({
-        id: Date.now(), title, authors: document.getElementById('new-ref-authors').value || 'Unknown',
+        id: Date.now(), title, authors,
         year: document.getElementById('new-ref-year').value || '2026', source: document.getElementById('new-ref-source').value,
-        tags: ['new'], status: 'to-review', venue: '-', abstract: ''
+        tags: ['new'], status: 'to-review', venue: journal,
+        doi: document.getElementById('new-ref-doi')?.value.trim() || '',
+        url: document.getElementById('new-ref-url')?.value.trim() || '',
+        abstract: ''
       });
       closeAddRef();
     }
@@ -3996,6 +4049,8 @@
               <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.headers.year')}</p><p class="text-sm">${esc(r.year)}</p></div>
             </div>
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.venue')}</p><p class="text-sm">${esc(r.venue)}</p></div>
+            ${r.doi ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.doi')}</p><p class="text-sm font-mono">${esc(r.doi)}</p></div>` : ''}
+            ${r.url ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.url')}</p><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:underline break-all">${esc(r.url)}</a></div>` : ''}
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.headers.source')}</p>${badge(r.source, r.source === 'Zotero' ? 'warning' : r.source === 'arXiv' ? 'primary' : r.source === 'Semantic Scholar' ? 'success' : 'muted')}</div>
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.headers.tags')}</p><div class="flex flex-wrap gap-2">${r.tags.map(t => badge(t, 'muted')).join('')}</div></div>
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.abstract')}</p><p class="text-sm text-muted leading-relaxed">${esc(r.abstract) || t('references.detail.noAbstract')}</p></div>
