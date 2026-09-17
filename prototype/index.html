@@ -594,18 +594,17 @@
       "projectField": "Campo de investigación",
       "empty": "Aún no hay proyectos",
       "npChooseHow": "¿Cómo quieres empezar?",
-      "npNormal": "Nuevo proyecto normal",
+      "npNormal": "Nuevo proyecto (manual)",
       "npNormalDesc": "Nombre y área, desde cero.",
-      "npYaml": "Nuevo proyecto con .yaml",
-      "npYamlDesc": "Importa la configuración desde un YAML.",
       "npAi": "Nuevo proyecto con IA",
       "npAiDesc": "Describe tu proyecto y la IA lo arma.",
       "npPromptLabel": "Describe tu proyecto",
-      "npYamlDefault": "Proyecto YAML",
       "npAiDefault": "Proyecto IA",
       "npFolder": "Carpeta del proyecto",
       "npFolderHint": "Si no eliges carpeta, se guardará en la carpeta por defecto:",
-      "npDefault": "por defecto"
+      "npDefault": "por defecto",
+      "delete": "Eliminar",
+      "deleteConfirm": "¿Eliminar el proyecto «{name}»? Esta acción no se puede deshacer."
     }
   },
   "en": {
@@ -935,18 +934,17 @@
       "projectField": "Research field",
       "empty": "No projects yet",
       "npChooseHow": "How do you want to start?",
-      "npNormal": "New project (normal)",
+      "npNormal": "New project (manual info)",
       "npNormalDesc": "Name and field, from scratch.",
-      "npYaml": "New project with .yaml",
-      "npYamlDesc": "Import the configuration from a YAML.",
-      "npAi": "New project with AI",
-      "npAiDesc": "Describe your project and the AI builds it.",
+      "npAi": "New project with IA",
+      "npAiDesc": "Describe your project and the IA builds it.",
       "npPromptLabel": "Describe your project",
-      "npYamlDefault": "YAML project",
       "npAiDefault": "AI project",
       "npFolder": "Project folder",
       "npFolderHint": "If you don't pick a folder, it will be saved to the default folder:",
-      "npDefault": "default"
+      "npDefault": "default",
+      "delete": "Delete",
+      "deleteConfirm": "Delete project “{name}”? This cannot be undone."
     }
   },
   "pt": {
@@ -1276,18 +1274,17 @@
       "projectField": "Área de investigação",
       "empty": "Ainda não há projetos",
       "npChooseHow": "Como queres começar?",
-      "npNormal": "Novo projeto normal",
+      "npNormal": "Novo projeto (manual)",
       "npNormalDesc": "Nome e área, do zero.",
-      "npYaml": "Novo projeto com .yaml",
-      "npYamlDesc": "Importa a configuração de um YAML.",
       "npAi": "Novo projeto com IA",
       "npAiDesc": "Descreve o teu projeto e a IA monta-o.",
       "npPromptLabel": "Descreve o teu projeto",
-      "npYamlDefault": "Projeto YAML",
       "npAiDefault": "Projeto IA",
       "npFolder": "Pasta do projeto",
       "npFolderHint": "Se não escolheres uma pasta, será guardado na pasta predefinida:",
-      "npDefault": "predefinida"
+      "npDefault": "predefinida",
+      "delete": "Eliminar",
+      "deleteConfirm": "Eliminar o projeto “{name}”? Esta ação não pode ser desfeita."
     }
   },
   "fr": {
@@ -1617,18 +1614,17 @@
       "projectField": "Domaine de recherche",
       "empty": "Aucun projet pour l'instant",
       "npChooseHow": "Comment voulez-vous commencer ?",
-      "npNormal": "Nouveau projet normal",
+      "npNormal": "Nouveau projet (manuel)",
       "npNormalDesc": "Nom et domaine, de zéro.",
-      "npYaml": "Nouveau projet avec .yaml",
-      "npYamlDesc": "Importe la configuration depuis un YAML.",
       "npAi": "Nouveau projet avec IA",
       "npAiDesc": "Décrivez votre projet et l'IA l'assemble.",
       "npPromptLabel": "Décrivez votre projet",
-      "npYamlDefault": "Projet YAML",
       "npAiDefault": "Projet IA",
       "npFolder": "Dossier du projet",
       "npFolderHint": "Si vous ne choisissez pas de dossier, il sera enregistré dans le dossier par défaut :",
-      "npDefault": "par défaut"
+      "npDefault": "par défaut",
+      "delete": "Supprimer",
+      "deleteConfirm": "Supprimer le projet « {name} » ? Cette action est irréversible."
     }
   }
 };
@@ -1853,6 +1849,7 @@
         folder: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>`,
         chevron: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>`,
         chevronDown: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/></svg>`,
+        trash: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>`,
         close: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>`,
         command: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>`,
         more: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z"/></svg>`,
@@ -2905,7 +2902,7 @@
               <div class="flex items-center gap-4">
                 <div class="relative">
                   <button onclick="toggleProjectMenu(event)" class="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium text-foreground hover:bg-gray-100 transition ring-focus">
-                    ${icon('folder', 'w-4 h-4 text-muted')} <span class="max-w-[200px] truncate">${esc(activeProject().name)}</span> ${icon('chevronDown', 'w-4 h-4 text-muted')}
+                    ${icon('folder', 'w-4 h-4 text-muted')} <span class="max-w-[200px] truncate">${esc(activeProject()?.name || t('project.empty'))}</span> ${icon('chevronDown', 'w-4 h-4 text-muted')}
                   </button>
                   ${state.projectMenuOpen ? renderProjectMenu() : ''}
                 </div>
@@ -2934,13 +2931,16 @@
           </div>
           <div class="max-h-72 overflow-y-auto py-1">
             ${state.projects.map(p => `
-              <button onclick="switchProject('${p.id}')" class="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-gray-50 transition">
-                <div class="min-w-0">
-                  <p class="text-sm font-medium truncate ${p.id === state.activeProjectId ? 'text-primary' : 'text-foreground'}">${esc(p.name)}</p>
-                  <p class="text-xs text-muted truncate">${esc(p.field)} · ${p.refs} ${t('project.refs')}</p>
-                </div>
-                ${p.id === state.activeProjectId ? `<span class="text-xs font-medium text-primary shrink-0">${t('project.active')}</span>` : ''}
-              </button>
+              <div class="flex items-center gap-1 px-2 py-1">
+                <button onclick="switchProject('${p.id}')" class="min-w-0 flex-1 flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left hover:bg-gray-50 transition">
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium truncate ${p.id === state.activeProjectId ? 'text-primary' : 'text-foreground'}">${esc(p.name)}</p>
+                    <p class="text-xs text-muted truncate">${esc(p.field)} · ${p.refs} ${t('project.refs')}</p>
+                  </div>
+                  ${p.id === state.activeProjectId ? `<span class="text-xs font-medium text-primary shrink-0">${t('project.active')}</span>` : ''}
+                </button>
+                <button onclick="deleteProject('${p.id}')" title="${t('project.delete')}" aria-label="${t('project.delete')} ${esc(p.name)}" class="shrink-0 p-1.5 rounded-lg text-muted hover:text-red-600 hover:bg-red-50 transition">${icon('trash', 'w-4 h-4')}</button>
+              </div>
             `).join('') || `<p class="px-3 py-4 text-sm text-muted text-center">${t('project.empty')}</p>`}
           </div>
           <div class="border-t border-border p-2">
@@ -2954,6 +2954,18 @@
       state.settings.projectField = activeProject().field;
       state.projectMenuOpen = false;
       navigate('dashboard');
+    }
+    function deleteProject(id) {
+      const p = state.projects.find(x => x.id === id);
+      if (!p) return;
+      if (!window.confirm(t('project.deleteConfirm').replace('{name}', p.name))) return;
+      state.projects = state.projects.filter(x => x.id !== id);
+      if (state.activeProjectId === id) state.activeProjectId = state.projects[0]?.id || null;
+      if (state.activeProjectId && activeProject()) {
+        state.settings.projectName = activeProject().name;
+        state.settings.projectField = activeProject().field;
+      }
+      render();
     }
     function openNewProject() {
       state.projectMenuOpen = false;
@@ -2997,11 +3009,6 @@
         name = document.getElementById('new-proj-name')?.value.trim() || '';
         field = document.getElementById('new-proj-field')?.value.trim() || '';
         if (!name) { const el = document.getElementById('new-proj-name'); if (el) el.focus(); return; }
-      } else if (mode === 'yaml') {
-        const yaml = document.getElementById('new-proj-yaml')?.value.trim() || '';
-        if (!yaml) { const el = document.getElementById('new-proj-yaml'); if (el) el.focus(); return; }
-        const m = yaml.match(/^name:\s*(.+)$/m) || yaml.match(/"name"\s*:\s*"([^"]+)"/);
-        name = m ? m[1].trim().replace(/^["']|["']$/g, '') : t('project.npYamlDefault');
       } else {
         const prompt = document.getElementById('new-proj-prompt')?.value.trim() || '';
         if (!prompt) { const el = document.getElementById('new-proj-prompt'); if (el) el.focus(); return; }
@@ -3023,9 +3030,8 @@
       overlay.className = 'rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm';
       const mode = state.newProjectMode;
       const modes = [
-        { key: 'normal', emoji: '📄', label: t('project.npNormal'), desc: t('project.npNormalDesc') },
-        { key: 'yaml', emoji: '🧾', label: t('project.npYaml'), desc: t('project.npYamlDesc') },
-        { key: 'ai', emoji: '✨', label: t('project.npAi'), desc: t('project.npAiDesc') },
+        { key: 'normal', iconName: 'book', label: t('project.npNormal'), desc: t('project.npNormalDesc') },
+        { key: 'ai', iconName: 'sparkle', label: t('project.npAi'), desc: t('project.npAiDesc') },
       ];
       const folderBlock = `
         <div>
@@ -3043,7 +3049,7 @@
           <div class="space-y-3">
             ${modes.map(m => `
               <button type="button" onclick="setNewProjectMode('${m.key}')" class="w-full flex items-center gap-4 rounded-xl border border-border p-4 text-left hover:border-primary/40 hover:bg-primary/5 transition">
-                <span class="text-2xl shrink-0">${m.emoji}</span>
+                <span class="shrink-0 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">${icon(m.iconName, 'w-5 h-5')}</span>
                 <span class="min-w-0">
                   <span class="block text-sm font-medium text-foreground">${m.label}</span>
                   <span class="block text-xs text-muted mt-0.5">${m.desc}</span>
@@ -3052,12 +3058,10 @@
             `).join('')}
           </div>`;
       } else {
-        const modeLabel = mode === 'normal' ? t('project.npNormal') : mode === 'yaml' ? t('project.npYaml') : t('project.npAi');
+        const modeLabel = mode === 'normal' ? t('project.npNormal') : t('project.npAi');
         const modeForm = mode === 'normal' ? `
           <div><label class="block text-sm font-medium mb-1.5">${t('project.projectName')}</label><input id="new-proj-name" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></div>
           <div><label class="block text-sm font-medium mb-1.5">${t('project.projectField')}</label><input id="new-proj-field" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`
-        : mode === 'yaml' ? `
-          <div><label class="block text-sm font-medium mb-1.5">${t('onboarding.yamlMode')}</label><textarea id="new-proj-yaml" rows="5" placeholder="${t('onboarding.yamlPlaceholder')}" class="w-full rounded-lg border border-border px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></textarea></div>`
         : `
           <div><label class="block text-sm font-medium mb-1.5">${t('project.npPromptLabel')}</label><textarea id="new-proj-prompt" rows="4" placeholder="${t('onboarding.promptPlaceholder')}" class="w-full rounded-lg border border-border px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" autofocus></textarea></div>`;
         body = `
@@ -3490,7 +3494,7 @@
             <div>
               <p class="caption text-muted mb-1">${t('actions.title')}</p>
               <h1 class="display-md">${t('actions.title')}</h1>
-              <p class="text-sm text-muted mt-1">${esc(activeProject().name)} · <span class="tabular">${items.length}</span> ${t('actions.counts.tasks')}</p>
+              <p class="text-sm text-muted mt-1">${esc(activeProject()?.name || t('project.empty'))} · <span class="tabular">${items.length}</span> ${t('actions.counts.tasks')}</p>
             </div>
             ${btn({ label: t('actions.add'), variant: 'default', size: 'sm', iconName: 'plus', onClick: 'openAddAction()' })}
           </div>
