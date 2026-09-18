@@ -4058,7 +4058,7 @@
       if (m.role === 'user') {
         return `
         <div class="flex justify-end${anim}">
-          <div class="max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white px-3 py-1.5 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
+          <div class="max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white px-2.5 py-1 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
             ${esc(m.text)}
             ${m.attachments && m.attachments.length ? `<div class="mt-2.5 flex flex-wrap gap-1.5">${m.attachments.map(a => `<span class="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-2 py-1 text-xs font-medium">${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3 h-3')} ${esc(a.name)}</span>`).join('')}</div>` : ''}
           </div>
@@ -4076,7 +4076,7 @@
           <div ${m.streaming ? 'id="chat-thoughts" ' : ''}class="${thoughtsOpen ? '' : 'hidden'}rounded-xl border border-border bg-gray-50 px-4 py-3 mb-2 space-y-1.5">
             ${m.thoughts.map(th => `<p class="text-xs text-muted leading-relaxed">${esc(th)}</p>`).join('')}
           </div>` : ''}
-          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground px-3 py-1.5 text-sm leading-relaxed whitespace-pre-wrap break-words">
+          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground px-2.5 py-1 text-sm leading-relaxed whitespace-pre-wrap break-words">
             ${m.streaming ? `<span id="chat-stream-text">${esc(m.text)}</span><span class="inline-block w-1.5 h-4 align-[-2px] rounded-sm bg-foreground/60 animate-pulse ml-0.5"></span>` : esc(m.text)}
             ${m.tool ? `<div class="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-muted">${icon('bolt', 'w-3 h-3 text-primary')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
           </div>
