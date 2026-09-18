@@ -195,6 +195,14 @@
     }
     @keyframes rcSidebarFade { from { opacity: 0; } to { opacity: 1; } }
     .animate-rc-sidebar-fade { animation: rcSidebarFade 260ms ease-out 60ms both; }
+    @keyframes rcOrb {
+      0%, 80%, 100% { transform: scale(0.55); opacity: 0.35; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+    .rc-orb { width: 7px; height: 7px; border-radius: 9999px; background: var(--accent, hsl(211 58% 45%)); display: inline-block; animation: rcOrb 1.1s ease-in-out infinite; }
+    .rc-orb:nth-child(2) { animation-delay: 0.15s; }
+    .rc-orb:nth-child(3) { animation-delay: 0.3s; }
+    html.rc-no-motion .rc-orb { animation: none; opacity: 0.5; }
     html.dark .rc-wizard-wave::before { opacity: 0.35; }
     html.rc-no-motion .rc-wizard-wave::before { animation: none; }
     @keyframes progressFill {
@@ -494,8 +502,52 @@
       "attach": "Adjuntar",
       "tool": "Usó la herramienta",
       "suggested": "¿Cuáles son los vacíos principales?|Resume los hallazgos de atención|Busca papers recientes en arXiv",
-      "response": "He analizado tu consulta. Según las referencias seleccionadas, el mecanismo de atención sigue siendo dominante, pero Mamba propone una alternativa de complejidad lineal que podría ser relevante para tu proyecto.",
-      "welcome": "Hola. Soy el asistente de ResearchCore. Pregúntame sobre las referencias de tu proyecto."
+      "response": "He analizado tu consulta sobre «{project}». Según tus referencias, el mecanismo de atención sigue siendo dominante, pero Mamba propone una alternativa de complejidad lineal que podría ser relevante. Te sugiero revisar los papers etiquetados como «to-review» y crear acciones de seguimiento.",
+      "welcome": "Hola. Soy el asistente de ResearchCore. Pregúntame sobre las referencias de tu proyecto.",
+      "welcomeTitle": "Bienvenido",
+      "welcomeSub": "Pregúntame lo que sea sobre tu investigación.",
+      "suggest1": "Resume mis últimas referencias",
+      "suggest2": "Encuentra vacíos en mi revisión de literatura",
+      "suggest3": "Redacta la sección de trabajos relacionados",
+      "suggest4": "Sugiéreme una metodología para mi revisión",
+      "thinking": "Pensando",
+      "thoughtFor": "Pensó por {s}s",
+      "thought1": "Revisando las referencias del proyecto activo…",
+      "thought2": "Comparando hallazgos de atención vs. alternativas lineales…",
+      "history": "Historial de chats",
+      "newChat": "Nuevo chat",
+      "newChatTitle": "Nuevo chat",
+      "chatSettings": "Ajustes del chat",
+      "contextProjects": "Proyectos de contexto",
+      "contextProjectsHint": "Asocia otros proyectos como contexto adicional para este chat.",
+      "skills": "Skills",
+      "skillsHint": "Las skills activas se adjuntan a este chat y guían el proceso de investigación.",
+      "skillDeepResearch": "Búsqueda y síntesis profunda de literatura.",
+      "skillAcademicPaper": "Redacción de papers académicos con citas.",
+      "skillCitationCheck": "Verificación de citas y formato.",
+      "provider": "Proveedor",
+      "model": "Modelo",
+      "effort": "Effort",
+      "effortLow": "Bajo",
+      "effortMedium": "Medio",
+      "effortHigh": "Alto",
+      "today": "Hoy",
+      "yesterday": "Ayer",
+      "daysAgo": "hace {n}d",
+      "msgCount": "mensajes",
+      "emptyChats": "Sin chats guardados en este proyecto.",
+      "addImage": "Imagen",
+      "addPdf": "PDF",
+      "addLink": "Enlace",
+      "addTex": "Archivo .tex / paper",
+      "linkPrompt": "Pega el enlace:",
+      "attachmentsOnly": "Archivos adjuntos",
+      "chat1Title": "Vacíos en atención",
+      "chat1User": "¿Cuáles son los vacíos principales de mi revisión?",
+      "chat1Assistant": "Tu revisión cubre bien los mecanismos de atención, pero hay un vacío claro: alternativas de complejidad lineal (Mamba, RWKV). Sugiero añadir 2-3 referencias recientes y una acción de seguimiento.",
+      "chat2Title": "Redactar related work",
+      "chat2User": "Ayúdame a estructurar la sección de trabajos relacionados.",
+      "chat2Assistant": "Te propongo agrupar por familias: arquitecturas de atención, eficiencia (LoRA), y modelos de estado espacial. Con tus 10 referencias actuales hay material suficiente para 3 párrafos."
     },
     "actions": {
       "title": "Acciones",
@@ -847,8 +899,52 @@
       "attach": "Attach",
       "tool": "Used tool",
       "suggested": "What are the main gaps?|Summarize attention findings|Search recent arXiv papers",
-      "response": "I have analyzed your query. Based on the selected references, the attention mechanism remains dominant, but Mamba proposes a linear-complexity alternative that may be relevant to your project.",
-      "welcome": "Hello. I am the ResearchCore assistant. Ask me about your project references."
+      "response": "I have analyzed your query about “{project}”. Based on your references, the attention mechanism remains dominant, but Mamba proposes a linear-complexity alternative that may be relevant. I suggest reviewing the papers tagged “to-review” and creating follow-up actions.",
+      "welcome": "Hello. I am the ResearchCore assistant. Ask me about your project references.",
+      "welcomeTitle": "Welcome",
+      "welcomeSub": "Ask me anything about your research.",
+      "suggest1": "Summarize my latest references",
+      "suggest2": "Find gaps in my literature review",
+      "suggest3": "Draft the related-work section",
+      "suggest4": "Suggest a methodology for my review",
+      "thinking": "Thinking",
+      "thoughtFor": "Thought for {s}s",
+      "thought1": "Reviewing the active project's references…",
+      "thought2": "Comparing attention findings vs. linear alternatives…",
+      "history": "Chat history",
+      "newChat": "New chat",
+      "newChatTitle": "New chat",
+      "chatSettings": "Chat settings",
+      "contextProjects": "Context projects",
+      "contextProjectsHint": "Associate other projects as additional context for this chat.",
+      "skills": "Skills",
+      "skillsHint": "Active skills are attached to this chat and guide the research process.",
+      "skillDeepResearch": "Deep literature search and synthesis.",
+      "skillAcademicPaper": "Academic paper writing with citations.",
+      "skillCitationCheck": "Citation and format checking.",
+      "provider": "Provider",
+      "model": "Model",
+      "effort": "Effort",
+      "effortLow": "Low",
+      "effortMedium": "Medium",
+      "effortHigh": "High",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "daysAgo": "{n}d ago",
+      "msgCount": "messages",
+      "emptyChats": "No saved chats in this project.",
+      "addImage": "Image",
+      "addPdf": "PDF",
+      "addLink": "Link",
+      "addTex": ".tex / paper file",
+      "linkPrompt": "Paste the link:",
+      "attachmentsOnly": "Attached files",
+      "chat1Title": "Gaps in attention",
+      "chat1User": "What are the main gaps in my review?",
+      "chat1Assistant": "Your review covers attention mechanisms well, but there is a clear gap: linear-complexity alternatives (Mamba, RWKV). I suggest adding 2-3 recent references and a follow-up action.",
+      "chat2Title": "Drafting related work",
+      "chat2User": "Help me structure the related-work section.",
+      "chat2Assistant": "I suggest grouping by family: attention architectures, efficiency (LoRA), and state-space models. With your current 10 references there is enough material for 3 paragraphs."
     },
     "actions": {
       "title": "Actions",
@@ -1200,8 +1296,52 @@
       "attach": "Anexar",
       "tool": "Usou a ferramenta",
       "suggested": "Quais são as principais lacunas?|Resume as conclusões de atenção|Procura artigos recentes no arXiv",
-      "response": "Analisei a tua consulta. De acordo com as referências selecionadas, o mecanismo de atenção continua dominante, mas o Mamba propõe uma alternativa de complexidade linear que pode ser relevante para o teu projeto.",
-      "welcome": "Olá. Sou o assistente do ResearchCore. Pergunta-me sobre as referências do teu projeto."
+      "response": "Analisei a tua consulta sobre «{project}». De acordo com as tuas referências, o mecanismo de atenção continua dominante, mas o Mamba propõe uma alternativa de complexidade linear que pode ser relevante. Sugiro rever os artigos marcados como «to-review» e criar ações de seguimento.",
+      "welcome": "Olá. Sou o assistente do ResearchCore. Pergunta-me sobre as referências do teu projeto.",
+      "welcomeTitle": "Bem-vindo",
+      "welcomeSub": "Pergunta-me o que quiseres sobre a tua investigação.",
+      "suggest1": "Resume as minhas últimas referências",
+      "suggest2": "Encontra lacunas na minha revisão de literatura",
+      "suggest3": "Redige a secção de trabalhos relacionados",
+      "suggest4": "Sugere uma metodologia para a minha revisão",
+      "thinking": "A pensar",
+      "thoughtFor": "Pensou durante {s}s",
+      "thought1": "A rever as referências do projeto ativo…",
+      "thought2": "A comparar conclusões de atenção vs. alternativas lineares…",
+      "history": "Histórico de chats",
+      "newChat": "Novo chat",
+      "newChatTitle": "Novo chat",
+      "chatSettings": "Definições do chat",
+      "contextProjects": "Projetos de contexto",
+      "contextProjectsHint": "Associa outros projetos como contexto adicional para este chat.",
+      "skills": "Skills",
+      "skillsHint": "As skills ativas são anexadas a este chat e orientam o processo de investigação.",
+      "skillDeepResearch": "Busca e síntese profunda de literatura.",
+      "skillAcademicPaper": "Redação de papers académicos com citações.",
+      "skillCitationCheck": "Verificação de citações e formato.",
+      "provider": "Fornecedor",
+      "model": "Modelo",
+      "effort": "Effort",
+      "effortLow": "Baixo",
+      "effortMedium": "Médio",
+      "effortHigh": "Alto",
+      "today": "Hoje",
+      "yesterday": "Ontem",
+      "daysAgo": "há {n}d",
+      "msgCount": "mensagens",
+      "emptyChats": "Sem chats guardados neste projeto.",
+      "addImage": "Imagem",
+      "addPdf": "PDF",
+      "addLink": "Ligação",
+      "addTex": "Ficheiro .tex / paper",
+      "linkPrompt": "Cola a ligação:",
+      "attachmentsOnly": "Ficheiros anexados",
+      "chat1Title": "Lacunas em atenção",
+      "chat1User": "Quais são as principais lacunas da minha revisão?",
+      "chat1Assistant": "A tua revisão cobre bem os mecanismos de atenção, mas há uma lacuna clara: alternativas de complexidade linear (Mamba, RWKV). Sugiro adicionar 2-3 referências recentes e uma ação de seguimento.",
+      "chat2Title": "Redigir related work",
+      "chat2User": "Ajuda-me a estruturar a secção de trabalhos relacionados.",
+      "chat2Assistant": "Sugiro agrupar por famílias: arquiteturas de atenção, eficiência (LoRA) e modelos de estado espacial. Com as tuas 10 referências atuais há material suficiente para 3 parágrafos."
     },
     "actions": {
       "title": "Ações",
@@ -1553,8 +1693,52 @@
       "attach": "Joindre",
       "tool": "A utilisé l'outil",
       "suggested": "Quelles sont les principales lacunes ?|Résumez les résultats sur l'attention|Recherchez des articles récents sur arXiv",
-      "response": "J'ai analysé votre demande. D'après les références sélectionnées, le mécanisme d'attention reste dominant, mais Mamba propose une alternative de complexité linéaire qui pourrait être pertinente pour votre projet.",
-      "welcome": "Bonjour. Je suis l'assistant ResearchCore. Posez-moi des questions sur les références de votre projet."
+      "response": "J'ai analysé votre demande sur « {project} ». D'après vos références, le mécanisme d'attention reste dominant, mais Mamba propose une alternative de complexité linéaire qui pourrait être pertinente. Je suggère de revoir les articles marqués « to-review » et de créer des actions de suivi.",
+      "welcome": "Bonjour. Je suis l'assistant ResearchCore. Posez-moi des questions sur les références de votre projet.",
+      "welcomeTitle": "Bienvenue",
+      "welcomeSub": "Posez-moi toutes vos questions sur votre recherche.",
+      "suggest1": "Résumer mes dernières références",
+      "suggest2": "Trouver les lacunes de ma revue de littérature",
+      "suggest3": "Rédiger la section travaux liés",
+      "suggest4": "Me suggérer une méthodologie pour ma revue",
+      "thinking": "Réflexion",
+      "thoughtFor": "A réfléchi pendant {s}s",
+      "thought1": "Révision des références du projet actif…",
+      "thought2": "Comparaison des résultats d'attention vs. alternatives linéaires…",
+      "history": "Historique des chats",
+      "newChat": "Nouveau chat",
+      "newChatTitle": "Nouveau chat",
+      "chatSettings": "Paramètres du chat",
+      "contextProjects": "Projets de contexte",
+      "contextProjectsHint": "Associez d'autres projets comme contexte supplémentaire pour ce chat.",
+      "skills": "Skills",
+      "skillsHint": "Les skills actives sont jointes à ce chat et guident le processus de recherche.",
+      "skillDeepResearch": "Recherche et synthèse approfondie de la littérature.",
+      "skillAcademicPaper": "Rédaction d'articles académiques avec citations.",
+      "skillCitationCheck": "Vérification des citations et du format.",
+      "provider": "Fournisseur",
+      "model": "Modèle",
+      "effort": "Effort",
+      "effortLow": "Faible",
+      "effortMedium": "Moyen",
+      "effortHigh": "Élevé",
+      "today": "Aujourd'hui",
+      "yesterday": "Hier",
+      "daysAgo": "il y a {n}j",
+      "msgCount": "messages",
+      "emptyChats": "Aucun chat enregistré dans ce projet.",
+      "addImage": "Image",
+      "addPdf": "PDF",
+      "addLink": "Lien",
+      "addTex": "Fichier .tex / paper",
+      "linkPrompt": "Collez le lien :",
+      "attachmentsOnly": "Fichiers joints",
+      "chat1Title": "Lacunes en attention",
+      "chat1User": "Quelles sont les principales lacunes de ma revue ?",
+      "chat1Assistant": "Votre revue couvre bien les mécanismes d'attention, mais il y a une lacune claire : les alternatives de complexité linéaire (Mamba, RWKV). Je suggère d'ajouter 2-3 références récentes et une action de suivi.",
+      "chat2Title": "Rédiger les travaux liés",
+      "chat2User": "Aidez-moi à structurer la section des travaux liés.",
+      "chat2Assistant": "Je suggère de grouper par familles : architectures d'attention, efficacité (LoRA), et modèles à espace d'état. Avec vos 10 références actuelles, il y a assez de matière pour 3 paragraphes."
     },
     "actions": {
       "title": "Actions",
@@ -1752,9 +1936,28 @@
       reviewRunning: false,
       reviewProgress: 0,
       chatInput: '',
-      messages: [
-        { role: 'assistant', text: t('assistant.welcome'), tool: null }
+      messages: [],
+      chats: [
+        { id: 'c1', projectId: 'p1', title: t('assistant.chat1Title'), updatedDays: 0, contextProjectIds: [], skillIds: ['deep-research'],
+          messages: [
+            { role: 'user', text: t('assistant.chat1User'), tool: null },
+            { role: 'assistant', text: t('assistant.chat1Assistant'), tool: null },
+          ] },
+        { id: 'c2', projectId: 'p1', title: t('assistant.chat2Title'), updatedDays: 1, contextProjectIds: ['p2'], skillIds: [],
+          messages: [
+            { role: 'user', text: t('assistant.chat2User'), tool: null },
+            { role: 'assistant', text: t('assistant.chat2Assistant'), tool: null },
+          ] },
+        { id: 'c3', projectId: 'p2', title: 'Bayesian methods', updatedDays: 2, contextProjectIds: [], skillIds: [], messages: [] },
+        { id: 'c4', projectId: 'p2', title: 'Climate data', updatedDays: 4, contextProjectIds: [], skillIds: [], messages: [] },
       ],
+      activeChatId: 'c1',
+      chatHistoryOpen: false,
+      chatSettingsOpen: false,
+      chatAttachments: [],
+      chatThinking: false,
+      chatConfig: { provider: 'Personal', model: null, effort: 'medium' },
+      chatSettingsDraft: { contextProjectIds: [], skillIds: [] },
       references: [
         { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', doi: '10.5555/3295222.3295349', url: 'https://arxiv.org/abs/1706.03762', pdfPath: '~/ResearchCore/Data/pdfs/attention-is-all-you-need.pdf', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
         { id: 2, title: 'BERT: Pre-training of Deep Bidirectional Transformers', authors: 'Devlin et al.', year: 2019, source: 'Zotero', tags: ['NLP', 'pretraining'], status: 'reviewed', venue: 'NAACL', abstract: 'A new language representation model which stands for Bidirectional Encoder Representations from Transformers.' },
@@ -1906,6 +2109,11 @@
         trash: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>`,
         eye: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`,
         eyeOff: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"/></svg>`,
+        image: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"/></svg>`,
+        link: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg>`,
+        fileText: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>`,
+        code: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>`,
+        history: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
         close: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>`,
         command: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>`,
         more: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z"/></svg>`,
@@ -2044,6 +2252,8 @@
       if (state.addActionOpen) renderAddActionDialog();
       if (state.newProjectOpen) renderNewProjectDialog();
       if (state.actionDetailOpen) renderActionDetailDrawer();
+      if (state.chatHistoryOpen) renderChatHistoryDrawer();
+      if (state.chatSettingsOpen) renderChatSettingsDialog();
     }
 
     function isWelcomeScreen() {
@@ -3103,6 +3313,9 @@
       state.activeProjectId = id;
       state.settings.projectName = activeProject().name;
       state.settings.projectField = activeProject().field;
+      const firstChat = state.chats.find(c => c.projectId === id);
+      state.activeChatId = firstChat ? firstChat.id : null;
+      if (firstChat && firstChat.config) state.chatConfig = { provider: 'Personal', model: null, effort: 'medium', ...firstChat.config };
       state.projectMenuOpen = false;
       navigate('dashboard');
     }
@@ -3543,64 +3756,369 @@
     }
 
     // ========== ASSISTANT ==========
+    const CHAT_SKILLS = [
+      { id: 'deep-research', label: 'deep-research', desc: t => t('assistant.skillDeepResearch') },
+      { id: 'academic-paper', label: 'academic-paper', desc: t => t('assistant.skillAcademicPaper') },
+      { id: 'citation-check', label: 'citation-check', desc: t => t('assistant.skillCitationCheck') },
+    ];
+    function activeChat() {
+      return state.chats.find(c => c.id === state.activeChatId) || null;
+    }
+    function chatUpdatedLabel(days) {
+      if (days <= 0) return t('assistant.today');
+      if (days === 1) return t('assistant.yesterday');
+      return t('assistant.daysAgo').replace('{n}', days);
+    }
+    function currentChatModelList() {
+      const cfg = LLM_PROVIDER_CONFIG[state.chatConfig.provider] || LLM_PROVIDER_CONFIG.Personal;
+      return cfg.defaultModels.length ? cfg.defaultModels : [state.settings.llmModel];
+    }
     function renderAssistant() {
+      const chat = activeChat();
+      const msgs = chat ? chat.messages : [];
+      const empty = msgs.length === 0 && !state.chatThinking;
+      const suggestions = [t('assistant.suggest1'), t('assistant.suggest2'), t('assistant.suggest3'), t('assistant.suggest4')];
+      const composer = renderChatComposer();
       return `
-        <div class="h-[calc(100vh-140px)] flex flex-col space-y-4">
-          <div>
-            <p class="text-sm text-muted uppercase tracking-[0.06em] font-medium mb-1">${t('assistant.title')}</p>
-            <h1 class="font-serif text-4xl italic">${t('assistant.title')}</h1>
-          </div>
-          ${card(`
-            <div class="flex-1 flex flex-col min-h-0">
-              <div id="chat-list" class="flex-1 overflow-y-auto p-6 space-y-5">
-                ${state.messages.map((m, i) => `
-                  <div class="flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}">
-                    <div class="max-w-[80%] rounded-2xl px-5 py-3 text-sm leading-relaxed ${m.role === 'user' ? 'bg-primary text-white rounded-br-md' : 'bg-gray-100 text-foreground rounded-bl-md'}">
-                      ${esc(m.text)}
-                      ${m.tool ? `<div class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-black/10 px-2 py-1 text-xs font-medium">${icon('bolt', 'w-3 h-3')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
-                    </div>
-                  </div>
-                `).join('')}
-              </div>
-              <div class="border-t border-border p-4">
-                <div class="flex flex-wrap gap-2 mb-3">
-                  ${t('assistant.suggested').split('|').map(q => `
-                    <button onclick="sendSuggested('${esc(q).replace(/'/g, "\\'")}')" class="rounded-full border border-border bg-white px-3 py-1 text-xs text-muted hover:border-primary/30 hover:text-primary transition">${esc(q)}</button>
-                  `).join('')}
-                </div>
-                <div class="flex items-end gap-2 rounded-xl border border-border bg-white p-2 focus-within:ring-2 focus-within:ring-primary/30">
-                  <button class="p-2 text-muted hover:text-foreground transition" aria-label="Attach">${icon('paperclip', 'w-5 h-5')}</button>
-                  <textarea id="chat-input" rows="1" class="flex-1 resize-none bg-transparent px-2 py-2 text-sm focus:outline-none max-h-32" placeholder="${t('assistant.placeholder')}"></textarea>
-                  <button id="chat-send" class="rounded-lg bg-primary text-white p-2 hover:opacity-90 transition" aria-label="Send">${icon('arrowRight', 'w-5 h-5')}</button>
-                </div>
-              </div>
+        <div class="h-[calc(100vh-140px)] flex flex-col">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <p class="text-sm text-muted uppercase tracking-[0.06em] font-medium mb-1">${t('assistant.title')}</p>
+              <h1 class="font-serif text-4xl italic">${t('assistant.title')}</h1>
             </div>
-          `, 'flex-1 min-h-0')}
+            <div class="flex items-center gap-2">
+              <button onclick="openChatHistory()" title="${t('assistant.history')}" aria-label="${t('assistant.history')}" class="p-2 rounded-lg border border-border bg-white text-muted hover:text-foreground hover:border-primary/30 transition">${icon('history', 'w-5 h-5')}</button>
+              <button onclick="openChatSettings()" title="${t('assistant.chatSettings')}" aria-label="${t('assistant.chatSettings')}" class="p-2 rounded-lg border border-border bg-white text-muted hover:text-foreground hover:border-primary/30 transition">${icon('settings', 'w-5 h-5')}</button>
+            </div>
+          </div>
+          ${empty ? `
+          <div class="flex-1 flex flex-col items-center justify-center max-w-2xl mx-auto w-full px-4 -mt-10">
+            <h2 class="font-serif text-5xl italic mb-3 text-center">${t('assistant.welcomeTitle')}</h2>
+            <p class="text-muted mb-8 text-center">${t('assistant.welcomeSub')}</p>
+            <div class="flex flex-wrap justify-center gap-2 mb-8">
+              ${suggestions.map(q => `
+                <button type="button" onclick="fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-white px-3.5 py-1.5 text-xs text-muted hover:border-primary/40 hover:text-primary transition">${esc(q)}</button>
+              `).join('')}
+            </div>
+            <div class="w-full">${composer}</div>
+          </div>` : `
+          <div class="flex-1 flex flex-col min-h-0 max-w-2xl mx-auto w-full px-4">
+            <div id="chat-list" class="flex-1 overflow-y-auto py-2 space-y-5">
+              ${msgs.map(m => renderChatMessage(m)).join('')}
+              ${state.chatThinking ? `
+              <div class="flex justify-start">
+                <div class="inline-flex items-center gap-2.5 rounded-2xl bg-gray-100 px-4 py-3 rounded-bl-md">
+                  <span class="flex items-center gap-1.5"><span class="rc-orb"></span><span class="rc-orb"></span><span class="rc-orb"></span></span>
+                  <span class="text-sm text-muted">${t('assistant.thinking')}</span>
+                </div>
+              </div>` : ''}
+            </div>
+            <div class="pt-3">${composer}</div>
+          </div>`}
         </div>`;
+    }
+    function renderChatMessage(m) {
+      if (m.role === 'user') {
+        return `
+        <div class="flex justify-end">
+          <div class="max-w-[80%] rounded-2xl rounded-br-md bg-primary text-white px-5 py-3 text-sm leading-relaxed">
+            ${esc(m.text)}
+            ${m.attachments && m.attachments.length ? `<div class="mt-2 flex flex-wrap gap-1.5">${m.attachments.map(a => `<span class="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs font-medium">${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3 h-3')} ${esc(a.name)}</span>`).join('')}</div>` : ''}
+          </div>
+        </div>`;
+      }
+      return `
+      <div class="flex justify-start">
+        <div class="max-w-[85%]">
+          ${m.thoughts && m.thoughts.length ? `
+          <button type="button" onclick="var el = this.nextElementSibling; el.classList.toggle('hidden')" class="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition mb-1.5">
+            ${icon('sparkle', 'w-3.5 h-3.5')} ${t('assistant.thoughtFor').replace('{s}', m.thoughtSeconds || 3)} ${icon('chevronDown', 'w-3 h-3')}
+          </button>
+          <div class="hidden rounded-xl border border-border bg-gray-50 p-3 mb-2 space-y-1">
+            ${m.thoughts.map(th => `<p class="text-xs text-muted italic leading-relaxed">${esc(th)}</p>`).join('')}
+          </div>` : ''}
+          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground px-5 py-3 text-sm leading-relaxed">
+            ${m.streaming ? `<span id="chat-stream-text">${esc(m.text)}</span><span class="inline-block w-1.5 h-4 align-[-2px] bg-foreground/40 rounded-sm animate-pulse ml-0.5"></span>` : esc(m.text)}
+            ${m.tool ? `<div class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-black/10 px-2 py-1 text-xs font-medium">${icon('bolt', 'w-3 h-3')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
+          </div>
+        </div>
+      </div>`;
+    }
+    function renderChatComposer() {
+      const cfg = LLM_PROVIDER_CONFIG[state.chatConfig.provider] || LLM_PROVIDER_CONFIG.Personal;
+      const model = state.chatConfig.model && currentChatModelList().includes(state.chatConfig.model) ? state.chatConfig.model : currentChatModelList()[0];
+      state.chatConfig.model = model;
+      return `
+      <div class="rounded-2xl border border-border bg-white shadow-sm p-3 focus-within:ring-2 focus-within:ring-primary/30 transition">
+        ${state.chatAttachments.length ? `
+        <div class="flex flex-wrap gap-2 mb-2">
+          ${state.chatAttachments.map((a, i) => `
+          <span class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-gray-50 px-2.5 py-1.5 text-xs font-medium">
+            ${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3.5 h-3.5 text-muted')}
+            <span class="max-w-[180px] truncate">${esc(a.name)}</span>
+            <button type="button" onclick="removeChatAttachment(${i})" class="text-muted hover:text-red-600 transition" aria-label="${t('common.delete')}">${icon('x', 'w-3.5 h-3.5')}</button>
+          </span>
+          `).join('')}
+        </div>` : ''}
+        <textarea id="chat-input" rows="1" class="w-full resize-none bg-transparent px-1 py-1.5 text-sm focus:outline-none max-h-40" placeholder="${t('assistant.placeholder')}"></textarea>
+        <div class="flex items-center justify-between mt-1.5">
+          <div class="flex items-center gap-0.5">
+            <button type="button" onclick="attachChatFiles('image')" title="${t('assistant.addImage')}" aria-label="${t('assistant.addImage')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('image', 'w-5 h-5')}</button>
+            <button type="button" onclick="attachChatFiles('pdf')" title="${t('assistant.addPdf')}" aria-label="${t('assistant.addPdf')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('fileText', 'w-5 h-5')}</button>
+            <button type="button" onclick="attachChatLink()" title="${t('assistant.addLink')}" aria-label="${t('assistant.addLink')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('link', 'w-5 h-5')}</button>
+            <button type="button" onclick="attachChatFiles('tex')" title="${t('assistant.addTex')}" aria-label="${t('assistant.addTex')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('code', 'w-5 h-5')}</button>
+          </div>
+          <button id="chat-send" onclick="sendChatMessage()" class="rounded-xl bg-primary text-white p-2.5 hover:opacity-90 active:scale-[0.97] transition" aria-label="${t('assistant.send')}">${icon('arrowRight', 'w-5 h-5')}</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-border">
+          ${rcSelect({ id: 'chat-provider', size: 'sm', cls: 'w-auto min-w-[8.5rem]', options: LLM_PROVIDERS.map(p => ({ value: p, label: t('onboarding.providers.' + p.toLowerCase()) })), value: state.chatConfig.provider, onChange: 'onChatProviderChange()' })}
+          ${rcSelect({ id: 'chat-model', size: 'sm', cls: 'w-auto min-w-[11rem]', options: currentChatModelList(), value: model, onChange: 'onChatModelChange()' })}
+          ${rcSelect({ id: 'chat-effort', size: 'sm', cls: 'w-auto min-w-[6.5rem]', options: [{ value: 'low', label: t('assistant.effortLow') }, { value: 'medium', label: t('assistant.effortMedium') }, { value: 'high', label: t('assistant.effortHigh') }], value: state.chatConfig.effort, onChange: 'onChatEffortChange()' })}
+        </div>
+      </div>`;
     }
     function bindAssistant() {
       const input = document.getElementById('chat-input');
-      const send = document.getElementById('chat-send');
-      const sendMsg = () => {
-        const text = input.value.trim();
-        if (!text) return;
-        state.messages.push({ role: 'user', text, tool: null });
-        input.value = '';
-        input.style.height = 'auto';
-        render();
-        setTimeout(() => {
-          state.messages.push({ role: 'assistant', text: t('assistant.response'), tool: text.toLowerCase().includes('arxiv') ? 'arXiv Search' : null });
-          render();
-          const list = document.getElementById('chat-list');
-          if (list) list.scrollTop = list.scrollHeight;
-        }, 900);
-      };
-      send.onclick = sendMsg;
-      input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); } };
-      input.oninput = () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; };
-      setTimeout(() => { const list = document.getElementById('chat-list'); if (list) list.scrollTop = list.scrollHeight; }, 50);
+      if (!input) return;
+      input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } };
+      input.oninput = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; };
+      setTimeout(() => {
+        const list = document.getElementById('chat-list');
+        if (list) list.scrollTop = list.scrollHeight;
+      }, 50);
     }
-    function sendSuggested(q) { state.messages.push({ role: 'user', text: q, tool: null }); render(); }
+    function fillChatSuggestion(q) {
+      const input = document.getElementById('chat-input');
+      if (!input) return;
+      input.value = q;
+      input.focus();
+      input.dispatchEvent(new Event('input'));
+    }
+    function rerenderComposerKeep() {
+      const input = document.getElementById('chat-input');
+      const val = input ? input.value : '';
+      render();
+      const next = document.getElementById('chat-input');
+      if (next) {
+        next.value = val;
+        next.style.height = 'auto';
+        next.style.height = Math.min(next.scrollHeight, 160) + 'px';
+        next.focus();
+      }
+    }
+    function attachChatFiles(kind) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.accept = kind === 'image' ? 'image/*' : kind === 'pdf' ? 'application/pdf' : '.tex,.bib,.txt,.md';
+      input.onchange = (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length) {
+          state.chatAttachments.push(...files.map(f => ({ kind, name: f.name })));
+          rerenderComposerKeep();
+        }
+      };
+      input.click();
+    }
+    function attachChatLink() {
+      const url = window.prompt(t('assistant.linkPrompt'));
+      if (url && url.trim()) {
+        state.chatAttachments.push({ kind: 'link', name: url.trim() });
+        rerenderComposerKeep();
+      }
+    }
+    function removeChatAttachment(i) {
+      state.chatAttachments.splice(i, 1);
+      rerenderComposerKeep();
+    }
+    function ensureChat() {
+      let chat = activeChat();
+      if (!chat) {
+        chat = { id: 'c' + Date.now().toString(36), projectId: state.activeProjectId, title: t('assistant.newChatTitle'), updatedDays: 0, contextProjectIds: [], skillIds: [], messages: [] };
+        state.chats.unshift(chat);
+        state.activeChatId = chat.id;
+      }
+      return chat;
+    }
+    function sendChatMessage() {
+      const input = document.getElementById('chat-input');
+      const text = input ? input.value.trim() : '';
+      if (!text && !state.chatAttachments.length) return;
+      const chat = ensureChat();
+      chat.messages.push({ role: 'user', text: text || t('assistant.attachmentsOnly'), tool: null, attachments: state.chatAttachments.slice() });
+      chat.updatedDays = 0;
+      state.chatAttachments = [];
+      state.chatThinking = true;
+      render();
+      const list = document.getElementById('chat-list');
+      if (list) list.scrollTop = list.scrollHeight;
+      setTimeout(() => streamAssistantReply(chat), 1200);
+    }
+    function streamAssistantReply(chat) {
+      state.chatThinking = false;
+      const modelThinks = /glm|gpt-5|o1|deep|think|reason|claude|sonnet|opus/i.test(state.chatConfig.model || '');
+      const full = t('assistant.response').replace('{project}', activeProject()?.name || '');
+      const msg = { role: 'assistant', text: '', tool: /arxiv/i.test(chat.messages[chat.messages.length - 1]?.text || '') ? 'arXiv Search' : null, thoughts: modelThinks ? [t('assistant.thought1'), t('assistant.thought2')] : null, thoughtSeconds: 3, streaming: true };
+      chat.messages.push(msg);
+      render();
+      const list = document.getElementById('chat-list');
+      if (list) list.scrollTop = list.scrollHeight;
+      const words = full.split(' ');
+      let i = 0;
+      const iv = setInterval(() => {
+        i++;
+        const node = document.getElementById('chat-stream-text');
+        if (node) node.textContent = words.slice(0, i).join(' ');
+        if (i >= words.length) {
+          clearInterval(iv);
+          const node = document.getElementById('chat-stream-text');
+          if (node) {
+            node.textContent = full;
+            node.removeAttribute('id');
+            const cursor = node.nextElementSibling;
+            if (cursor) cursor.remove();
+          }
+          msg.streaming = false;
+          msg.text = full;
+          const list2 = document.getElementById('chat-list');
+          if (list2) list2.scrollTop = list2.scrollHeight;
+        }
+      }, 35);
+    }
+    function onChatProviderChange() {
+      state.chatConfig.provider = document.getElementById('chat-provider').value;
+      const models = currentChatModelList();
+      state.chatConfig.model = models[0];
+      rebuildRcSelectOptions('chat-model', models, models[0]);
+      syncChatConfigToActive();
+    }
+    function onChatModelChange() { state.chatConfig.model = document.getElementById('chat-model').value; syncChatConfigToActive(); }
+    function onChatEffortChange() { state.chatConfig.effort = document.getElementById('chat-effort').value; syncChatConfigToActive(); }
+    function syncChatConfigToActive() {
+      const chat = activeChat();
+      if (chat) chat.config = { ...state.chatConfig };
+    }
+    function openChatHistory() { state.chatHistoryOpen = true; render(); }
+    function closeChatHistory() { state.chatHistoryOpen = false; render(); }
+    function loadChat(id) {
+      const chat = state.chats.find(c => c.id === id);
+      if (!chat) return;
+      state.activeChatId = id;
+      if (chat.config) state.chatConfig = { ...state.chatConfig, ...chat.config };
+      state.chatHistoryOpen = false;
+      render();
+    }
+    function newChat() {
+      const chat = { id: 'c' + Date.now().toString(36), projectId: state.activeProjectId, title: t('assistant.newChatTitle'), updatedDays: 0, contextProjectIds: [], skillIds: [], messages: [] };
+      state.chats.unshift(chat);
+      state.activeChatId = chat.id;
+      state.chatHistoryOpen = false;
+      render();
+    }
+    function renderChatHistoryDrawer() {
+      const chats = state.chats.filter(c => c.projectId === state.activeProjectId);
+      const overlay = document.createElement('div');
+      overlay.className = 'rc-modal fixed inset-0 z-[60] flex justify-end';
+      overlay.innerHTML = `
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="closeChatHistory()"></div>
+        <div class="relative w-full max-w-md h-full bg-white border-l border-border shadow-xl p-6 overflow-y-auto animate-[fadeUp_220ms_ease-out]">
+          <div class="flex items-center justify-between mb-5">
+            <h2 class="font-serif text-2xl italic">${t('assistant.history')}</h2>
+            <button onclick="closeChatHistory()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button>
+          </div>
+          <div class="mb-4">${btn({ label: t('assistant.newChat'), variant: 'default', iconName: 'plus', cls: 'w-full', onClick: 'newChat()' })}</div>
+          <div class="space-y-2">
+            ${chats.map(c => `
+            <button onclick="loadChat('${c.id}')" class="w-full flex items-center justify-between gap-3 rounded-xl border p-4 text-left transition ${c.id === state.activeChatId ? 'border-primary/40 bg-primary/5' : 'border-border bg-white hover:border-primary/30 hover:bg-gray-50'}">
+              <span class="min-w-0">
+                <span class="block text-sm font-medium truncate">${esc(c.title)}</span>
+                <span class="block text-xs text-muted mt-0.5">${chatUpdatedLabel(c.updatedDays)} · ${c.messages.length} ${t('assistant.msgCount')}</span>
+              </span>
+              ${c.id === state.activeChatId ? `<span class="text-xs font-medium text-primary shrink-0">${t('project.active')}</span>` : icon('arrowRight', 'w-4 h-4 text-muted shrink-0')}
+            </button>
+            `).join('') || `<p class="text-sm text-muted text-center py-6">${t('assistant.emptyChats')}</p>`}
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+    function openChatSettings() {
+      const chat = ensureChat();
+      state.chatSettingsDraft = { contextProjectIds: (chat.contextProjectIds || []).slice(), skillIds: (chat.skillIds || []).slice() };
+      state.chatSettingsOpen = true;
+      render();
+    }
+    function closeChatSettings() { state.chatSettingsOpen = false; render(); }
+    function toggleChatContextProject(pid) {
+      const arr = state.chatSettingsDraft.contextProjectIds;
+      const i = arr.indexOf(pid);
+      if (i >= 0) arr.splice(i, 1); else arr.push(pid);
+      render();
+    }
+    function toggleChatSkill(sid) {
+      const arr = state.chatSettingsDraft.skillIds;
+      const i = arr.indexOf(sid);
+      if (i >= 0) arr.splice(i, 1); else arr.push(sid);
+      render();
+    }
+    function saveChatSettings() {
+      const chat = activeChat();
+      if (chat) {
+        chat.contextProjectIds = state.chatSettingsDraft.contextProjectIds.slice();
+        chat.skillIds = state.chatSettingsDraft.skillIds.slice();
+      }
+      closeChatSettings();
+    }
+    function renderChatSettingsDialog() {
+      const chat = activeChat();
+      const draft = state.chatSettingsDraft;
+      const others = state.projects.filter(p => p.id !== state.activeProjectId);
+      const overlay = document.createElement('div');
+      overlay.className = 'rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm';
+      overlay.innerHTML = `
+        <div class="min-h-full flex items-center justify-center p-6">
+        <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
+          <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t('assistant.chatSettings')}</h3><button onclick="closeChatSettings()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button></div>
+          <div class="space-y-5">
+            <div>
+              <p class="text-sm font-medium mb-1">${t('assistant.contextProjects')}</p>
+              <p class="text-xs text-muted mb-2.5">${t('assistant.contextProjectsHint')}</p>
+              <div class="space-y-2">
+                ${others.map(p => `
+                <label class="flex items-center justify-between rounded-lg border border-border p-3 cursor-pointer hover:border-primary/30 transition">
+                  <span class="min-w-0">
+                    <span class="block text-sm font-medium truncate">${esc(p.name)}</span>
+                    <span class="block text-xs text-muted truncate">${esc(p.field)}</span>
+                  </span>
+                  <input type="checkbox" class="switch" ${draft.contextProjectIds.includes(p.id) ? 'checked' : ''} onchange="toggleChatContextProject('${p.id}')">
+                </label>
+                `).join('') || `<p class="text-xs text-muted">${t('project.empty')}</p>`}
+              </div>
+            </div>
+            <div>
+              <p class="text-sm font-medium mb-1">${t('assistant.skills')}</p>
+              <p class="text-xs text-muted mb-2.5">${t('assistant.skillsHint')}</p>
+              <div class="space-y-2">
+                ${CHAT_SKILLS.map(s => `
+                <label class="flex items-center justify-between rounded-lg border border-border p-3 cursor-pointer hover:border-primary/30 transition">
+                  <span class="min-w-0">
+                    <span class="block text-sm font-medium font-mono truncate">${esc(s.label)}</span>
+                    <span class="block text-xs text-muted truncate">${esc(s.desc(t))}</span>
+                  </span>
+                  <input type="checkbox" class="switch" ${draft.skillIds.includes(s.id) ? 'checked' : ''} onchange="toggleChatSkill('${s.id}')">
+                </label>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="mt-6 flex justify-end gap-2">
+            ${btn({ label: t('common.cancel'), variant: 'ghost', onClick: 'closeChatSettings()' })}
+            ${btn({ label: t('common.save'), variant: 'default', onClick: 'saveChatSettings()' })}
+          </div>
+        </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.onclick = (e) => { if (e.target === overlay) closeChatSettings(); };
+    }
 
     // ========== ACTIONS ==========
     const ACTION_STATUSES = ['backlog', 'todo', 'in_progress', 'done'];
@@ -4241,6 +4759,8 @@
         if (state.addActionOpen) { closeAddAction(); return; }
         if (state.newProjectOpen) { closeNewProject(); return; }
         if (state.actionDetailOpen) { closeActionDetail(); return; }
+        if (state.chatHistoryOpen) { closeChatHistory(); return; }
+        if (state.chatSettingsOpen) { closeChatSettings(); return; }
         if (state.projectMenuOpen) { state.projectMenuOpen = false; render(); return; }
         closeRcSelects();
       }
