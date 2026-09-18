@@ -452,7 +452,12 @@
         "journal": "Revista / Fuente",
         "doi": "DOI (opcional)",
         "url": "URL (opcional)",
-        "required": "Campo obligatorio"
+        "required": "Campo obligatorio",
+        "fetch": "Buscar",
+        "fetching": "Buscando…",
+        "fetched": "Información encontrada",
+        "fetchError": "No se encontró información para ese DOI",
+        "doiEmpty": "Escribe un DOI primero"
       },
       "detail": {
         "venue": "Publicación",
@@ -798,7 +803,12 @@
         "journal": "Journal / Source",
         "doi": "DOI (optional)",
         "url": "URL (optional)",
-        "required": "Required field"
+        "required": "Required field",
+        "fetch": "Fetch",
+        "fetching": "Fetching…",
+        "fetched": "Info found",
+        "fetchError": "No info found for that DOI",
+        "doiEmpty": "Enter a DOI first"
       },
       "detail": {
         "venue": "Venue",
@@ -1144,7 +1154,12 @@
         "journal": "Revista / Fonte",
         "doi": "DOI (opcional)",
         "url": "URL (opcional)",
-        "required": "Campo obrigatório"
+        "required": "Campo obrigatório",
+        "fetch": "Buscar",
+        "fetching": "Buscando…",
+        "fetched": "Informação encontrada",
+        "fetchError": "Não foi encontrada informação para esse DOI",
+        "doiEmpty": "Escreve um DOI primeiro"
       },
       "detail": {
         "venue": "Publicação",
@@ -1490,7 +1505,12 @@
         "journal": "Revue / Source",
         "doi": "DOI (facultatif)",
         "url": "URL (facultatif)",
-        "required": "Champ obligatoire"
+        "required": "Champ obligatoire",
+        "fetch": "Rechercher",
+        "fetching": "Recherche…",
+        "fetched": "Informations trouvées",
+        "fetchError": "Aucune information trouvée pour ce DOI",
+        "doiEmpty": "Saisissez d'abord un DOI"
       },
       "detail": {
         "venue": "Lieu de publication",
@@ -1874,6 +1894,8 @@
         chevron: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>`,
         chevronDown: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/></svg>`,
         trash: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>`,
+        eye: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`,
+        eyeOff: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"/></svg>`,
         close: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>`,
         command: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>`,
         more: `<svg class="${s}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z"/></svg>`,
@@ -2083,7 +2105,10 @@
                 <p class="mt-4 text-center text-xs text-white/40">${t('lock.firstRunHint')}</p>
               ` : `
                 <label class="block text-sm font-medium text-white/80 mb-2">${t('lock.placeholder')}</label>
-                <input id="lock-input" type="password" class="w-full rounded-lg bg-white/10 border border-white/20 px-4 py-3 text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition" placeholder="••••••••">
+                <div class="relative">
+                  <input id="lock-input" type="password" class="w-full rounded-lg bg-white/10 border border-white/20 px-4 py-3 pr-10 text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition" placeholder="••••••••">
+                  <button type="button" onclick="togglePw('lock-input', this)" aria-label="${t('lock.placeholder')}" class="absolute right-3 top-1/2 -translate-y-1/2 text-white/50 hover:text-white/80 transition">${icon('eye', 'w-4 h-4')}</button>
+                </div>
                 <button id="lock-btn" class="mt-4 w-full rounded-lg bg-white text-[hsl(240_10%_9%)] font-semibold py-2.5 hover:bg-white/90 active:scale-[0.98] transition">${t('lock.unlock')}</button>
                 ${state.settings.vaultHint ? `<p class="mt-3 text-center text-xs text-white/50">${t('lock.hintLabel')}: ${esc(state.settings.vaultHint)}</p>` : ''}
                 <p class="mt-4 text-center text-xs text-white/40">${t('lock.idle')}</p>
@@ -2324,7 +2349,10 @@
             <div id="vault-fields" class="space-y-4 ${state.settings.vaultEnabled ? '' : 'hidden'}">
               <div>
                 <label class="block text-sm font-medium mb-1.5">${t('lock.placeholder')}</label>
-                <input id="vault-pass" type="password" value="${esc(state.settings.vaultPassphrase)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearVaultError()">
+                <div class="relative">
+                  <input id="vault-pass" type="password" value="${esc(state.settings.vaultPassphrase)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearVaultError()">
+                  <button type="button" onclick="togglePw('vault-pass', this)" aria-label="${t('lock.placeholder')}" class="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-foreground transition">${icon('eye', 'w-4 h-4')}</button>
+                </div>
                 <p id="vault-pass-error" class="hidden mt-1.5 text-xs text-red-600">${t('onboarding.vaultRequired')}</p>
               </div>
               <div>
@@ -2769,6 +2797,14 @@
       const err = document.getElementById('vault-pass-error');
       if (input) input.classList.remove('border-red-500', 'focus:ring-red-500/30');
       if (err) err.classList.add('hidden');
+    }
+
+    function togglePw(id, btn) {
+      const input = document.getElementById(id);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      if (btn) btn.innerHTML = icon(show ? 'eyeOff' : 'eye', 'w-4 h-4');
     }
 
     function showVaultError() {
@@ -3767,7 +3803,7 @@
       else if (activeTab === 'vault') content = `
         <div class="space-y-5">
           <label class="flex items-center justify-between rounded-lg border border-border p-4"><span class="text-sm font-medium">${t('onboarding.vaultPass')}</span><input type="checkbox" class="switch" ${state.settings.vaultEnabled?'checked':''} onchange="state.settings.vaultEnabled=this.checked; render();"></label>
-          <div><label class="block text-sm font-medium mb-1.5">${t('lock.placeholder')}</label><input id="set-pass" type="password" value="${esc(state.settings.vaultPassphrase)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearSetPassError()"><p id="set-pass-error" class="hidden mt-1.5 text-xs text-red-600">${t('onboarding.vaultRequired')}</p></div>
+          <div><label class="block text-sm font-medium mb-1.5">${t('lock.placeholder')}</label><div class="relative"><input id="set-pass" type="password" value="${esc(state.settings.vaultPassphrase)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearSetPassError()"><button type="button" onclick="togglePw('set-pass', this)" aria-label="${t('lock.placeholder')}" class="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-foreground transition">${icon('eye', 'w-4 h-4')}</button></div><p id="set-pass-error" class="hidden mt-1.5 text-xs text-red-600">${t('onboarding.vaultRequired')}</p></div>
           <div><label class="block text-sm font-medium mb-1.5">${t('onboarding.vaultHint')}</label><input id="set-hint" type="text" value="${esc(state.settings.vaultHint)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm"></div>
           <div><label class="block text-sm font-medium mb-1.5">${t('onboarding.timeout')}</label><input id="set-timeout" type="number" value="${esc(state.settings.idleTimeout)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm"></div>
           ${btn({ label: t('common.save'), variant: 'default', onClick: 'saveSettingsVault()' })}
@@ -3937,11 +3973,18 @@
             <div><label class="block text-sm font-medium mb-1.5">${t('references.form.title')}${req}</label><input id="new-ref-title" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('title')" autofocus>${errP('title')}</div>
             <div><label class="block text-sm font-medium mb-1.5">${t('references.form.authors')}${req}</label><input id="new-ref-authors" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('authors')">${errP('authors')}</div>
             <div><label class="block text-sm font-medium mb-1.5">${t('references.form.journal')}${req}</label><input id="new-ref-journal" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('journal')" placeholder="${t('references.form.journal')}">${errP('journal')}</div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.doi')}</label><input id="new-ref-doi" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="10.1000/xxxx"></div>
+            <div>
+              <label class="block text-sm font-medium mb-1.5">${t('references.form.doi')}</label>
+              <div class="flex gap-2">
+                <input id="new-ref-doi" class="flex-1 rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="10.1000/xxxx">
+                <button type="button" id="doi-fetch-btn" onclick="fetchDoi()" class="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-gray-50 transition">${icon('search', 'w-4 h-4')} ${t('references.form.fetch')}</button>
+              </div>
+              <p id="new-ref-doi-status" class="hidden mt-1.5 text-xs"></p>
+            </div>
             <div><label class="block text-sm font-medium mb-1.5">${t('references.form.url')}</label><input id="new-ref-url" type="url" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="https://…"></div>
             <div class="grid grid-cols-2 gap-4">
-              <div><label class="block text-sm font-medium mb-1.5">${t('references.form.year')}</label><input id="new-ref-year" type="number" class="w-full rounded-lg border border-border px-4 py-2 text-sm"></div>
-              <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label><select id="new-ref-source" class="w-full rounded-lg border border-border px-4 py-2 text-sm"><option>Manual</option><option>arXiv</option><option>Zotero</option><option>Semantic Scholar</option></select></div>
+              <div><label class="block text-sm font-medium mb-1.5">${t('references.form.year')}</label><select id="new-ref-year" class="w-full rounded-lg border border-border bg-white px-4 py-2 text-sm">${Array.from({ length: 100 }, (_, i) => new Date().getFullYear() - i).map(y => `<option value="${y}">${y}</option>`).join('')}</select></div>
+              <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label><select id="new-ref-source" class="w-full rounded-lg border border-border bg-white px-4 py-2 text-sm"><option>Manual</option><option>arXiv</option><option>Zotero</option><option>Semantic Scholar</option></select></div>
             </div>
           </div>
           <div class="mt-6 flex justify-end gap-2">
@@ -3953,6 +3996,43 @@
       document.body.appendChild(overlay);
       overlay.onclick = (e) => { if (e.target === overlay) closeAddRef(); };
     }
+    async function fetchDoi() {
+      const doi = document.getElementById('new-ref-doi')?.value.trim() || '';
+      const status = document.getElementById('new-ref-doi-status');
+      const btn = document.getElementById('doi-fetch-btn');
+      const setStatus = (msg, cls) => { if (status) { status.textContent = msg; status.className = 'mt-1.5 text-xs ' + cls; } };
+      if (!doi) { setStatus(t('references.form.doiEmpty'), 'text-red-600'); document.getElementById('new-ref-doi')?.focus(); return; }
+      if (btn) { btn.disabled = true; btn.classList.add('opacity-50'); }
+      setStatus(t('references.form.fetching'), 'text-muted');
+      try {
+        const res = await fetch('https://api.crossref.org/works/' + encodeURIComponent(doi));
+        if (!res.ok) throw new Error('not found');
+        const data = (await res.json()).message;
+        const fill = (f, v) => {
+          if (!v) return;
+          const el = document.getElementById('new-ref-' + f);
+          if (el && !el.value.trim()) { el.value = String(v); if (REF_REQUIRED_FIELDS.includes(f)) clearRefError(f); }
+        };
+        fill('title', (data.title || [])[0]);
+        fill('authors', (data.author || []).map(a => [a.given, a.family].filter(Boolean).join(' ')).join(', '));
+        fill('journal', (data['container-title'] || [])[0]);
+        const year = data.issued?.['date-parts']?.[0]?.[0];
+        if (year) {
+          const sel = document.getElementById('new-ref-year');
+          if (sel) {
+            const opt = Array.from(sel.options).find(o => o.value === String(year));
+            if (opt) sel.value = String(year); else { sel.insertAdjacentHTML('afterbegin', `<option value="${year}">${year}</option>`); sel.value = String(year); }
+          }
+        }
+        fill('url', data.URL);
+        setStatus(t('references.form.fetched'), 'text-emerald-600');
+      } catch (e) {
+        setStatus(t('references.form.fetchError'), 'text-red-600');
+      } finally {
+        if (btn) { btn.disabled = false; btn.classList.remove('opacity-50'); }
+      }
+    }
+
     function saveNewRef() {
       let firstInvalid = null;
       for (const f of REF_REQUIRED_FIELDS) {
