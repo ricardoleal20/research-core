@@ -203,6 +203,15 @@
     .rc-orb:nth-child(2) { animation-delay: 0.15s; }
     .rc-orb:nth-child(3) { animation-delay: 0.3s; }
     html.rc-no-motion .rc-orb { animation: none; opacity: 0.5; }
+    /* Assistant composer: provider/model/effort render as quiet pills on the
+       composer surface instead of boxed selects (trigger only — menus keep the
+       popover card look). */
+    .chat-composer .rc-select > button { background: transparent; border-color: transparent; font-weight: 500; }
+    .chat-composer .rc-select > button:hover { background: var(--surface-2) !important; border-color: transparent !important; }
+    /* Delayed fade-ups must start hidden (fill "both"), or elements flash
+       visible during the stagger delay before snapping back to opacity 0. */
+    .animate-fade-up.stagger-1, .animate-fade-up.stagger-2, .animate-fade-up.stagger-3,
+    .animate-fade-up.stagger-4, .animate-fade-up.stagger-5, .animate-fade-up.stagger-6 { animation-fill-mode: both; }
     html.dark .rc-wizard-wave::before { opacity: 0.35; }
     html.rc-no-motion .rc-wizard-wave::before { animation: none; }
     @keyframes progressFill {
@@ -534,6 +543,7 @@
       "effortHigh": "Alto",
       "today": "Hoy",
       "yesterday": "Ayer",
+      "earlier": "Anteriores",
       "daysAgo": "hace {n}d",
       "msgCount": "mensajes",
       "emptyChats": "Sin chats guardados en este proyecto.",
@@ -932,6 +942,7 @@
       "effortHigh": "High",
       "today": "Today",
       "yesterday": "Yesterday",
+      "earlier": "Earlier",
       "daysAgo": "{n}d ago",
       "msgCount": "messages",
       "emptyChats": "No saved chats in this project.",
@@ -1330,6 +1341,7 @@
       "effortHigh": "Alto",
       "today": "Hoje",
       "yesterday": "Ontem",
+      "earlier": "Anteriores",
       "daysAgo": "há {n}d",
       "msgCount": "mensagens",
       "emptyChats": "Sem chats guardados neste projeto.",
@@ -1728,6 +1740,7 @@
       "effortHigh": "Élevé",
       "today": "Aujourd'hui",
       "yesterday": "Hier",
+      "earlier": "Précédents",
       "daysAgo": "il y a {n}j",
       "msgCount": "messages",
       "emptyChats": "Aucun chat enregistré dans ce projet.",
@@ -1895,6 +1908,7 @@
       previousView: null,
       locked: true,
       sidebarCollapsed: false,
+      sidebarFadeLabels: false,
       onboardingStep: 0,
       onboardingDirection: 1,
       settings: {
@@ -3233,20 +3247,20 @@
           <aside id="sidebar" class="${state.sidebarCollapsed ? 'w-[68px]' : 'w-64'} flex-shrink-0 border-r border-border bg-card flex flex-col overflow-hidden">
             <div class="h-16 flex items-center px-5 border-b border-border flex-shrink-0">
               <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white mr-3">${icon('sparkle', 'w-4 h-4')}</div>
-              ${!state.sidebarCollapsed ? `<span class="font-serif text-xl italic whitespace-nowrap animate-rc-sidebar-fade">${t('appName')}</span>` : ''}
+              ${!state.sidebarCollapsed ? `<span class="font-serif text-xl italic whitespace-nowrap${state.sidebarFadeLabels ? ' animate-rc-sidebar-fade' : ''}">${t('appName')}</span>` : ''}
             </div>
             <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
               ${navItems.map(item => `
                 <button data-od-id="nav-${item.id}" onclick="navigate('${item.id}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition whitespace-nowrap ${state.view === item.id ? 'bg-primary/10 text-primary' : 'text-muted hover:bg-gray-100 hover:text-foreground'} ${state.sidebarCollapsed ? 'justify-center' : ''}">
                   ${icon(item.icon, 'w-5 h-5 shrink-0')}
-                  ${!state.sidebarCollapsed ? `<span class="animate-rc-sidebar-fade">${item.label}</span>` : ''}
+                  ${!state.sidebarCollapsed ? `<span class="${state.sidebarFadeLabels ? 'animate-rc-sidebar-fade' : ''}">${item.label}</span>` : ''}
                 </button>
               `).join('')}
             </nav>
             <div class="p-3 border-t border-border flex-shrink-0">
               <button onclick="toggleSidebar()" class="w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-gray-100 transition whitespace-nowrap">
                 ${state.sidebarCollapsed ? icon('chevron', 'w-4 h-4 rotate-180') : icon('chevron', 'w-4 h-4')}
-                ${!state.sidebarCollapsed ? `<span class="animate-rc-sidebar-fade">${t('common.collapse')}</span>` : ''}
+                ${!state.sidebarCollapsed ? `<span class="${state.sidebarFadeLabels ? 'animate-rc-sidebar-fade' : ''}">${t('common.collapse')}</span>` : ''}
               </button>
             </div>
           </aside>
@@ -3273,7 +3287,11 @@
     function toggleSidebar() {
       const wasCollapsed = state.sidebarCollapsed;
       state.sidebarCollapsed = !wasCollapsed;
+      // Labels fade in only when this toggle expands the sidebar — otherwise
+      // every render() would replay the fade on unrelated state changes.
+      state.sidebarFadeLabels = !state.sidebarCollapsed;
       render();
+      state.sidebarFadeLabels = false;
       const sb = document.getElementById('sidebar');
       if (!sb || !state.settings.animations) return;
       // render() rebuilds the DOM, so tailwind transition classes alone can't
@@ -3283,9 +3301,16 @@
       sb.style.transition = 'none';
       sb.style.width = fromW;
       void sb.offsetWidth;
-      sb.style.transition = 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)';
+      sb.style.transition = 'width 280ms cubic-bezier(0.16, 1, 0.3, 1)';
       sb.style.width = toW;
-      sb.addEventListener('transitionend', () => { sb.style.transition = ''; sb.style.width = ''; }, { once: true });
+      // transitionend also fires for child transitions bubbling up (hover
+      // colors etc.) — clean up only on the sidebar's own width transition.
+      sb.addEventListener('transitionend', function onSidebarWidthEnd(e) {
+        if (e.target !== sb || e.propertyName !== 'width') return;
+        sb.style.transition = '';
+        sb.style.width = '';
+        sb.removeEventListener('transitionend', onSidebarWidthEnd);
+      });
     }
     function toggleProjectMenu(e) {
       if (e) e.stopPropagation();
@@ -3788,66 +3813,79 @@
       const suggestions = [t('assistant.suggest1'), t('assistant.suggest2'), t('assistant.suggest3'), t('assistant.suggest4')];
       const composer = renderChatComposer();
       return `
-        <div class="h-[calc(100vh-140px)] flex flex-col">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <p class="text-sm text-muted uppercase tracking-[0.06em] font-medium mb-1">${t('assistant.title')}</p>
-              <h1 class="font-serif text-4xl italic">${t('assistant.title')}</h1>
+        <div class="h-[calc(100vh-112px)] flex flex-col" data-od-id="assistant-view">
+          <div class="flex items-center justify-between gap-3 mb-4">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary shrink-0">${icon('sparkle', 'w-4 h-4')}</div>
+              <div class="min-w-0">
+                <p class="caption text-muted">${t('assistant.title')}</p>
+                <p class="text-sm font-medium leading-snug truncate">${esc(chat ? chat.title : t('assistant.newChatTitle'))}</p>
+              </div>
             </div>
             <div class="flex items-center gap-2">
-              <button onclick="openChatHistory()" title="${t('assistant.history')}" aria-label="${t('assistant.history')}" class="p-2 rounded-lg border border-border bg-white text-muted hover:text-foreground hover:border-primary/30 transition">${icon('history', 'w-5 h-5')}</button>
-              <button onclick="openChatSettings()" title="${t('assistant.chatSettings')}" aria-label="${t('assistant.chatSettings')}" class="p-2 rounded-lg border border-border bg-white text-muted hover:text-foreground hover:border-primary/30 transition">${icon('settings', 'w-5 h-5')}</button>
+              <button data-od-id="chat-history-btn" onclick="openChatHistory()" title="${t('assistant.history')}" aria-label="${t('assistant.history')}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon('history', 'w-5 h-5')}</button>
+              <button data-od-id="chat-settings-btn" onclick="openChatSettings()" title="${t('assistant.chatSettings')}" aria-label="${t('assistant.chatSettings')}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon('settings', 'w-5 h-5')}</button>
             </div>
           </div>
           ${empty ? `
-          <div class="flex-1 flex flex-col items-center justify-center max-w-2xl mx-auto w-full px-4 -mt-10">
-            <h2 class="font-serif text-5xl italic mb-3 text-center">${t('assistant.welcomeTitle')}</h2>
-            <p class="text-muted mb-8 text-center">${t('assistant.welcomeSub')}</p>
-            <div class="flex flex-wrap justify-center gap-2 mb-8">
+          <div class="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full px-4 -mt-6" data-od-id="assistant-welcome">
+            <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-6 animate-fade-up">${icon('sparkle', 'w-5 h-5')}</div>
+            <h2 class="font-serif text-5xl italic mb-4 text-center animate-fade-up stagger-1">${t('assistant.welcomeTitle')}</h2>
+            <p class="body-lg text-muted text-center max-w-md mb-9 animate-fade-up stagger-2">${t('assistant.welcomeSub')}</p>
+            <div class="flex flex-wrap justify-center gap-2.5 mb-9 w-full animate-fade-up stagger-3">
               ${suggestions.map(q => `
-                <button type="button" onclick="fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-white px-3.5 py-1.5 text-xs text-muted hover:border-primary/40 hover:text-primary transition">${esc(q)}</button>
+                <button type="button" onclick="fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-card px-4 py-2 text-sm text-muted hover:border-primary/40 hover:bg-primary/5 hover:text-primary transition ring-focus">${esc(q)}</button>
               `).join('')}
             </div>
-            <div class="w-full">${composer}</div>
+            <div class="w-full animate-fade-up stagger-4">${composer}</div>
           </div>` : `
-          <div class="flex-1 flex flex-col min-h-0 max-w-2xl mx-auto w-full px-4">
-            <div id="chat-list" class="flex-1 overflow-y-auto py-2 space-y-5">
-              ${msgs.map(m => renderChatMessage(m)).join('')}
+          <div class="flex-1 flex flex-col min-h-0 max-w-3xl mx-auto w-full px-4">
+            <div id="chat-list" class="flex-1 overflow-y-auto py-4 space-y-6">
+              ${msgs.map((m, i) => renderChatMessage(m, i === msgs.length - 1)).join('')}
               ${state.chatThinking ? `
-              <div class="flex justify-start">
-                <div class="inline-flex items-center gap-2.5 rounded-2xl bg-gray-100 px-4 py-3 rounded-bl-md">
+              <div class="flex justify-start animate-fade-up">
+                <div class="inline-flex items-center gap-3 rounded-2xl rounded-bl-md bg-gray-100 px-4 py-3">
                   <span class="flex items-center gap-1.5"><span class="rc-orb"></span><span class="rc-orb"></span><span class="rc-orb"></span></span>
-                  <span class="text-sm text-muted">${t('assistant.thinking')}</span>
+                  <span class="text-sm text-muted">${t('assistant.thinking')}…</span>
                 </div>
               </div>` : ''}
             </div>
-            <div class="pt-3">${composer}</div>
+            <div class="pt-3 pb-1">${composer}</div>
           </div>`}
         </div>`;
     }
-    function renderChatMessage(m) {
+    function toggleChatThoughts(btn) {
+      const panel = btn.nextElementSibling;
+      if (!panel) return;
+      const open = !panel.classList.toggle('hidden');
+      const chev = btn.querySelector('.chat-thought-chevron');
+      if (chev) chev.classList.toggle('rotate-180', open);
+    }
+    function renderChatMessage(m, animate = false) {
+      const anim = animate ? ' animate-fade-up' : '';
       if (m.role === 'user') {
         return `
-        <div class="flex justify-end">
-          <div class="max-w-[80%] rounded-2xl rounded-br-md bg-primary text-white px-5 py-3 text-sm leading-relaxed">
+        <div class="flex justify-end${anim}">
+          <div class="max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
             ${esc(m.text)}
-            ${m.attachments && m.attachments.length ? `<div class="mt-2 flex flex-wrap gap-1.5">${m.attachments.map(a => `<span class="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs font-medium">${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3 h-3')} ${esc(a.name)}</span>`).join('')}</div>` : ''}
+            ${m.attachments && m.attachments.length ? `<div class="mt-2.5 flex flex-wrap gap-1.5">${m.attachments.map(a => `<span class="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-2 py-1 text-xs font-medium">${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3 h-3')} ${esc(a.name)}</span>`).join('')}</div>` : ''}
           </div>
         </div>`;
       }
+      const thoughtsOpen = !!m.streaming;
       return `
-      <div class="flex justify-start">
-        <div class="max-w-[85%]">
+      <div class="flex justify-start${anim}">
+        <div class="max-w-[85%] min-w-0">
           ${m.thoughts && m.thoughts.length ? `
-          <button type="button" onclick="var el = this.nextElementSibling; el.classList.toggle('hidden')" class="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition mb-1.5">
-            ${icon('sparkle', 'w-3.5 h-3.5')} ${t('assistant.thoughtFor').replace('{s}', m.thoughtSeconds || 3)} ${icon('chevronDown', 'w-3 h-3')}
+          <button type="button" ${m.streaming ? 'id="chat-thoughts-toggle" ' : ''}onclick="toggleChatThoughts(this)" class="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:border-primary/40 transition mb-2 ring-focus">
+            ${icon('sparkle', 'w-3.5 h-3.5')} ${t('assistant.thoughtFor').replace('{s}', m.thoughtSeconds || 3)} ${icon('chevronDown', 'w-3.5 h-3.5 transition-transform duration-200 chat-thought-chevron' + (thoughtsOpen ? ' rotate-180' : ''))}
           </button>
-          <div class="hidden rounded-xl border border-border bg-gray-50 p-3 mb-2 space-y-1">
-            ${m.thoughts.map(th => `<p class="text-xs text-muted italic leading-relaxed">${esc(th)}</p>`).join('')}
+          <div ${m.streaming ? 'id="chat-thoughts" ' : ''}class="${thoughtsOpen ? '' : 'hidden'}rounded-xl border border-border bg-gray-50 px-4 py-3 mb-2 space-y-1.5">
+            ${m.thoughts.map(th => `<p class="text-xs text-muted leading-relaxed">${esc(th)}</p>`).join('')}
           </div>` : ''}
-          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground px-5 py-3 text-sm leading-relaxed">
-            ${m.streaming ? `<span id="chat-stream-text">${esc(m.text)}</span><span class="inline-block w-1.5 h-4 align-[-2px] bg-foreground/40 rounded-sm animate-pulse ml-0.5"></span>` : esc(m.text)}
-            ${m.tool ? `<div class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-black/10 px-2 py-1 text-xs font-medium">${icon('bolt', 'w-3 h-3')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
+          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words">
+            ${m.streaming ? `<span id="chat-stream-text">${esc(m.text)}</span><span class="inline-block w-1.5 h-4 align-[-2px] rounded-sm bg-foreground/60 animate-pulse ml-0.5"></span>` : esc(m.text)}
+            ${m.tool ? `<div class="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-muted">${icon('bolt', 'w-3 h-3 text-primary')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
           </div>
         </div>
       </div>`;
@@ -3856,40 +3894,55 @@
       const cfg = LLM_PROVIDER_CONFIG[state.chatConfig.provider] || LLM_PROVIDER_CONFIG.Personal;
       const model = state.chatConfig.model && currentChatModelList().includes(state.chatConfig.model) ? state.chatConfig.model : currentChatModelList()[0];
       state.chatConfig.model = model;
+      const sendDisabled = state.chatAttachments.length === 0;
+      const attachBtn = (kind, iconName, labelKey) => `
+            <button type="button" onclick="attachChatFiles('${kind}')" title="${t(labelKey)}" aria-label="${t(labelKey)}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus">${icon(iconName, 'w-5 h-5')}</button>`;
       return `
-      <div class="rounded-2xl border border-border bg-white shadow-sm p-3 focus-within:ring-2 focus-within:ring-primary/30 transition">
+      <div class="chat-composer rounded-2xl border border-border bg-card shadow-sm p-3 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/30 transition" data-od-id="chat-composer">
         ${state.chatAttachments.length ? `
-        <div class="flex flex-wrap gap-2 mb-2">
+        <div class="flex flex-wrap gap-2 mb-2.5">
           ${state.chatAttachments.map((a, i) => `
           <span class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-gray-50 px-2.5 py-1.5 text-xs font-medium">
             ${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3.5 h-3.5 text-muted')}
-            <span class="max-w-[180px] truncate">${esc(a.name)}</span>
-            <button type="button" onclick="removeChatAttachment(${i})" class="text-muted hover:text-red-600 transition" aria-label="${t('common.delete')}">${icon('x', 'w-3.5 h-3.5')}</button>
+            <span class="max-w-[200px] truncate">${esc(a.name)}</span>
+            <button type="button" onclick="removeChatAttachment(${i})" class="p-0.5 rounded text-muted hover:text-red-600 transition" aria-label="${t('common.delete')}">${icon('x', 'w-3 h-3')}</button>
           </span>
           `).join('')}
         </div>` : ''}
-        <textarea id="chat-input" rows="1" class="w-full resize-none bg-transparent px-1 py-1.5 text-sm focus:outline-none max-h-40" placeholder="${t('assistant.placeholder')}"></textarea>
+        <textarea id="chat-input" rows="1" class="w-full resize-none bg-transparent px-1.5 py-1.5 text-[15px] leading-relaxed focus:outline-none max-h-40 placeholder:text-muted" placeholder="${t('assistant.placeholder')}"></textarea>
         <div class="flex items-center justify-between mt-1.5">
           <div class="flex items-center gap-0.5">
-            <button type="button" onclick="attachChatFiles('image')" title="${t('assistant.addImage')}" aria-label="${t('assistant.addImage')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('image', 'w-5 h-5')}</button>
-            <button type="button" onclick="attachChatFiles('pdf')" title="${t('assistant.addPdf')}" aria-label="${t('assistant.addPdf')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('fileText', 'w-5 h-5')}</button>
-            <button type="button" onclick="attachChatLink()" title="${t('assistant.addLink')}" aria-label="${t('assistant.addLink')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('link', 'w-5 h-5')}</button>
-            <button type="button" onclick="attachChatFiles('tex')" title="${t('assistant.addTex')}" aria-label="${t('assistant.addTex')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition">${icon('code', 'w-5 h-5')}</button>
+            ${attachBtn('image', 'image', 'assistant.addImage')}
+            ${attachBtn('pdf', 'fileText', 'assistant.addPdf')}
+            <button type="button" onclick="attachChatLink()" title="${t('assistant.addLink')}" aria-label="${t('assistant.addLink')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus">${icon('link', 'w-5 h-5')}</button>
+            ${attachBtn('tex', 'code', 'assistant.addTex')}
           </div>
-          <button id="chat-send" onclick="sendChatMessage()" class="rounded-xl bg-primary text-white p-2.5 hover:opacity-90 active:scale-[0.97] transition" aria-label="${t('assistant.send')}">${icon('arrowRight', 'w-5 h-5')}</button>
+          <button id="chat-send" onclick="sendChatMessage()"${sendDisabled ? ' disabled' : ''} class="rounded-lg bg-primary text-white h-9 w-9 grid place-items-center hover:opacity-90 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:opacity-40 disabled:active:scale-100 ring-focus" aria-label="${t('assistant.send')}" data-od-id="chat-send">${icon('arrowRight', 'w-5 h-5')}</button>
         </div>
-        <div class="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-border">
-          ${rcSelect({ id: 'chat-provider', size: 'sm', cls: 'w-auto min-w-[8.5rem]', options: LLM_PROVIDERS.map(p => ({ value: p, label: t('onboarding.providers.' + p.toLowerCase()) })), value: state.chatConfig.provider, onChange: 'onChatProviderChange()' })}
-          ${rcSelect({ id: 'chat-model', size: 'sm', cls: 'w-auto min-w-[11rem]', options: currentChatModelList(), value: model, onChange: 'onChatModelChange()' })}
-          ${rcSelect({ id: 'chat-effort', size: 'sm', cls: 'w-auto min-w-[6.5rem]', options: [{ value: 'low', label: t('assistant.effortLow') }, { value: 'medium', label: t('assistant.effortMedium') }, { value: 'high', label: t('assistant.effortHigh') }], value: state.chatConfig.effort, onChange: 'onChatEffortChange()' })}
+        <div class="flex flex-wrap items-end gap-x-5 gap-y-2.5 mt-2.5 pt-2.5 border-t border-border">
+          <div class="flex flex-col gap-1 min-w-0">
+            <span class="caption text-muted">${t('assistant.provider')}</span>
+            ${rcSelect({ id: 'chat-provider', size: 'sm', cls: 'min-w-[7.5rem]', options: LLM_PROVIDERS.map(p => ({ value: p, label: t('onboarding.providers.' + p.toLowerCase()) })), value: state.chatConfig.provider, onChange: 'onChatProviderChange()' })}
+          </div>
+          <div class="flex flex-col gap-1 min-w-0 flex-1">
+            <span class="caption text-muted">${t('assistant.model')}</span>
+            ${rcSelect({ id: 'chat-model', size: 'sm', cls: 'w-full', options: currentChatModelList(), value: model, onChange: 'onChatModelChange()' })}
+          </div>
+          <div class="flex flex-col gap-1 min-w-0">
+            <span class="caption text-muted">${t('assistant.effort')}</span>
+            ${rcSelect({ id: 'chat-effort', size: 'sm', cls: 'min-w-[6rem]', options: [{ value: 'low', label: t('assistant.effortLow') }, { value: 'medium', label: t('assistant.effortMedium') }, { value: 'high', label: t('assistant.effortHigh') }], value: state.chatConfig.effort, onChange: 'onChatEffortChange()' })}
+          </div>
         </div>
       </div>`;
     }
     function bindAssistant() {
       const input = document.getElementById('chat-input');
       if (!input) return;
+      const send = document.getElementById('chat-send');
+      const syncSend = () => { if (send) send.disabled = !(input.value.trim() || state.chatAttachments.length); };
       input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } };
-      input.oninput = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; };
+      input.oninput = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; syncSend(); };
+      syncSend();
       setTimeout(() => {
         const list = document.getElementById('chat-list');
         if (list) list.scrollTop = list.scrollHeight;
@@ -3911,6 +3964,7 @@
         next.value = val;
         next.style.height = 'auto';
         next.style.height = Math.min(next.scrollHeight, 160) + 'px';
+        next.dispatchEvent(new Event('input'));
         next.focus();
       }
     }
@@ -3986,6 +4040,18 @@
             const cursor = node.nextElementSibling;
             if (cursor) cursor.remove();
           }
+          // Collapse the live thought panel back into the "Thought for Xs" pill.
+          const thoughtsPanel = document.getElementById('chat-thoughts');
+          if (thoughtsPanel) {
+            thoughtsPanel.classList.add('hidden');
+            thoughtsPanel.removeAttribute('id');
+          }
+          const thoughtsBtn = document.getElementById('chat-thoughts-toggle');
+          if (thoughtsBtn) {
+            const chev = thoughtsBtn.querySelector('.chat-thought-chevron');
+            if (chev) chev.classList.remove('rotate-180');
+            thoughtsBtn.removeAttribute('id');
+          }
           msg.streaming = false;
           msg.text = full;
           const list2 = document.getElementById('chat-list');
@@ -4025,27 +4091,37 @@
     }
     function renderChatHistoryDrawer() {
       const chats = state.chats.filter(c => c.projectId === state.activeProjectId);
+      const groups = [
+        { label: t('assistant.today'), items: chats.filter(c => c.updatedDays <= 0) },
+        { label: t('assistant.yesterday'), items: chats.filter(c => c.updatedDays === 1) },
+        { label: t('assistant.earlier'), items: chats.filter(c => c.updatedDays > 1) },
+      ].filter(g => g.items.length);
       const overlay = document.createElement('div');
       overlay.className = 'rc-modal fixed inset-0 z-[60] flex justify-end';
       overlay.innerHTML = `
         <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="closeChatHistory()"></div>
-        <div class="relative w-full max-w-md h-full bg-white border-l border-border shadow-xl p-6 overflow-y-auto animate-[fadeUp_220ms_ease-out]">
+        <div class="relative w-full max-w-md h-full bg-white border-l border-border shadow-xl p-6 overflow-y-auto animate-slide-right" data-od-id="chat-history-drawer">
           <div class="flex items-center justify-between mb-5">
             <h2 class="font-serif text-2xl italic">${t('assistant.history')}</h2>
-            <button onclick="closeChatHistory()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button>
+            <button onclick="closeChatHistory()" class="p-1 rounded hover:bg-gray-100 transition">${icon('close', 'w-5 h-5')}</button>
           </div>
-          <div class="mb-4">${btn({ label: t('assistant.newChat'), variant: 'default', iconName: 'plus', cls: 'w-full', onClick: 'newChat()' })}</div>
-          <div class="space-y-2">
-            ${chats.map(c => `
-            <button onclick="loadChat('${c.id}')" class="w-full flex items-center justify-between gap-3 rounded-xl border p-4 text-left transition ${c.id === state.activeChatId ? 'border-primary/40 bg-primary/5' : 'border-border bg-white hover:border-primary/30 hover:bg-gray-50'}">
-              <span class="min-w-0">
-                <span class="block text-sm font-medium truncate">${esc(c.title)}</span>
-                <span class="block text-xs text-muted mt-0.5">${chatUpdatedLabel(c.updatedDays)} · ${c.messages.length} ${t('assistant.msgCount')}</span>
-              </span>
-              ${c.id === state.activeChatId ? `<span class="text-xs font-medium text-primary shrink-0">${t('project.active')}</span>` : icon('arrowRight', 'w-4 h-4 text-muted shrink-0')}
-            </button>
-            `).join('') || `<p class="text-sm text-muted text-center py-6">${t('assistant.emptyChats')}</p>`}
-          </div>
+          <div class="mb-5">${btn({ label: t('assistant.newChat'), variant: 'default', iconName: 'plus', cls: 'w-full', onClick: 'newChat()' })}</div>
+          ${groups.length ? groups.map(g => `
+          <div class="mb-4">
+            <p class="caption text-muted mb-1.5 px-1">${g.label}</p>
+            <div class="space-y-1">
+              ${g.items.map(c => `
+              <button onclick="loadChat('${c.id}')" class="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${c.id === state.activeChatId ? 'bg-primary/10' : 'hover:bg-gray-50'}">
+                ${icon('message', `w-4 h-4 shrink-0 ${c.id === state.activeChatId ? 'text-primary' : 'text-muted'}`)}
+                <span class="min-w-0 flex-1">
+                  <span class="block text-sm font-medium truncate ${c.id === state.activeChatId ? 'text-primary' : 'text-foreground'}">${esc(c.title)}</span>
+                  <span class="block text-xs text-muted mt-0.5">${c.messages.length} ${t('assistant.msgCount')}</span>
+                </span>
+                ${c.id === state.activeChatId ? `<span class="shrink-0 text-xs font-medium text-primary">${t('project.active')}</span>` : ''}
+              </button>
+              `).join('')}
+            </div>
+          </div>`).join('') || '' : `<p class="text-sm text-muted text-center py-8">${t('assistant.emptyChats')}</p>`}
         </div>`;
       document.body.appendChild(overlay);
     }
@@ -4559,7 +4635,7 @@
     }
 
     // ========== DIALOGS / DRAWERS ==========
-    function openAddRef() { state.addRefOpen = true; render(); }
+    function openAddRef() { state.addRefOpen = true; state.refExtraOpen = false; render(); }
     function closeAddRef() { state.addRefOpen = false; render(); }
     function clearRefError(f) {
       const input = document.getElementById('new-ref-' + f);
@@ -4574,14 +4650,17 @@
       if (err) err.classList.remove('hidden');
     }
     const REF_REQUIRED_FIELDS = ['title', 'authors', 'journal'];
-    function toggleRefExtra() {
-      state.refExtraOpen = !state.refExtraOpen;
+    function setRefExtraOpen(open) {
+      state.refExtraOpen = !!open;
       const box = document.getElementById('ref-extra-options');
-      const btn = document.querySelector('.rc-modal .rounded-xl.border button');
+      const btn = document.getElementById('ref-extra-toggle');
       if (box) box.classList.toggle('hidden', !state.refExtraOpen);
-      const chev = btn && btn.querySelector('svg');
-      if (chev) chev.style.transform = state.refExtraOpen ? 'rotate(180deg)' : '';
+      if (btn) {
+        const chev = btn.querySelector('svg');
+        if (chev) chev.classList.toggle('rotate-180', state.refExtraOpen);
+      }
     }
+    function toggleRefExtra() { setRefExtraOpen(!state.refExtraOpen); }
     function renderAddRefDialog() {
       const overlay = document.createElement('div');
       overlay.className = 'rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm';
@@ -4608,9 +4687,9 @@
               <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label>${rcSelect({ id: 'new-ref-source', options: ['Manual', 'arXiv', 'Zotero', 'Semantic Scholar', 'MCP'] })}</div>
             </div>
             <div class="rounded-xl border border-border overflow-hidden">
-              <button type="button" onclick="toggleRefExtra()" class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-foreground hover:bg-gray-50 transition">
+              <button type="button" id="ref-extra-toggle" onclick="toggleRefExtra()" class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-foreground hover:bg-gray-50 transition">
                 <span>${t('references.form.extraOptions')}</span>
-                ${icon('chevronDown', 'w-4 h-4 text-muted transition-transform duration-200')}
+                ${icon('chevronDown', 'w-4 h-4 text-muted transition-transform duration-200' + (state.refExtraOpen ? ' rotate-180' : ''))}
               </button>
               <div id="ref-extra-options" class="px-4 pb-4 space-y-4 ${state.refExtraOpen ? '' : 'hidden'}">
                 <div><label class="block text-sm font-medium mb-1.5">${t('references.form.url')}</label><input id="new-ref-url" type="url" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="https://…"></div>
@@ -4649,7 +4728,7 @@
         fill('journal', (data['container-title'] || [])[0]);
         const year = data.issued?.['date-parts']?.[0]?.[0];
         if (year) setRcSelectValue('new-ref-year', String(year));
-        if (data.URL) { state.refExtraOpen = true; const extra = document.getElementById('ref-extra-options'); if (extra) extra.classList.remove('hidden'); }
+        if (data.URL) setRefExtraOpen(true);
         fill('url', data.URL);
         setStatus(t('references.form.fetched'), 'text-emerald-600');
       } catch (e) {
