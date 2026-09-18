@@ -543,6 +543,18 @@
       "effortHigh": "Alto",
       "context": "Contexto",
       "skillsBtn": "Skills",
+      "more": "Mais",
+      "permissions": "Permissões",
+      "mcps": "MCPs",
+      "permRead": "Ler ficheiros",
+      "permWrite": "Escrever no disco",
+      "permNetwork": "Rede",
+      "more": "Más",
+      "permissions": "Permisos",
+      "mcps": "MCPs",
+      "permRead": "Leer archivos",
+      "permWrite": "Escribir en disco",
+      "permNetwork": "Red",
       "today": "Hoy",
       "yesterday": "Ayer",
       "earlier": "Anteriores",
@@ -944,6 +956,12 @@
       "effortHigh": "High",
       "context": "Context",
       "skillsBtn": "Skills",
+      "more": "More",
+      "permissions": "Permissions",
+      "mcps": "MCPs",
+      "permRead": "Read files",
+      "permWrite": "Write to disk",
+      "permNetwork": "Network",
       "today": "Today",
       "yesterday": "Yesterday",
       "earlier": "Earlier",
@@ -1746,6 +1764,12 @@
       "effortHigh": "Élevé",
       "context": "Contexte",
       "skillsBtn": "Skills",
+      "more": "Plus",
+      "permissions": "Permissions",
+      "mcps": "MCPs",
+      "permRead": "Lire les fichiers",
+      "permWrite": "Écrire sur le disque",
+      "permNetwork": "Réseau",
       "today": "Aujourd'hui",
       "yesterday": "Hier",
       "earlier": "Précédents",
@@ -1985,6 +2009,10 @@
       chatThinking: false,
       chatConfig: { provider: 'Personal', model: null, effort: 'medium', contextLimit: '32k' },
       chatSkillPopoverOpen: false,
+      chatMoreOpen: false,
+      chatMorePanel: null,
+      chatMorePerms: { read: true, write: true, network: false },
+      chatMcpOn: ['Zotero', 'Filesystem'],
       chatSettingsDraft: { contextProjectIds: [], skillIds: [] },
       references: [
         { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', doi: '10.5555/3295222.3295349', url: 'https://arxiv.org/abs/1706.03762', pdfPath: '~/ResearchCore/Data/pdfs/attention-is-all-you-need.pdf', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
@@ -2191,7 +2219,7 @@
     // shadcn-style select: trigger button + popover menu. Keeps a hidden input
     // with the given id so existing read paths (el.value) and onchange handlers
     // keep working — pickRcSelect dispatches a change event on it.
-    function rcSelect({ id, options, value, onChange = '', size = 'md', cls = '' }) {
+    function rcSelect({ id, options, value, onChange = '', size = 'md', cls = '', dir = 'up' }) {
       const opts = options.map(o => typeof o === 'string' ? { value: String(o), label: String(o) } : o);
       const val = value === undefined || value === null ? (opts[0] ? opts[0].value : '') : String(value);
       const cur = opts.find(o => o.value === val) || { value: val, label: val };
@@ -2203,7 +2231,7 @@
           <span class="rc-select-label truncate">${esc(cur.label)}</span>
           ${icon('chevronDown', 'w-4 h-4 text-muted shrink-0')}
         </button>
-        <div class="rc-select-menu absolute left-0 right-0 top-full z-50 mt-1 hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-white p-1 shadow-lg animate-fade-up">
+        <div class="rc-select-menu absolute left-0 right-0 ${dir === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'} z-50 hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-white p-1 shadow-lg animate-fade-up">
           ${opts.map(o => `
             <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? 'bg-primary/10 text-primary' : 'text-foreground'}" data-value="${esc(o.value)}">
               <span class="truncate">${esc(o.label)}</span>
@@ -3667,7 +3695,7 @@
               ${icon('search', 'w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted')}
               <input id="ref-search" value="${esc(filter)}" placeholder="${t('references.search')}" class="w-full rounded-lg border border-border bg-white pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
             </div>
-            ${rcSelect({ id: 'ref-source', cls: 'sm:w-56', options: [
+            ${rcSelect({ id: 'ref-source', cls: 'sm:w-56', dir: 'down', options: [
               { value: 'all', label: `${t('references.source')}: ${t('references.sourceAll')}` },
               { value: 'Zotero', label: 'Zotero' },
               { value: 'arXiv', label: 'arXiv' },
@@ -3899,13 +3927,71 @@
         </div>
       </div>`;
     }
+    function chatModelOptions() {
+      const out = [];
+      for (const p of LLM_PROVIDERS) {
+        const cfg = LLM_PROVIDER_CONFIG[p] || LLM_PROVIDER_CONFIG.Personal;
+        const models = cfg.defaultModels && cfg.defaultModels.length ? cfg.defaultModels : [];
+        const pLabel = t('onboarding.providers.' + p.toLowerCase());
+        models.forEach(m => out.push({ value: p + '|' + m, label: pLabel + ' / ' + m }));
+      }
+      return out;
+    }
+    function chatContextUsage() {
+      const chat = activeChat();
+      const totalChars = (chat ? chat.messages : []).reduce((sum, m) => sum + ((m && m.text) ? m.text.length : 0), 0);
+      const used = Math.round(totalChars / 4);
+      const limit = (parseInt(state.chatConfig.contextLimit, 10) || 32) * 1000;
+      const pct = Math.min(100, Math.round(used / limit * 100));
+      return { used, limit, pct };
+    }
+    function fmtTokens(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+    function renderChatMorePopover() {
+      const row = (iconName, label, onClick, hint) => `
+        <button type="button" onclick="${onClick}" class="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-gray-50 transition">
+          ${icon(iconName, 'w-4 h-4 text-muted shrink-0')}
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium leading-tight">${label}</span>${hint ? `<span class="block text-[11px] text-muted truncate">${hint}</span>` : ''}</span>
+          ${icon('chevron', 'w-3.5 h-3.5 text-muted shrink-0 rotate-0')}
+        </button>`;
+      if (state.chatMorePanel === 'permissions') {
+        const perms = [['read', t('assistant.permRead')], ['write', t('assistant.permWrite')], ['network', t('assistant.permNetwork')]];
+        return `
+          <button type="button" onclick="setChatMorePanel(null)" class="flex items-center gap-1 text-xs font-medium text-primary hover:underline mb-1.5">← ${t('onboarding.back')}</button>
+          <p class="px-2 pb-1 pt-0.5 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.permissions')}</p>
+          ${perms.map(([k, label]) => `
+          <label class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-50 transition">
+            <span class="text-sm font-medium">${label}</span>
+            <input type="checkbox" class="switch" ${state.chatMorePerms[k] ? 'checked' : ''} onchange="toggleChatPerm('${k}')">
+          </label>`).join('')}`;
+      }
+      if (state.chatMorePanel === 'mcps') {
+        const mcps = ['Zotero', 'arXiv', 'Semantic Scholar', 'Filesystem'];
+        return `
+          <button type="button" onclick="setChatMorePanel(null)" class="flex items-center gap-1 text-xs font-medium text-primary hover:underline mb-1.5">← ${t('onboarding.back')}</button>
+          <p class="px-2 pb-1 pt-0.5 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.mcps')}</p>
+          ${mcps.map(name => `
+          <label class="flex items-center justify-between gap-2 rounded-lg px-2 py-2 cursor-pointer hover:bg-gray-50 transition">
+            <span class="flex items-center gap-2 text-sm font-medium">${icon('bolt', 'w-4 h-4 text-muted')} ${name}</span>
+            <input type="checkbox" class="switch" ${state.chatMcpOn.includes(name) ? 'checked' : ''} onchange="toggleChatMcp('${name}')">
+          </label>`).join('')}`;
+      }
+      return `
+        <p class="px-2 pb-1 pt-0.5 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.attach')}</p>
+        ${row('image', t('assistant.addImage'), "closeChatMore(); attachChatFiles('image')")}
+        ${row('fileText', t('assistant.addPdf'), "closeChatMore(); attachChatFiles('pdf')")}
+        ${row('link', t('assistant.addLink'), "closeChatMore(); attachChatLink()")}
+        ${row('code', t('assistant.addTex'), "closeChatMore(); attachChatFiles('tex')")}
+        <div class="my-1.5 border-t border-border"></div>
+        ${row('lock', t('assistant.permissions'), "setChatMorePanel('permissions')")}
+        ${row('activity', t('assistant.mcps'), "setChatMorePanel('mcps')")}
+        ${row('settings', t('assistant.model'), "document.getElementById('chat-agent') && toggleRcSelect('chat-agent', event); state.chatMoreOpen = false; state.chatMorePanel = null; render()", state.chatConfig.provider + ' / ' + state.chatConfig.model)}`;
+    }
     function renderChatComposer() {
-      const cfg = LLM_PROVIDER_CONFIG[state.chatConfig.provider] || LLM_PROVIDER_CONFIG.Personal;
       const model = state.chatConfig.model && currentChatModelList().includes(state.chatConfig.model) ? state.chatConfig.model : currentChatModelList()[0];
       state.chatConfig.model = model;
-      const sendDisabled = state.chatAttachments.length === 0;
       const chat = activeChat();
       const activeSkills = chat ? (chat.skillIds || []) : [];
+      const usage = chatContextUsage();
       const attachBtn = (kind, iconName, labelKey) => `
             <button type="button" onclick="attachChatFiles('${kind}')" title="${t(labelKey)}" aria-label="${t(labelKey)}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus">${icon(iconName, 'w-5 h-5')}</button>`;
       return `
@@ -3931,10 +4017,6 @@
         <textarea id="chat-input" rows="1" class="w-full resize-none bg-transparent px-1.5 py-1.5 text-[15px] leading-relaxed focus:outline-none max-h-40 placeholder:text-muted" placeholder="${t('assistant.placeholder')}"></textarea>
         <div class="flex items-center justify-between mt-1.5">
           <div class="flex items-center gap-0.5" data-od-id="chat-attach-row">
-            ${attachBtn('image', 'image', 'assistant.addImage')}
-            ${attachBtn('pdf', 'fileText', 'assistant.addPdf')}
-            <button type="button" onclick="attachChatLink()" title="${t('assistant.addLink')}" aria-label="${t('assistant.addLink')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus">${icon('link', 'w-5 h-5')}</button>
-            ${attachBtn('tex', 'code', 'assistant.addTex')}
             <div class="relative" data-od-id="chat-skills-zone">
               <button type="button" onclick="toggleChatSkillPopover()" title="${t('assistant.skillsBtn')}" aria-label="${t('assistant.skillsBtn')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus ${activeSkills.length ? 'text-primary' : ''}">${icon('bolt', 'w-5 h-5')}</button>
               ${state.chatSkillPopoverOpen ? `
@@ -3952,34 +4034,40 @@
                 `).join('')}
               </div>` : ''}
             </div>
-          </div>
-          <button id="chat-send" onclick="sendChatMessage()"${sendDisabled ? ' disabled' : ''} class="rounded-lg bg-primary text-white h-9 w-9 grid place-items-center hover:opacity-90 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:opacity-40 disabled:active:scale-100 ring-focus" aria-label="${t('assistant.send')}" data-od-id="chat-send">${icon('arrowRight', 'w-5 h-5')}</button>
-        </div>
-        <div class="flex flex-wrap items-end justify-between gap-x-5 gap-y-2.5 mt-2.5 pt-2.5 border-t border-border">
-          <div class="flex flex-wrap items-end gap-x-5 gap-y-2.5">
-            <div class="flex flex-col gap-1 min-w-0">
-              <span class="caption text-muted">${t('assistant.provider')}</span>
-              ${rcSelect({ id: 'chat-provider', size: 'sm', cls: 'min-w-[7.5rem]', options: LLM_PROVIDERS.map(p => ({ value: p, label: t('onboarding.providers.' + p.toLowerCase()) })), value: state.chatConfig.provider, onChange: 'onChatProviderChange()' })}
-            </div>
-            <div class="flex flex-col gap-1 min-w-0">
-              <span class="caption text-muted">${t('assistant.model')}</span>
-              ${rcSelect({ id: 'chat-model', size: 'sm', cls: 'min-w-[10rem]', options: currentChatModelList(), value: model, onChange: 'onChatModelChange()' })}
+            <div class="relative" data-od-id="chat-more-zone">
+              <button type="button" onclick="toggleChatMore()" title="${t('assistant.more')}" aria-label="${t('assistant.more')}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus">${icon('plus', 'w-5 h-5')}</button>
+              ${state.chatMoreOpen ? `
+              <div class="absolute bottom-full left-0 mb-2 w-64 rounded-xl border border-border bg-white p-2 shadow-xl z-40 animate-fade-up">
+                ${renderChatMorePopover()}
+              </div>` : ''}
             </div>
           </div>
-          <div class="flex flex-wrap items-end gap-x-5 gap-y-2.5">
+          <div class="flex items-center gap-3">
             <div class="flex flex-col gap-1 min-w-0">
               <span class="caption text-muted">${t('assistant.effort')}</span>
               ${rcSelect({ id: 'chat-effort', size: 'sm', cls: 'min-w-[5.5rem]', options: [{ value: 'low', label: t('assistant.effortLow') }, { value: 'medium', label: t('assistant.effortMedium') }, { value: 'high', label: t('assistant.effortHigh') }], value: state.chatConfig.effort, onChange: 'onChatEffortChange()' })}
             </div>
-            <div class="flex flex-col gap-1 min-w-0">
-              <span class="caption text-muted">${t('assistant.context')}</span>
-              ${rcSelect({ id: 'chat-context', size: 'sm', cls: 'min-w-[5.5rem]', options: ['4k', '8k', '16k', '32k', '64k', '128k'], value: state.chatConfig.contextLimit, onChange: 'onChatContextChange()' })}
+            <div class="min-w-[7rem]" title="${t('assistant.context')}">
+              <div class="flex items-baseline justify-between gap-2 mb-1">
+                <span class="caption text-muted">${t('assistant.context')}</span>
+                <span class="text-[10px] tabular text-muted">${fmtTokens(usage.used)} / ${fmtTokens(usage.limit)}</span>
+              </div>
+              <div class="h-1.5 rounded-full bg-border overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-500 ${usage.pct > 80 ? 'bg-rose-500' : usage.pct > 60 ? 'bg-amber-500' : 'bg-primary'}" style="width:${usage.pct}%"></div>
+              </div>
             </div>
+            <button id="chat-send" onclick="sendChatMessage()" class="rounded-lg bg-primary text-white h-9 w-9 grid place-items-center hover:opacity-90 active:scale-95 transition ring-focus" aria-label="${t('assistant.send')}" data-od-id="chat-send">${icon('arrowRight', 'w-5 h-5')}</button>
+          </div>
+        </div>
+        <div class="flex items-end gap-2 mt-2.5 pt-2.5 border-t border-border">
+          <span class="caption text-muted pb-2 shrink-0">${t('assistant.model')}</span>
+          <div class="flex-1 min-w-0">
+            ${rcSelect({ id: 'chat-agent', size: 'sm', cls: 'w-full', options: chatModelOptions(), value: state.chatConfig.provider + '|' + model, onChange: 'onChatAgentChange()' })}
           </div>
         </div>
       </div>`;
     }
-    function toggleChatSkillPopover() { state.chatSkillPopoverOpen = !state.chatSkillPopoverOpen; render(); }
+    function toggleChatSkillPopover() { state.chatSkillPopoverOpen = !state.chatSkillPopoverOpen; state.chatMoreOpen = false; state.chatMorePanel = null; render(); }
     function toggleComposerSkill(sid) {
       const chat = ensureChat();
       const arr = chat.skillIds || (chat.skillIds = []);
@@ -3987,7 +4075,16 @@
       if (i >= 0) arr.splice(i, 1); else arr.push(sid);
       render();
     }
-    function onChatContextChange() { state.chatConfig.contextLimit = document.getElementById('chat-context').value; syncChatConfigToActive(); }
+    function toggleChatMore() { state.chatMoreOpen = !state.chatMoreOpen; if (!state.chatMoreOpen) state.chatMorePanel = null; state.chatSkillPopoverOpen = false; render(); }
+    function closeChatMore() { state.chatMoreOpen = false; state.chatMorePanel = null; render(); }
+    function setChatMorePanel(p) { state.chatMorePanel = p; render(); }
+    function toggleChatPerm(k) { state.chatMorePerms[k] = !state.chatMorePerms[k]; render(); }
+    function toggleChatMcp(name) { const i = state.chatMcpOn.indexOf(name); if (i >= 0) state.chatMcpOn.splice(i, 1); else state.chatMcpOn.push(name); render(); }
+    function onChatAgentChange() {
+      const v = document.getElementById('chat-agent').value;
+      const i = v.indexOf('|');
+      if (i > 0) { state.chatConfig.provider = v.slice(0, i); state.chatConfig.model = v.slice(i + 1); syncChatConfigToActive(); }
+    }
     function bindAssistant() {
       const input = document.getElementById('chat-input');
       if (!input) return;
@@ -4919,6 +5016,7 @@
         if (state.chatHistoryOpen) { closeChatHistory(); return; }
         if (state.chatSettingsOpen) { closeChatSettings(); return; }
         if (state.chatSkillPopoverOpen) { state.chatSkillPopoverOpen = false; render(); return; }
+        if (state.chatMoreOpen) { state.chatMoreOpen = false; state.chatMorePanel = null; render(); return; }
         if (state.projectMenuOpen) { state.projectMenuOpen = false; render(); return; }
         closeRcSelects();
       }
@@ -4928,6 +5026,9 @@
       if (!e.target.closest('.rc-select')) closeRcSelects();
       if (state.chatSkillPopoverOpen && !e.target.closest('[data-od-id="chat-skills-zone"]')) {
         state.chatSkillPopoverOpen = false; render();
+      }
+      if (state.chatMoreOpen && !e.target.closest('[data-od-id="chat-more-zone"]') && !e.target.closest('.rc-select')) {
+        state.chatMoreOpen = false; state.chatMorePanel = null; render();
       }
       if (state.projectMenuOpen && !e.target.closest('[onclick*="toggleProjectMenu"]') && !e.target.closest('.relative > .absolute')) {
         state.projectMenuOpen = false; render();
