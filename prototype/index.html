@@ -244,6 +244,9 @@
       100% { transform: translateY(-52px); opacity: 0; }
     }
     .rc-ai-particle { position: absolute; width: 6px; height: 6px; border-radius: 9999px; background: color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 55%, transparent); pointer-events: none; animation: rcFloatUp 6s ease-in-out infinite; }
+    /* message bubbles — wall side keeps a little air, other sides hug the text */
+    .rc-bubble-user { padding: 0.2rem 0.6rem 0.2rem 0.25rem; line-height: 1.5; }
+    .rc-bubble-ai { padding: 0.2rem 0.25rem 0.2rem 0.6rem; line-height: 1.5; }
     html.rc-no-motion .rc-intro, html.rc-no-motion .rc-ai-aurora, html.rc-no-motion .rc-ai-particle { animation: none; }
     html.rc-no-motion .rc-ai-aurora, html.rc-no-motion .rc-ai-particle { display: none; }
     /* Assistant composer: provider/model/effort render as quiet pills on the
@@ -2298,12 +2301,12 @@
       <div class="rc-select relative ${cls}" data-select-id="${id}">
         <input type="hidden" id="${id}" value="${esc(cur.value)}" ${onChange ? `onchange="${onChange}"` : ''}>
         <button type="button" onclick="toggleRcSelect('${id}', event)" class="flex w-full items-center justify-between gap-1.5 rounded-lg ${triggerCls} ${sizes[size]} text-left focus:outline-none focus:ring-2 focus:ring-primary/30 transition">
-          <span class="rc-select-label flex items-center gap-1 min-w-0">${cur.icon ? icon(cur.icon, size === 'xs' ? 'w-3 h-3 shrink-0' : 'w-3.5 h-3.5 shrink-0') : ''}<span class="truncate">${esc(cur.label)}</span></span>
+          <span class="rc-select-label flex items-center gap-1 min-w-0"><span class="rc-select-icon">${cur.icon ? icon(cur.icon, size === 'xs' ? 'w-3 h-3 shrink-0' : 'w-3.5 h-3.5 shrink-0') : ''}</span><span class="rc-select-txt truncate">${esc(cur.label)}</span></span>
           ${icon('chevronDown', (size === 'xs' ? 'w-3 h-3' : 'w-4 h-4') + ' text-muted shrink-0')}
         </button>
         <div class="rc-select-menu absolute left-0 right-0 ${dir === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'} z-50 hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-white p-1 shadow-lg animate-fade-up">
           ${opts.map(o => `
-            <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? 'bg-primary/10 text-primary' : 'text-foreground'}" data-value="${esc(o.value)}">
+            <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? 'bg-primary/10 text-primary' : 'text-foreground'}" data-value="${esc(o.value)}" data-icon="${esc(o.icon || '')}">
               <span class="flex items-center gap-1.5 min-w-0">${o.icon ? icon(o.icon, 'w-3.5 h-3.5 shrink-0') : ''}<span class="truncate">${esc(o.label)}</span></span>
               ${o.value === cur.value ? icon('check', 'w-4 h-4 shrink-0') : ''}
             </button>
@@ -2323,10 +2326,12 @@
     function closeRcSelects() { document.querySelectorAll('.rc-select-menu').forEach(m => m.classList.add('hidden')); }
     function syncRcSelect(wrap, value) {
       const input = wrap.querySelector('input');
-      const label = wrap.querySelector('.rc-select-label');
+      const iconEl = wrap.querySelector('.rc-select-icon');
+      const txt = wrap.querySelector('.rc-select-txt');
       input.value = value;
       const opt = Array.from(wrap.querySelectorAll('.rc-select-option')).find(o => o.dataset.value === value);
-      if (label) label.textContent = opt ? opt.textContent.trim() : value;
+      if (txt) txt.textContent = opt ? opt.textContent.trim() : value;
+      if (iconEl) iconEl.innerHTML = opt && opt.dataset.icon ? icon(opt.dataset.icon, 'w-3.5 h-3.5 shrink-0') : '';
       wrap.querySelectorAll('.rc-select-option').forEach(o => {
         const sel = o.dataset.value === value;
         o.classList.toggle('bg-primary/10', sel);
@@ -2353,8 +2358,8 @@
       if (!wrap || !menu) return;
       const opts = options.map(o => typeof o === 'string' ? { value: String(o), label: String(o) } : o);
       menu.innerHTML = opts.map(o => `
-        <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition text-foreground" data-value="${esc(o.value)}">
-          <span class="truncate">${esc(o.label)}</span>
+        <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition text-foreground" data-value="${esc(o.value)}" data-icon="${esc(o.icon || '')}">
+          <span class="flex items-center gap-1.5 min-w-0">${o.icon ? icon(o.icon, 'w-3.5 h-3.5 shrink-0') : ''}<span class="truncate">${esc(o.label)}</span></span>
         </button>
       `).join('');
       syncRcSelect(wrap, selectedValue === undefined || selectedValue === null ? (opts[0] ? opts[0].value : '') : String(selectedValue));
@@ -4066,7 +4071,7 @@
       if (m.role === 'user') {
         return `
         <div class="flex justify-end${anim}">
-          <div class="max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white pt-0.5 pb-0.5 pl-1 pr-1.5 text-sm leading-snug whitespace-pre-wrap break-words shadow-sm">
+          <div class="rc-bubble-user max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white text-sm whitespace-pre-wrap break-words shadow-sm">
             ${esc(m.text)}
             ${m.attachments && m.attachments.length ? `<div class="mt-2.5 flex flex-wrap gap-1.5">${m.attachments.map(a => `<span class="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-2 py-1 text-xs font-medium">${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3 h-3')} ${esc(a.name)}</span>`).join('')}</div>` : ''}
           </div>
@@ -4084,7 +4089,7 @@
           <div ${m.streaming ? 'id="chat-thoughts" ' : ''}class="${thoughtsOpen ? '' : 'hidden'}rounded-xl border border-border bg-gray-50 px-4 py-3 mb-2 space-y-1.5">
             ${m.thoughts.map(th => `<p class="text-xs text-muted leading-relaxed">${esc(th)}</p>`).join('')}
           </div>` : ''}
-          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground pt-0.5 pb-0.5 pl-1.5 pr-0.5 text-sm leading-snug whitespace-pre-wrap break-words">
+          <div class="rc-bubble-ai rounded-2xl rounded-bl-md bg-gray-100 text-foreground text-sm whitespace-pre-wrap break-words">
             ${m.streaming ? `<span id="chat-stream-text">${esc(m.text)}</span><span class="inline-block w-1.5 h-4 align-[-2px] rounded-sm bg-foreground/60 animate-pulse ml-0.5"></span>` : esc(m.text)}
             ${m.tool ? `<div class="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-muted">${icon('bolt', 'w-3 h-3 text-primary')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
           </div>
