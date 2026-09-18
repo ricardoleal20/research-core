@@ -193,6 +193,8 @@
       50%  { transform: translate3d(2%, -2%, 0) scale(1.04); }
       100% { transform: translate3d(3%, 1%, 0) scale(1.02); }
     }
+    @keyframes rcSidebarFade { from { opacity: 0; } to { opacity: 1; } }
+    .animate-rc-sidebar-fade { animation: rcSidebarFade 260ms ease-out 60ms both; }
     html.dark .rc-wizard-wave::before { opacity: 0.35; }
     html.rc-no-motion .rc-wizard-wave::before { animation: none; }
     @keyframes progressFill {
@@ -452,6 +454,7 @@
         "journal": "Revista / Fuente",
         "doi": "DOI (opcional)",
         "url": "URL (opcional)",
+        "pdf": "PDF path (opcional)",
         "required": "Campo obligatorio",
         "fetch": "Buscar",
         "fetching": "Buscando…",
@@ -463,6 +466,7 @@
         "venue": "Publicación",
         "doi": "DOI",
         "url": "URL",
+        "pdf": "PDF path",
         "abstract": "Resumen",
         "openPdf": "Abrir PDF",
         "noAbstract": "No hay resumen disponible.",
@@ -803,6 +807,7 @@
         "journal": "Journal / Source",
         "doi": "DOI (optional)",
         "url": "URL (optional)",
+        "pdf": "PDF path (optional)",
         "required": "Required field",
         "fetch": "Fetch",
         "fetching": "Fetching…",
@@ -814,6 +819,7 @@
         "venue": "Venue",
         "doi": "DOI",
         "url": "URL",
+        "pdf": "PDF path",
         "abstract": "Abstract",
         "openPdf": "Open PDF",
         "noAbstract": "No abstract available.",
@@ -1154,6 +1160,7 @@
         "journal": "Revista / Fonte",
         "doi": "DOI (opcional)",
         "url": "URL (opcional)",
+        "pdf": "Caminho do PDF (opcional)",
         "required": "Campo obrigatório",
         "fetch": "Buscar",
         "fetching": "Buscando…",
@@ -1165,6 +1172,7 @@
         "venue": "Publicação",
         "doi": "DOI",
         "url": "URL",
+        "pdf": "Caminho do PDF",
         "abstract": "Resumo",
         "openPdf": "Abrir PDF",
         "noAbstract": "Nenhum resumo disponível.",
@@ -1505,6 +1513,7 @@
         "journal": "Revue / Source",
         "doi": "DOI (facultatif)",
         "url": "URL (facultatif)",
+        "pdf": "Chemin du PDF (facultatif)",
         "required": "Champ obligatoire",
         "fetch": "Rechercher",
         "fetching": "Recherche…",
@@ -1516,6 +1525,7 @@
         "venue": "Lieu de publication",
         "doi": "DOI",
         "url": "URL",
+        "pdf": "Chemin du PDF",
         "abstract": "Résumé",
         "openPdf": "Ouvrir le PDF",
         "noAbstract": "Aucun résumé disponible.",
@@ -1746,11 +1756,11 @@
         { role: 'assistant', text: t('assistant.welcome'), tool: null }
       ],
       references: [
-        { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', doi: '10.5555/3295222.3295349', url: 'https://arxiv.org/abs/1706.03762', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
+        { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', doi: '10.5555/3295222.3295349', url: 'https://arxiv.org/abs/1706.03762', pdfPath: '~/ResearchCore/Data/pdfs/attention-is-all-you-need.pdf', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
         { id: 2, title: 'BERT: Pre-training of Deep Bidirectional Transformers', authors: 'Devlin et al.', year: 2019, source: 'Zotero', tags: ['NLP', 'pretraining'], status: 'reviewed', venue: 'NAACL', abstract: 'A new language representation model which stands for Bidirectional Encoder Representations from Transformers.' },
-        { id: 3, title: 'Scaling Laws for Neural Language Models', authors: 'Kaplan et al.', year: 2020, source: 'arXiv', tags: ['scaling', 'LM'], status: 'to-review', venue: 'arXiv', url: 'https://arxiv.org/abs/2001.08361', abstract: 'We study empirical scaling laws for language model performance on the cross-entropy loss.' },
+        { id: 3, title: 'Scaling Laws for Neural Language Models', authors: 'Kaplan et al.', year: 2020, source: 'arXiv', tags: ['scaling', 'LM'], status: 'to-review', venue: 'arXiv', url: 'https://arxiv.org/abs/2001.08361', pdfPath: '~/ResearchCore/Data/pdfs/scaling-laws.pdf', abstract: 'We study empirical scaling laws for language model performance on the cross-entropy loss.' },
         { id: 4, title: 'Language Models are Few-Shot Learners', authors: 'Brown et al.', year: 2020, source: 'Semantic Scholar', tags: ['GPT-3', 'few-shot'], status: 'reviewed', venue: 'NeurIPS', abstract: 'We demonstrate that scaling up language models greatly improves task-agnostic few-shot performance.' },
-        { id: 5, title: 'LoRA: Low-Rank Adaptation of Large Language Models', authors: 'Hu et al.', year: 2021, source: 'arXiv', tags: ['fine-tuning', 'efficiency'], status: 'to-review', venue: 'ICLR', abstract: 'We propose LoRA, an efficient adaptation strategy that injects trainable rank decomposition matrices.' },
+        { id: 5, title: 'LoRA: Low-Rank Adaptation of Large Language Models', authors: 'Hu et al.', year: 2021, source: 'MCP', tags: ['fine-tuning', 'efficiency'], status: 'to-review', venue: 'ICLR', pdfPath: '~/ResearchCore/Data/pdfs/lora.pdf', abstract: 'We propose LoRA, an efficient adaptation strategy that injects trainable rank decomposition matrices.' },
         { id: 6, title: 'Chain-of-Thought Prompting Elicits Reasoning', authors: 'Wei et al.', year: 2022, source: 'Zotero', tags: ['prompting', 'reasoning'], status: 'reviewed', venue: 'NeurIPS', abstract: 'Exploring how generating a chain of thought improves ability of large models to perform complex reasoning.' },
         { id: 7, title: 'Training language models to follow instructions', authors: 'Ouyang et al.', year: 2022, source: 'Semantic Scholar', tags: ['RLHF', 'alignment'], status: 'to-review', venue: 'NeurIPS', abstract: 'Fine-tuning language models with human feedback to follow a diverse set of instructions.' },
         { id: 8, title: 'Llama 2: Open Foundation and Fine-Tuned Chat Models', authors: 'Touvron et al.', year: 2023, source: 'arXiv', tags: ['open-source', 'chat'], status: 'reviewed', venue: 'arXiv', abstract: 'We develop and release Llama 2, a collection of pretrained and fine-tuned large language models.' },
@@ -3005,23 +3015,23 @@
       ];
       return `
         <div class="flex h-screen overflow-hidden bg-background">
-          <aside id="sidebar" class="${state.sidebarCollapsed ? 'w-[68px]' : 'w-64'} flex-shrink-0 border-r border-border bg-card flex flex-col transition-all duration-200">
-            <div class="h-16 flex items-center px-5 border-b border-border">
+          <aside id="sidebar" class="${state.sidebarCollapsed ? 'w-[68px]' : 'w-64'} flex-shrink-0 border-r border-border bg-card flex flex-col overflow-hidden">
+            <div class="h-16 flex items-center px-5 border-b border-border flex-shrink-0">
               <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white mr-3">${icon('sparkle', 'w-4 h-4')}</div>
-              ${!state.sidebarCollapsed ? `<span class="font-serif text-xl italic">${t('appName')}</span>` : ''}
+              ${!state.sidebarCollapsed ? `<span class="font-serif text-xl italic whitespace-nowrap animate-rc-sidebar-fade">${t('appName')}</span>` : ''}
             </div>
             <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
               ${navItems.map(item => `
-                <button data-od-id="nav-${item.id}" onclick="navigate('${item.id}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${state.view === item.id ? 'bg-primary/10 text-primary' : 'text-muted hover:bg-gray-100 hover:text-foreground'} ${state.sidebarCollapsed ? 'justify-center' : ''}">
-                  ${icon(item.icon, 'w-5 h-5')}
-                  ${!state.sidebarCollapsed ? `<span>${item.label}</span>` : ''}
+                <button data-od-id="nav-${item.id}" onclick="navigate('${item.id}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition whitespace-nowrap ${state.view === item.id ? 'bg-primary/10 text-primary' : 'text-muted hover:bg-gray-100 hover:text-foreground'} ${state.sidebarCollapsed ? 'justify-center' : ''}">
+                  ${icon(item.icon, 'w-5 h-5 shrink-0')}
+                  ${!state.sidebarCollapsed ? `<span class="animate-rc-sidebar-fade">${item.label}</span>` : ''}
                 </button>
               `).join('')}
             </nav>
-            <div class="p-3 border-t border-border">
-              <button onclick="toggleSidebar()" class="w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-gray-100 transition">
+            <div class="p-3 border-t border-border flex-shrink-0">
+              <button onclick="toggleSidebar()" class="w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-gray-100 transition whitespace-nowrap">
                 ${state.sidebarCollapsed ? icon('chevron', 'w-4 h-4 rotate-180') : icon('chevron', 'w-4 h-4')}
-                ${!state.sidebarCollapsed ? `<span>${t('common.collapse')}</span>` : ''}
+                ${!state.sidebarCollapsed ? `<span class="animate-rc-sidebar-fade">${t('common.collapse')}</span>` : ''}
               </button>
             </div>
           </aside>
@@ -3045,7 +3055,20 @@
         </div>`;
     }
     function bindShell() {}
-    function toggleSidebar() { state.sidebarCollapsed = !state.sidebarCollapsed; render(); }
+    function toggleSidebar() {
+      const wasCollapsed = state.sidebarCollapsed;
+      state.sidebarCollapsed = !wasCollapsed;
+      render();
+      const sb = document.getElementById('sidebar');
+      if (!sb || !state.settings.animations) return;
+      // render() rebuilds the DOM, so tailwind transition classes alone can't
+      // animate between states — do a one-shot width animation instead.
+      sb.style.width = wasCollapsed ? '256px' : '68px';
+      void sb.offsetWidth;
+      sb.style.transition = 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)';
+      sb.style.width = state.sidebarCollapsed ? '68px' : '256px';
+      sb.addEventListener('transitionend', () => { sb.style.transition = ''; sb.style.width = ''; }, { once: true });
+    }
     function toggleProjectMenu(e) {
       if (e) e.stopPropagation();
       state.projectMenuOpen = !state.projectMenuOpen;
@@ -3373,7 +3396,7 @@
       const sourceFilter = state.refSourceFilter || 'all';
       let rows = state.references.filter(r => r.title.toLowerCase().includes(filter.toLowerCase()) || r.authors.toLowerCase().includes(filter.toLowerCase()));
       if (sourceFilter !== 'all') rows = rows.filter(r => r.source.toLowerCase() === sourceFilter.toLowerCase());
-      const sourceColor = { 'Zotero': 'warning', 'arXiv': 'primary', 'Semantic Scholar': 'success', 'Manual': 'muted' };
+      const sourceColor = { 'Zotero': 'warning', 'arXiv': 'primary', 'Semantic Scholar': 'success', 'Manual': 'muted', 'MCP': 'medium' };
       const statusColor = { 'reviewed': 'success', 'to-review': 'warning' };
       return `
         <div class="space-y-6">
@@ -3394,6 +3417,7 @@
               { value: 'Zotero', label: 'Zotero' },
               { value: 'arXiv', label: 'arXiv' },
               { value: 'Semantic Scholar', label: 'Semantic Scholar' },
+              { value: 'MCP', label: 'MCP' },
               { value: 'Manual', label: 'Manual' },
             ], value: sourceFilter })}
           </div>
@@ -4046,9 +4070,10 @@
               <p id="new-ref-doi-status" class="hidden mt-1.5 text-xs"></p>
             </div>
             <div><label class="block text-sm font-medium mb-1.5">${t('references.form.url')}</label><input id="new-ref-url" type="url" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="https://…"></div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.pdf')}</label><input id="new-ref-pdf" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="~/ResearchCore/Data/pdfs/…"></div>
             <div class="grid grid-cols-2 gap-4">
               <div><label class="block text-sm font-medium mb-1.5">${t('references.form.year')}</label>${rcSelect({ id: 'new-ref-year', options: Array.from({ length: 100 }, (_, i) => String(new Date().getFullYear() - i)), value: new Date().getFullYear() })}</div>
-              <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label>${rcSelect({ id: 'new-ref-source', options: ['Manual', 'arXiv', 'Zotero', 'Semantic Scholar'] })}</div>
+              <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label>${rcSelect({ id: 'new-ref-source', options: ['Manual', 'arXiv', 'Zotero', 'Semantic Scholar', 'MCP'] })}</div>
             </div>
           </div>
           <div class="mt-6 flex justify-end gap-2">
@@ -4108,6 +4133,7 @@
         tags: ['new'], status: 'to-review', venue: journal,
         doi: document.getElementById('new-ref-doi')?.value.trim() || '',
         url: document.getElementById('new-ref-url')?.value.trim() || '',
+        pdfPath: document.getElementById('new-ref-pdf')?.value.trim() || '',
         abstract: ''
       });
       closeAddRef();
@@ -4189,11 +4215,12 @@
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.venue')}</p><p class="text-sm">${esc(r.venue)}</p></div>
             ${r.doi ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.doi')}</p><p class="text-sm font-mono">${esc(r.doi)}</p></div>` : ''}
             ${r.url ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.url')}</p><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:underline break-all">${esc(r.url)}</a></div>` : ''}
-            <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.headers.source')}</p>${badge(r.source, r.source === 'Zotero' ? 'warning' : r.source === 'arXiv' ? 'primary' : r.source === 'Semantic Scholar' ? 'success' : 'muted')}</div>
+            ${r.pdfPath ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.pdf')}</p><p class="text-sm font-mono break-all flex items-start gap-1.5">${icon('folder', 'w-4 h-4 text-muted shrink-0 mt-0.5')}<span>${esc(r.pdfPath)}</span></p></div>` : ''}
+            <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.headers.source')}</p>${badge(r.source, r.source === 'Zotero' ? 'warning' : r.source === 'arXiv' ? 'primary' : r.source === 'Semantic Scholar' ? 'success' : r.source === 'MCP' ? 'medium' : 'muted')}</div>
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.headers.tags')}</p><div class="flex flex-wrap gap-2">${r.tags.map(t => badge(t, 'muted')).join('')}</div></div>
             <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t('references.detail.abstract')}</p><p class="text-sm text-muted leading-relaxed">${esc(r.abstract) || t('references.detail.noAbstract')}</p></div>
             <div class="pt-4 border-t border-border">
-              ${btn({ label: t('references.detail.openPdf'), variant: 'secondary', size: 'sm', iconName: 'folder', cls: 'w-full', onClick: "alert(t('references.detail.openPdfAlert'))" })}
+              ${btn({ label: t('references.detail.openPdf'), variant: 'secondary', size: 'sm', iconName: 'folder', cls: 'w-full', onClick: `alert(t('references.detail.openPdfAlert')${r.pdfPath ? ` + '\\n' + ${JSON.stringify(r.pdfPath)}` : ''})` })}
             </div>
           </div>
         </div>`;
