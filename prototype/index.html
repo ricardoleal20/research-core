@@ -245,8 +245,8 @@
     }
     .rc-ai-particle { position: absolute; width: 6px; height: 6px; border-radius: 9999px; background: color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 55%, transparent); pointer-events: none; animation: rcFloatUp 6s ease-in-out infinite; }
     /* message bubbles — wall side keeps a little air, other sides hug the text */
-    .rc-bubble-user { padding: 0.2rem 0.6rem 0.2rem 0.25rem; line-height: 1.5; }
-    .rc-bubble-ai { padding: 0.2rem 0.25rem 0.2rem 0.6rem; line-height: 1.5; }
+    .rc-bubble-user { padding: 3px 7px 3px 3px; line-height: 1.5; }
+    .rc-bubble-ai { padding: 3px 3px 3px 7px; line-height: 1.5; }
     html.rc-no-motion .rc-intro, html.rc-no-motion .rc-ai-aurora, html.rc-no-motion .rc-ai-particle { animation: none; }
     html.rc-no-motion .rc-ai-aurora, html.rc-no-motion .rc-ai-particle { display: none; }
     /* Assistant composer: provider/model/effort render as quiet pills on the
@@ -2307,8 +2307,8 @@
         <div class="rc-select-menu absolute left-0 right-0 ${dir === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'} z-50 hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-white p-1 shadow-lg animate-fade-up">
           ${opts.map(o => `
             <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? 'bg-primary/10 text-primary' : 'text-foreground'}" data-value="${esc(o.value)}" data-icon="${esc(o.icon || '')}">
-              <span class="flex items-center gap-1.5 min-w-0">${o.icon ? icon(o.icon, 'w-3.5 h-3.5 shrink-0') : ''}<span class="truncate">${esc(o.label)}</span></span>
-              ${o.value === cur.value ? icon('check', 'w-4 h-4 shrink-0') : ''}
+              <span class="flex items-center gap-1.5 min-w-0"><span class="rc-opt-icon">${o.icon ? icon(o.icon, 'w-3.5 h-3.5 shrink-0') : ''}</span><span class="truncate">${esc(o.label)}</span></span>
+              <span class="rc-opt-check">${o.value === cur.value ? icon('check', 'w-4 h-4 shrink-0') : ''}</span>
             </button>
           `).join('')}
         </div>
@@ -2336,8 +2336,8 @@
         const sel = o.dataset.value === value;
         o.classList.toggle('bg-primary/10', sel);
         o.classList.toggle('text-primary', sel);
-        o.querySelectorAll('svg').forEach(sv => sv.remove());
-        if (sel) o.insertAdjacentHTML('beforeend', icon('check', 'w-4 h-4 shrink-0'));
+        o.querySelectorAll('.rc-opt-check').forEach(x => x.remove());
+        if (sel) o.insertAdjacentHTML('beforeend', '<span class="rc-opt-check">' + icon('check', 'w-4 h-4 shrink-0') + '</span>');
       });
     }
     function pickRcSelect(id, value, ev) {
@@ -2719,7 +2719,7 @@
       const steps = ['lang', 'folder', 'ai', 'init', 'vault', 'appearance', 'mcp'];
       const step = state.onboardingStep;
       const stepTitles = [t('onboarding.stepLang'), t('onboarding.stepFolder'), t('onboarding.stepAI'), t('onboarding.stepInit'), t('onboarding.stepVault'), t('onboarding.stepAppearance'), t('onboarding.stepMcp')];
-      const canAdvance = step === 0 ? state.onboardingLangSelected
+      const canAdvance = step === 0 ? (state.onboardingLangSelected || !!lang)
                          : step === 1 ? true
                          : step === 2 ? (state.aiTestStatus === 'success' || state.settings.aiSkipped)
                          : step === 3 ? !!state.initAcceptedProject
@@ -3235,7 +3235,7 @@
     }
 
     function onboardingNext() {
-      if (state.onboardingStep === 0 && !state.onboardingLangSelected) return;
+      if (state.onboardingStep === 0 && !state.onboardingLangSelected && !lang) return;
       if (state.onboardingStep === 1) state.settings.dataFolder = document.getElementById('data-folder').value || state.settings.dataFolder;
       if (state.onboardingStep === 2) {
         const cfg = LLM_PROVIDER_CONFIG[state.settings.llmProvider] || LLM_PROVIDER_CONFIG.Personal;
