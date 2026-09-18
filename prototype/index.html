@@ -463,6 +463,7 @@
         "doi": "DOI (opcional)",
         "url": "URL (opcional)",
         "pdf": "PDF path (opcional)",
+        "extraOptions": "Opciones extra",
         "required": "Campo obligatorio",
         "fetch": "Buscar",
         "fetching": "Buscando…",
@@ -860,6 +861,7 @@
         "doi": "DOI (optional)",
         "url": "URL (optional)",
         "pdf": "PDF path (optional)",
+        "extraOptions": "Extra options",
         "required": "Required field",
         "fetch": "Fetch",
         "fetching": "Fetching…",
@@ -1257,6 +1259,7 @@
         "doi": "DOI (opcional)",
         "url": "URL (opcional)",
         "pdf": "Caminho do PDF (opcional)",
+        "extraOptions": "Opções extra",
         "required": "Campo obrigatório",
         "fetch": "Buscar",
         "fetching": "Buscando…",
@@ -1654,6 +1657,7 @@
         "doi": "DOI (facultatif)",
         "url": "URL (facultatif)",
         "pdf": "Chemin du PDF (facultatif)",
+        "extraOptions": "Options supplémentaires",
         "required": "Champ obligatoire",
         "fetch": "Rechercher",
         "fetching": "Recherche…",
@@ -1930,6 +1934,7 @@
       initAcceptedProject: null,
       commandPaletteOpen: false,
       addRefOpen: false,
+      refExtraOpen: false,
       addActionOpen: false,
       selectedReference: null,
       detailDrawerOpen: false,
@@ -3273,10 +3278,13 @@
       if (!sb || !state.settings.animations) return;
       // render() rebuilds the DOM, so tailwind transition classes alone can't
       // animate between states — do a one-shot width animation instead.
-      sb.style.width = wasCollapsed ? '256px' : '68px';
+      const fromW = wasCollapsed ? '68px' : '256px';
+      const toW = state.sidebarCollapsed ? '68px' : '256px';
+      sb.style.transition = 'none';
+      sb.style.width = fromW;
       void sb.offsetWidth;
       sb.style.transition = 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)';
-      sb.style.width = state.sidebarCollapsed ? '68px' : '256px';
+      sb.style.width = toW;
       sb.addEventListener('transitionend', () => { sb.style.transition = ''; sb.style.width = ''; }, { once: true });
     }
     function toggleProjectMenu(e) {
@@ -4566,6 +4574,14 @@
       if (err) err.classList.remove('hidden');
     }
     const REF_REQUIRED_FIELDS = ['title', 'authors', 'journal'];
+    function toggleRefExtra() {
+      state.refExtraOpen = !state.refExtraOpen;
+      const box = document.getElementById('ref-extra-options');
+      const btn = document.querySelector('.rc-modal .rounded-xl.border button');
+      if (box) box.classList.toggle('hidden', !state.refExtraOpen);
+      const chev = btn && btn.querySelector('svg');
+      if (chev) chev.style.transform = state.refExtraOpen ? 'rotate(180deg)' : '';
+    }
     function renderAddRefDialog() {
       const overlay = document.createElement('div');
       overlay.className = 'rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm';
@@ -4576,22 +4592,30 @@
         <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
           <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t('references.add')}</h3><button onclick="closeAddRef()" class="p-1 rounded hover:bg-gray-100">${icon('close', 'w-5 h-5')}</button></div>
           <div class="space-y-4">
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.title')}${req}</label><input id="new-ref-title" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('title')" autofocus>${errP('title')}</div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.authors')}${req}</label><input id="new-ref-authors" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('authors')">${errP('authors')}</div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.journal')}${req}</label><input id="new-ref-journal" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('journal')" placeholder="${t('references.form.journal')}">${errP('journal')}</div>
             <div>
               <label class="block text-sm font-medium mb-1.5">${t('references.form.doi')}</label>
               <div class="flex gap-2">
-                <input id="new-ref-doi" class="flex-1 rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="10.1000/xxxx">
+                <input id="new-ref-doi" class="flex-1 rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="10.1000/xxxx" autofocus>
                 <button type="button" id="doi-fetch-btn" onclick="fetchDoi()" class="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-gray-50 transition">${icon('search', 'w-4 h-4')} ${t('references.form.fetch')}</button>
               </div>
               <p id="new-ref-doi-status" class="hidden mt-1.5 text-xs"></p>
             </div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.url')}</label><input id="new-ref-url" type="url" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="https://…"></div>
-            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.pdf')}</label><input id="new-ref-pdf" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="~/ResearchCore/Data/pdfs/…"></div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.title')}${req}</label><input id="new-ref-title" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('title')">${errP('title')}</div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.authors')}${req}</label><input id="new-ref-authors" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('authors')">${errP('authors')}</div>
+            <div><label class="block text-sm font-medium mb-1.5">${t('references.form.journal')}${req}</label><input id="new-ref-journal" class="w-full rounded-lg border border-border px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" oninput="clearRefError('journal')" placeholder="${t('references.form.journal')}">${errP('journal')}</div>
             <div class="grid grid-cols-2 gap-4">
               <div><label class="block text-sm font-medium mb-1.5">${t('references.form.year')}</label>${rcSelect({ id: 'new-ref-year', options: Array.from({ length: 100 }, (_, i) => String(new Date().getFullYear() - i)), value: new Date().getFullYear() })}</div>
               <div><label class="block text-sm font-medium mb-1.5">${t('references.form.source')}</label>${rcSelect({ id: 'new-ref-source', options: ['Manual', 'arXiv', 'Zotero', 'Semantic Scholar', 'MCP'] })}</div>
+            </div>
+            <div class="rounded-xl border border-border overflow-hidden">
+              <button type="button" onclick="toggleRefExtra()" class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-foreground hover:bg-gray-50 transition">
+                <span>${t('references.form.extraOptions')}</span>
+                ${icon('chevronDown', 'w-4 h-4 text-muted transition-transform duration-200')}
+              </button>
+              <div id="ref-extra-options" class="px-4 pb-4 space-y-4 ${state.refExtraOpen ? '' : 'hidden'}">
+                <div><label class="block text-sm font-medium mb-1.5">${t('references.form.url')}</label><input id="new-ref-url" type="url" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="https://…"></div>
+                <div><label class="block text-sm font-medium mb-1.5">${t('references.form.pdf')}</label><input id="new-ref-pdf" class="w-full rounded-lg border border-border px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" placeholder="~/ResearchCore/Data/pdfs/…"></div>
+              </div>
             </div>
           </div>
           <div class="mt-6 flex justify-end gap-2">
@@ -4625,6 +4649,7 @@
         fill('journal', (data['container-title'] || [])[0]);
         const year = data.issued?.['date-parts']?.[0]?.[0];
         if (year) setRcSelectValue('new-ref-year', String(year));
+        if (data.URL) { state.refExtraOpen = true; const extra = document.getElementById('ref-extra-options'); if (extra) extra.classList.remove('hidden'); }
         fill('url', data.URL);
         setStatus(t('references.form.fetched'), 'text-emerald-600');
       } catch (e) {
