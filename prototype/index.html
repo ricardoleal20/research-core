@@ -219,7 +219,7 @@
       100% { transform: translate3d(-2%, 1.5%, 0) scale(0.98); }
     }
     .rc-ai-aurora {
-      position: absolute; left: 50%; top: 52%; width: 94%; max-width: 860px;
+      position: absolute; left: 50%; top: 52%; width: 30%; max-width: 320px;
       transform: translate(-50%, -50%);
       aspect-ratio: 1 / 1;
       border-radius: 9999px;
@@ -227,14 +227,14 @@
       pointer-events: none; z-index: 0;
     }
     .rc-ai-aurora::before {
-      content: ''; position: absolute; inset: -34%;
+      content: ''; position: absolute; inset: -38%;
       background:
         radial-gradient(circle at 50% 50%,
-          color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 34%, transparent) 0%,
-          color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 16%, transparent) 40%,
-          color-mix(in srgb, hsl(188 60% 40%) 9%, transparent) 58%,
+          color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 18%, transparent) 0%,
+          color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 9%, transparent) 42%,
+          color-mix(in srgb, hsl(188 60% 40%) 5%, transparent) 58%,
           transparent 72%);
-      filter: blur(30px);
+      filter: blur(24px);
       animation: rcAurora 16s ease-in-out infinite alternate;
     }
     @keyframes rcFloatUp {
@@ -2075,6 +2075,7 @@
       chatMorePanel: null,
       chatMorePerms: { read: true, write: true, network: false },
       chatMcpOn: ['Zotero', 'Filesystem'],
+      chatDragOver: false,
       chatSettingsDraft: { contextProjectIds: [], skillIds: [] },
       references: [
         { id: 1, title: 'Attention Is All You Need', authors: 'Vaswani et al.', year: 2017, source: 'Manual', tags: ['transformers', 'attention'], status: 'reviewed', venue: 'NeurIPS', doi: '10.5555/3295222.3295349', url: 'https://arxiv.org/abs/1706.03762', pdfPath: '~/ResearchCore/Data/pdfs/attention-is-all-you-need.pdf', abstract: 'We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.' },
@@ -2285,7 +2286,10 @@
     function rcSelect({ id, options, value, onChange = '', size = 'md', cls = '', dir = 'up', variant = 'default' }) {
       const opts = options.map(o => typeof o === 'string' ? { value: String(o), label: String(o) } : o);
       const val = value === undefined || value === null ? (opts[0] ? opts[0].value : '') : String(value);
-      const cur = opts.find(o => o.value === val) || { value: val, label: val };
+      const matched = opts.find(o => o.value === val);
+      const cur = matched || (val.indexOf('|') > 0
+        ? { value: val, label: val, icon: (opts.find(o => (o.value || '').indexOf(val.slice(0, val.indexOf('|'))) === 0) || {}).icon }
+        : { value: val, label: val });
       const sizes = { xs: 'px-2 py-1 text-[11px]', sm: 'px-2.5 py-1.5 text-xs', md: 'px-4 py-2.5 text-sm' };
       const triggerCls = variant === 'ghost'
         ? 'border-transparent bg-transparent text-muted hover:bg-gray-50 hover:text-foreground'
@@ -4062,7 +4066,7 @@
       if (m.role === 'user') {
         return `
         <div class="flex justify-end${anim}">
-          <div class="max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white pl-1.5 pb-0.5 pt-0.5 pr-2.5 text-sm leading-snug whitespace-pre-wrap break-words shadow-sm">
+          <div class="max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white pt-0.5 pb-0.5 pl-1 pr-1.5 text-sm leading-snug whitespace-pre-wrap break-words shadow-sm">
             ${esc(m.text)}
             ${m.attachments && m.attachments.length ? `<div class="mt-2.5 flex flex-wrap gap-1.5">${m.attachments.map(a => `<span class="inline-flex items-center gap-1.5 rounded-md bg-white/20 px-2 py-1 text-xs font-medium">${icon(a.kind === 'image' ? 'image' : a.kind === 'link' ? 'link' : a.kind === 'tex' ? 'code' : 'fileText', 'w-3 h-3')} ${esc(a.name)}</span>`).join('')}</div>` : ''}
           </div>
@@ -4080,7 +4084,7 @@
           <div ${m.streaming ? 'id="chat-thoughts" ' : ''}class="${thoughtsOpen ? '' : 'hidden'}rounded-xl border border-border bg-gray-50 px-4 py-3 mb-2 space-y-1.5">
             ${m.thoughts.map(th => `<p class="text-xs text-muted leading-relaxed">${esc(th)}</p>`).join('')}
           </div>` : ''}
-          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground pl-2.5 pr-1.5 pb-0.5 pt-0.5 text-sm leading-snug whitespace-pre-wrap break-words">
+          <div class="rounded-2xl rounded-bl-md bg-gray-100 text-foreground pt-0.5 pb-0.5 pl-1.5 pr-0.5 text-sm leading-snug whitespace-pre-wrap break-words">
             ${m.streaming ? `<span id="chat-stream-text">${esc(m.text)}</span><span class="inline-block w-1.5 h-4 align-[-2px] rounded-sm bg-foreground/60 animate-pulse ml-0.5"></span>` : esc(m.text)}
             ${m.tool ? `<div class="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-muted">${icon('bolt', 'w-3 h-3 text-primary')} ${t('assistant.tool')}: ${esc(m.tool)}</div>` : ''}
           </div>
@@ -4266,8 +4270,8 @@
             <button id="chat-send" onclick="sendChatMessage()" class="rounded-lg bg-primary text-white h-9 w-9 grid place-items-center hover:opacity-90 active:scale-95 transition ring-focus" aria-label="${t('assistant.send')}" data-od-id="chat-send">${icon('arrowRight', 'w-5 h-5')}</button>
           </div>
         </div>
-        <div class="flex items-end gap-2 mt-2.5 pt-2.5 border-t border-border">
-          <span class="caption text-muted pb-2 shrink-0">${t('assistant.model')}</span>
+        <div class="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-border">
+          <span class="caption text-muted shrink-0">${t('assistant.model')}</span>
           <div class="flex-1 min-w-0">
             ${rcSelect({ id: 'chat-agent', size: 'xs', variant: 'ghost', cls: 'w-full', options: chatModelOptions(), value: state.chatConfig.provider + '|' + model, onChange: 'onChatAgentChange()' })}
           </div>
@@ -4363,6 +4367,30 @@
       const send = document.getElementById('chat-send');
       const syncSend = () => { if (send) send.disabled = !(input.value.trim() || state.chatAttachments.length); };
       if (state.chatThinking) startThinkingOrb();
+      const comp = document.getElementById('chat-composer');
+      if (comp && !comp.__rcDragBound) {
+        comp.__rcDragBound = true;
+        const onDrag = (active) => (e) => {
+          e.preventDefault();
+          if (state.chatDragOver !== active) {
+            state.chatDragOver = active;
+            comp.classList.toggle('ring-2', active);
+            comp.classList.toggle('ring-primary/50', active);
+            comp.classList.toggle('border-primary/50', active);
+          }
+        };
+        comp.addEventListener('dragover', onDrag(true));
+        comp.addEventListener('dragleave', (e) => { if (!comp.contains(e.relatedTarget)) onDrag(false)(e); });
+        comp.addEventListener('drop', (e) => {
+          e.preventDefault();
+          onDrag(false)(e);
+          attachDroppedFiles(e.dataTransfer && e.dataTransfer.files);
+        });
+      }
+      input.onpaste = (e) => {
+        const files = e.clipboardData && e.clipboardData.files;
+        if (files && files.length) { e.preventDefault(); attachDroppedFiles(files); }
+      };
       input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } };
       input.oninput = () => {
         input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; syncSend();
@@ -4398,6 +4426,17 @@
         next.dispatchEvent(new Event('input'));
         next.focus();
       }
+    }
+    function attachDroppedFiles(files) {
+      const list = Array.from(files || []);
+      if (!list.length) return;
+      state.chatAttachments.push(...list.map(f => {
+        const t = f.type || '';
+        const name = f.name || '';
+        const kind = t.startsWith('image') ? 'image' : t === 'application/pdf' ? 'pdf' : /\.(tex|bib|txt|md)$/i.test(name) ? 'tex' : 'file';
+        return { kind, name };
+      }));
+      rerenderComposerKeep();
     }
     function attachChatFiles(kind) {
       const input = document.createElement('input');
