@@ -203,6 +203,23 @@
     .rc-orb:nth-child(2) { animation-delay: 0.15s; }
     .rc-orb:nth-child(3) { animation-delay: 0.3s; }
     html.rc-no-motion .rc-orb { animation: none; opacity: 0.5; }
+    /* thinking orbs (thinkingorbs / shadcn-style wave) */
+    @keyframes rcOrbWave {
+      0%, 55%, 100% { transform: scale(0.45); opacity: 0.3; }
+      28% { transform: scale(1); opacity: 1; }
+    }
+    .rc-orbs { display: inline-flex; align-items: center; gap: 4px; }
+    .rc-orbs i {
+      width: 5px; height: 5px; border-radius: 9999px;
+      background: var(--accent, hsl(211 58% 45%));
+      box-shadow: 0 0 6px color-mix(in srgb, var(--accent, hsl(211 58% 45%)) 65%, transparent);
+      animation: rcOrbWave 1.4s ease-in-out infinite;
+    }
+    .rc-orbs i:nth-child(2) { animation-delay: 0.12s; }
+    .rc-orbs i:nth-child(3) { animation-delay: 0.24s; }
+    .rc-orbs i:nth-child(4) { animation-delay: 0.36s; }
+    .rc-orbs i:nth-child(5) { animation-delay: 0.48s; }
+    html.rc-no-motion .rc-orbs i { animation: none; }
     @keyframes rcIntro {
       from { opacity: 0; transform: translateY(14px) scale(0.985); }
       to { opacity: 1; transform: translateY(0) scale(1); }
@@ -549,10 +566,10 @@
       "welcome": "Hola. Soy el asistente de ResearchCore. Pregúntame sobre las referencias de tu proyecto.",
       "welcomeTitle": "Bienvenido",
       "welcomeSub": "Pregúntame lo que sea sobre tu investigación.",
-      "suggest1": "Resume mis últimas referencias",
-      "suggest2": "Encuentra vacíos en mi revisión de literatura",
-      "suggest3": "Redacta la sección de trabajos relacionados",
-      "suggest4": "Sugiéreme una metodología para mi revisión",
+      "suggest1": "🪄 Resume las últimas referencias de «{project}»",
+      "suggest2": "📚 Encuentra vacíos en la revisión de {field}",
+      "suggest3": "✍️ Redacta el related-work de «{project}»",
+      "suggest4": "🧩 Sugiere una metodología para {field}",
       "thinking": "Pensando",
       "thoughtFor": "Pensó por {s}s",
       "thought1": "Revisando las referencias del proyecto activo…",
@@ -970,10 +987,10 @@
       "welcome": "Hello. I am the ResearchCore assistant. Ask me about your project references.",
       "welcomeTitle": "Welcome",
       "welcomeSub": "Ask me anything about your research.",
-      "suggest1": "Summarize my latest references",
-      "suggest2": "Find gaps in my literature review",
-      "suggest3": "Draft the related-work section",
-      "suggest4": "Suggest a methodology for my review",
+      "suggest1": "🪄 Summarize the latest references of {project}",
+      "suggest2": "📚 Find gaps in the {field} review",
+      "suggest3": "✍️ Draft the related-work for {project}",
+      "suggest4": "🧩 Suggest a methodology for {field}",
       "thinking": "Thinking",
       "thoughtFor": "Thought for {s}s",
       "thought1": "Reviewing the active project's references…",
@@ -1381,10 +1398,10 @@
       "welcome": "Olá. Sou o assistente do ResearchCore. Pergunta-me sobre as referências do teu projeto.",
       "welcomeTitle": "Bem-vindo",
       "welcomeSub": "Pergunta-me o que quiseres sobre a tua investigação.",
-      "suggest1": "Resume as minhas últimas referências",
-      "suggest2": "Encontra lacunas na minha revisão de literatura",
-      "suggest3": "Redige a secção de trabalhos relacionados",
-      "suggest4": "Sugere uma metodologia para a minha revisão",
+      "suggest1": "🪄 Resume as últimas referências de {project}",
+      "suggest2": "📚 Encontra lacunas na revisão de {field}",
+      "suggest3": "✍️ Redige o related-work de {project}",
+      "suggest4": "🧩 Sugere uma metodologia para {field}",
       "thinking": "A pensar",
       "thoughtFor": "Pensou durante {s}s",
       "thought1": "A rever as referências do projeto ativo…",
@@ -1782,10 +1799,10 @@
       "welcome": "Bonjour. Je suis l'assistant ResearchCore. Posez-moi des questions sur les références de votre projet.",
       "welcomeTitle": "Bienvenue",
       "welcomeSub": "Posez-moi toutes vos questions sur votre recherche.",
-      "suggest1": "Résumer mes dernières références",
-      "suggest2": "Trouver les lacunes de ma revue de littérature",
-      "suggest3": "Rédiger la section travaux liés",
-      "suggest4": "Me suggérer une méthodologie pour ma revue",
+      "suggest1": "🪄 Résumez les dernières références de {project}",
+      "suggest2": "📚 Trouvez les lacunes de la revue de {field}",
+      "suggest3": "✍️ Rédigez les travaux liés de {project}",
+      "suggest4": "🧩 Suggérez une méthodologie pour {field}",
       "thinking": "Réflexion",
       "thoughtFor": "A réfléchi pendant {s}s",
       "thought1": "Révision des références du projet actif…",
@@ -2591,7 +2608,7 @@
       OpenAI: { icon: 'openai', hasToken: true, hasBaseUrl: false, defaultBaseUrl: 'https://api.openai.com/v1', defaultModels: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini', 'o3-mini'] },
       Anthropic: { icon: 'anthropic', hasToken: true, hasBaseUrl: false, defaultBaseUrl: 'https://api.anthropic.com/v1', defaultModels: ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-3-5-sonnet'] },
       Ollama: { icon: 'ollama', hasToken: false, hasBaseUrl: true, defaultBaseUrl: 'http://localhost:11434', defaultModels: ['llama3.1', 'qwen2.5', 'mistral', 'phi3', 'gemma2'] },
-      Personal: { icon: 'personal', hasToken: true, hasBaseUrl: true, defaultBaseUrl: 'https://api.openai.com/v1', defaultModels: [] },
+      Personal: { icon: 'personal', hasToken: true, hasBaseUrl: true, defaultBaseUrl: 'https://api.tokenfactory.corvex.cloud/v1', defaultModels: ['zai-org/GLM-5.3', 'deepseek-ai/DeepSeek-V4-Flash'] },
     };
     function setLlmProvider(provider, prefix) {
       state.settings.llmProvider = provider;
@@ -3900,11 +3917,25 @@
       const cfg = LLM_PROVIDER_CONFIG[state.chatConfig.provider] || LLM_PROVIDER_CONFIG.Personal;
       return cfg.defaultModels.length ? cfg.defaultModels : [state.settings.llmModel];
     }
+    function aiSuggestions() {
+      const p = activeProject();
+      const name = p ? p.name : '';
+      const field = p ? p.field : '';
+      return [
+        t('assistant.suggest1').replace('{project}', name).replace('{field}', field),
+        t('assistant.suggest2').replace('{project}', name).replace('{field}', field),
+        t('assistant.suggest3').replace('{project}', name).replace('{field}', field),
+        t('assistant.suggest4').replace('{project}', name).replace('{field}', field),
+      ];
+    }
+    function thinkingOrbs() {
+      return '<span class="rc-orbs" aria-label="thinking"><i></i><i></i><i></i><i></i><i></i></span>';
+    }
     function renderAssistant() {
       const chat = activeChat();
       const msgs = chat ? chat.messages : [];
       const empty = msgs.length === 0 && !state.chatThinking;
-      const suggestions = [t('assistant.suggest1'), t('assistant.suggest2'), t('assistant.suggest3'), t('assistant.suggest4')];
+      const suggestions = aiSuggestions();
       const composer = renderChatComposer();
       return `
         <div class="h-[calc(100vh-112px)] flex flex-col" data-od-id="assistant-view">
@@ -3928,19 +3959,23 @@
           </div>
           ${empty ? `
           <div class="relative flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full px-4 -mt-6 overflow-hidden" data-od-id="assistant-welcome">
-            <div class="rc-ai-aurora"></div>
-            <div class="rc-ai-particle" style="left:12%; top:36%; animation-delay:0s"></div>
-            <div class="rc-ai-particle" style="left:84%; top:50%; animation-delay:1.8s"></div>
-            <div class="rc-ai-particle" style="left:22%; top:72%; animation-delay:3.2s"></div>
-            <div class="rc-ai-particle" style="left:76%; top:24%; animation-delay:4.6s"></div>
-            <div class="rc-ai-particle" style="left:48%; top:82%; animation-delay:2.6s"></div>
-            <div class="relative z-10 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-6 rc-intro">${icon('sparkle', 'w-5 h-5')}</div>
-            <h2 class="relative z-10 font-serif text-6xl italic mb-4 text-center rc-intro rc-intro-1">${t('assistant.welcomeTitle')}</h2>
-            <p class="relative z-10 body-lg text-muted text-center max-w-md mb-9 rc-intro rc-intro-2">${t('assistant.welcomeSub')}</p>
-            <div class="relative z-10 flex flex-wrap justify-center gap-2.5 mb-9 w-full rc-intro rc-intro-3">
-              ${suggestions.map(q => `
-                <button type="button" onclick="fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-card px-4 py-2 text-sm text-muted hover:-translate-y-0.5 hover:border-primary/40 hover:bg-primary/5 hover:text-primary hover:shadow-sm active:scale-[0.97] transition-all duration-200 ring-focus">${esc(q)}</button>
-              `).join('')}
+            <div class="relative -mb-10 flex flex-col items-center w-full">
+              <div class="pointer-events-none absolute -inset-x-16 -top-12 -bottom-16 z-0">
+                <div class="rc-ai-aurora"></div>
+                <div class="rc-ai-particle" style="left:12%; top:34%; animation-delay:0s"></div>
+                <div class="rc-ai-particle" style="left:84%; top:52%; animation-delay:1.8s"></div>
+                <div class="rc-ai-particle" style="left:20%; top:72%; animation-delay:3.2s"></div>
+                <div class="rc-ai-particle" style="left:78%; top:22%; animation-delay:4.6s"></div>
+                <div class="rc-ai-particle" style="left:50%; top:84%; animation-delay:2.6s"></div>
+              </div>
+              <div class="relative z-10 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-6 rc-intro">${icon('sparkle', 'w-5 h-5')}</div>
+              <h2 class="relative z-10 font-serif text-6xl italic mb-4 text-center rc-intro rc-intro-1">${t('assistant.welcomeTitle')}</h2>
+              <p class="relative z-10 body-lg text-muted text-center max-w-md mb-8 rc-intro rc-intro-2">${t('assistant.welcomeSub')}</p>
+              <div class="relative z-10 flex flex-wrap justify-center gap-2.5 w-full rc-intro rc-intro-3">
+                ${suggestions.map(q => `
+                  <button type="button" onclick="fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-card px-4 py-2 text-sm text-muted hover:-translate-y-0.5 hover:border-primary/40 hover:bg-primary/5 hover:text-primary hover:shadow-sm active:scale-[0.97] transition-all duration-200 ring-focus">${esc(q)}</button>
+                `).join('')}
+              </div>
             </div>
             <div class="relative z-10 w-full rc-intro rc-intro-4">${composer}</div>
           </div>` : `
@@ -3948,10 +3983,10 @@
             <div id="chat-list" class="flex-1 overflow-y-auto py-4 space-y-6">
               ${msgs.map((m, i) => renderChatMessage(m, i === msgs.length - 1)).join('')}
               ${state.chatThinking ? `
-              <div class="flex justify-start animate-fade-up">
-                <div class="inline-flex items-center gap-3 rounded-2xl rounded-bl-md bg-gray-100 px-4 py-3">
-                  <span class="flex items-center gap-1.5"><span class="rc-orb"></span><span class="rc-orb"></span><span class="rc-orb"></span></span>
-                  <span class="text-sm text-muted">${t('assistant.thinking')}…</span>
+              <div class="flex justify-start">
+                <div class="inline-flex items-center gap-2.5 rounded-full bg-gray-100 px-3.5 py-2">
+                  ${thinkingOrbs()}
+                  <span class="text-xs font-medium text-muted">${t('assistant.thinking')}…</span>
                 </div>
               </div>` : ''}
             </div>
@@ -3979,8 +4014,9 @@
       }
       const thoughtsOpen = !!m.streaming;
       return `
-      <div class="flex justify-start${anim}">
-        <div class="max-w-[85%] min-w-0">
+      <div class="flex justify-start gap-2.5${anim}">
+        <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary mt-0.5">${icon('book', 'w-3.5 h-3.5')}</div>
+        <div class="max-w-[82%] min-w-0">
           ${m.thoughts && m.thoughts.length ? `
           <button type="button" ${m.streaming ? 'id="chat-thoughts-toggle" ' : ''}onclick="toggleChatThoughts(this)" class="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:border-primary/40 transition mb-2 ring-focus">
             ${icon('sparkle', 'w-3.5 h-3.5')} ${t('assistant.thoughtFor').replace('{s}', m.thoughtSeconds || 3)} ${icon('chevronDown', 'w-3.5 h-3.5 transition-transform duration-200 chat-thought-chevron' + (thoughtsOpen ? ' rotate-180' : ''))}
