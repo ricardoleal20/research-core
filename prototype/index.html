@@ -544,6 +544,8 @@
       "effortDefault": "Padrão",
       "effortDefault": "Por defecto",
       "context": "Contexto",
+      "contextChats": "Chats de contexto",
+      "contextChats": "Chats de contexto",
       "skillsBtn": "Skills",
       "more": "Mais",
       "permissions": "Permissões",
@@ -958,6 +960,7 @@
       "effortHigh": "High",
       "effortDefault": "Default",
       "context": "Context",
+      "contextChats": "Context chats",
       "skillsBtn": "Skills",
       "more": "More",
       "permissions": "Permissions",
@@ -1767,6 +1770,7 @@
       "effortHigh": "Élevé",
       "effortDefault": "Par défaut",
       "context": "Contexte",
+      "contextChats": "Chats de contexte",
       "skillsBtn": "Skills",
       "more": "Plus",
       "permissions": "Permissions",
@@ -3993,7 +3997,34 @@
             <input type="checkbox" class="switch" ${state.chatMcpOn.includes(name) ? 'checked' : ''} onchange="toggleChatMcp('${name}')">
           </label>`).join('')}`;
       }
+      if (state.chatMorePanel === 'context') {
+        const chat = activeChat();
+        const ctxProjects = chat ? (chat.contextProjectIds || []) : [];
+        const ctxChats = chat ? (chat.contextChatIds || []) : [];
+        const otherProjects = state.projects.filter(p => p.id !== state.activeProjectId);
+        const otherChats = state.chats.filter(c => c.id !== state.activeChatId);
+        return `
+          <button type="button" onclick="setChatMorePanel(null)" class="flex items-center gap-1 text-xs font-medium text-primary hover:underline mb-1.5">← ${t('onboarding.back')}</button>
+          <p class="px-2 pb-1 pt-0.5 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.contextProjects')}</p>
+          ${otherProjects.map(p => `
+          <label class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-50 transition">
+            <span class="min-w-0"><span class="block text-xs font-medium truncate">${esc(p.name)}</span><span class="block text-[11px] text-muted truncate">${esc(p.field)}</span></span>
+            <input type="checkbox" class="switch" ${ctxProjects.includes(p.id) ? 'checked' : ''} onchange="toggleChatContextProjectDirect('${p.id}')">
+          </label>`).join('') || `<p class="px-2 py-1 text-xs text-muted">${t('project.empty')}</p>`}
+          <p class="px-2 pb-1 pt-2 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.contextChats')}</p>
+          ${otherChats.map(c => `
+          <label class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-50 transition">
+            <span class="min-w-0"><span class="block text-xs font-medium truncate">${esc(c.title)}</span><span class="block text-[11px] text-muted truncate">${esc(state.projects.find(x => x.id === c.projectId)?.name || '')}</span></span>
+            <input type="checkbox" class="switch" ${ctxChats.includes(c.id) ? 'checked' : ''} onchange="toggleChatContextChat('${c.id}')">
+          </label>`).join('') || `<p class="px-2 py-1 text-xs text-muted">${t('assistant.emptyChats')}</p>`}`;
+      }
       return `
+        <button type="button" onclick="newChatFromComposer()" class="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left text-primary hover:bg-primary/5 transition">
+          ${icon('plus', 'w-4 h-4 shrink-0')}
+          <span class="text-sm font-medium">${t('assistant.newChat')}</span>
+          ${icon('arrowRight', 'w-3.5 h-3.5 ml-auto shrink-0')}
+        </button>
+        <div class="my-1.5 border-t border-border"></div>
         <p class="px-2 pb-1 pt-0.5 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.attach')}</p>
         ${row('image', t('assistant.addImage'), "closeChatMore(); attachChatFiles('image')")}
         ${row('fileText', t('assistant.addPdf'), "closeChatMore(); attachChatFiles('pdf')")}
@@ -4002,6 +4033,7 @@
         <div class="my-1.5 border-t border-border"></div>
         ${row('lock', t('assistant.permissions'), "setChatMorePanel('permissions')")}
         ${row('activity', t('assistant.mcps'), "setChatMorePanel('mcps')")}
+        ${row('folder', t('assistant.context'), "setChatMorePanel('context')", `${(activeChat() && (activeChat().contextProjectIds || []).length) + (activeChat() && (activeChat().contextChatIds || []).length)} ${t('assistant.context')}`)}
         ${row('settings', t('assistant.model'), "chatMoreOpenModelSelect(event)", state.chatConfig.provider + ' / ' + state.chatConfig.model)}`;
     }
     function renderChatComposer() {
@@ -4239,7 +4271,7 @@
     function ensureChat() {
       let chat = activeChat();
       if (!chat) {
-        chat = { id: 'c' + Date.now().toString(36), projectId: state.activeProjectId, title: t('assistant.newChatTitle'), updatedDays: 0, contextProjectIds: [], skillIds: [], messages: [] };
+        chat = { id: 'c' + Date.now().toString(36), projectId: state.activeProjectId, title: t('assistant.newChatTitle'), updatedDays: 0, contextProjectIds: [], contextChatIds: [], skillIds: [], messages: [] };
         state.chats.unshift(chat);
         state.activeChatId = chat.id;
       }
@@ -4328,11 +4360,32 @@
       render();
     }
     function newChat() {
-      const chat = { id: 'c' + Date.now().toString(36), projectId: state.activeProjectId, title: t('assistant.newChatTitle'), updatedDays: 0, contextProjectIds: [], skillIds: [], messages: [] };
+      const chat = { id: 'c' + Date.now().toString(36), projectId: state.activeProjectId, title: t('assistant.newChatTitle'), updatedDays: 0, contextProjectIds: [], contextChatIds: [], skillIds: [], messages: [] };
       state.chats.unshift(chat);
       state.activeChatId = chat.id;
       state.chatHistoryOpen = false;
       render();
+    }
+    function newChatFromComposer() {
+      state.chatMoreOpen = false;
+      state.chatMorePanel = null;
+      state.chatSlashOpen = false;
+      state.chatSlashQuery = '';
+      newChat();
+    }
+    function toggleChatContextProjectDirect(pid) {
+      const chat = ensureChat();
+      const arr = chat.contextProjectIds || (chat.contextProjectIds = []);
+      const i = arr.indexOf(pid);
+      if (i >= 0) arr.splice(i, 1); else arr.push(pid);
+      softRender();
+    }
+    function toggleChatContextChat(cid) {
+      const chat = ensureChat();
+      const arr = chat.contextChatIds || (chat.contextChatIds = []);
+      const i = arr.indexOf(cid);
+      if (i >= 0) arr.splice(i, 1); else arr.push(cid);
+      softRender();
     }
     function renderChatHistoryDrawer() {
       const chats = state.chats.filter(c => c.projectId === state.activeProjectId);
