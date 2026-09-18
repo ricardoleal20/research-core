@@ -541,6 +541,8 @@
       "effortLow": "Bajo",
       "effortMedium": "Medio",
       "effortHigh": "Alto",
+      "effortDefault": "Padrão",
+      "effortDefault": "Por defecto",
       "context": "Contexto",
       "skillsBtn": "Skills",
       "more": "Mais",
@@ -954,6 +956,7 @@
       "effortLow": "Low",
       "effortMedium": "Medium",
       "effortHigh": "High",
+      "effortDefault": "Default",
       "context": "Context",
       "skillsBtn": "Skills",
       "more": "More",
@@ -1762,6 +1765,7 @@
       "effortLow": "Faible",
       "effortMedium": "Moyen",
       "effortHigh": "Élevé",
+      "effortDefault": "Par défaut",
       "context": "Contexte",
       "skillsBtn": "Skills",
       "more": "Plus",
@@ -2007,8 +2011,10 @@
       chatSettingsOpen: false,
       chatAttachments: [],
       chatThinking: false,
-      chatConfig: { provider: 'Personal', model: null, effort: 'medium', contextLimit: '32k' },
+      chatConfig: { provider: 'Personal', model: null, effort: 'default', contextLimit: '32k' },
       chatSkillPopoverOpen: false,
+      chatSlashOpen: false,
+      chatSlashQuery: '',
       chatMoreOpen: false,
       chatMorePanel: null,
       chatMorePerms: { read: true, write: true, network: false },
@@ -2219,22 +2225,25 @@
     // shadcn-style select: trigger button + popover menu. Keeps a hidden input
     // with the given id so existing read paths (el.value) and onchange handlers
     // keep working — pickRcSelect dispatches a change event on it.
-    function rcSelect({ id, options, value, onChange = '', size = 'md', cls = '', dir = 'up' }) {
+    function rcSelect({ id, options, value, onChange = '', size = 'md', cls = '', dir = 'up', variant = 'default' }) {
       const opts = options.map(o => typeof o === 'string' ? { value: String(o), label: String(o) } : o);
       const val = value === undefined || value === null ? (opts[0] ? opts[0].value : '') : String(value);
       const cur = opts.find(o => o.value === val) || { value: val, label: val };
-      const sizes = { sm: 'px-2.5 py-1.5 text-xs', md: 'px-4 py-2.5 text-sm' };
+      const sizes = { xs: 'px-2 py-1 text-[11px]', sm: 'px-2.5 py-1.5 text-xs', md: 'px-4 py-2.5 text-sm' };
+      const triggerCls = variant === 'ghost'
+        ? 'border-transparent bg-transparent text-muted hover:bg-gray-50 hover:text-foreground'
+        : 'border border-border bg-white text-foreground hover:border-primary/40';
       return `
       <div class="rc-select relative ${cls}" data-select-id="${id}">
         <input type="hidden" id="${id}" value="${esc(cur.value)}" ${onChange ? `onchange="${onChange}"` : ''}>
-        <button type="button" onclick="toggleRcSelect('${id}', event)" class="flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-white ${sizes[size]} text-left hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30 transition">
-          <span class="rc-select-label truncate">${esc(cur.label)}</span>
-          ${icon('chevronDown', 'w-4 h-4 text-muted shrink-0')}
+        <button type="button" onclick="toggleRcSelect('${id}', event)" class="flex w-full items-center justify-between gap-1.5 rounded-lg ${triggerCls} ${sizes[size]} text-left focus:outline-none focus:ring-2 focus:ring-primary/30 transition">
+          <span class="rc-select-label flex items-center gap-1 min-w-0">${cur.icon ? icon(cur.icon, size === 'xs' ? 'w-3 h-3 shrink-0' : 'w-3.5 h-3.5 shrink-0') : ''}<span class="truncate">${esc(cur.label)}</span></span>
+          ${icon('chevronDown', (size === 'xs' ? 'w-3 h-3' : 'w-4 h-4') + ' text-muted shrink-0')}
         </button>
         <div class="rc-select-menu absolute left-0 right-0 ${dir === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'} z-50 hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-white p-1 shadow-lg animate-fade-up">
           ${opts.map(o => `
             <button type="button" onclick="pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? 'bg-primary/10 text-primary' : 'text-foreground'}" data-value="${esc(o.value)}">
-              <span class="truncate">${esc(o.label)}</span>
+              <span class="flex items-center gap-1.5 min-w-0">${o.icon ? icon(o.icon, 'w-3.5 h-3.5 shrink-0') : ''}<span class="truncate">${esc(o.label)}</span></span>
               ${o.value === cur.value ? icon('check', 'w-4 h-4 shrink-0') : ''}
             </button>
           `).join('')}
@@ -3385,7 +3394,7 @@
       state.settings.projectField = activeProject().field;
       const firstChat = state.chats.find(c => c.projectId === id);
       state.activeChatId = firstChat ? firstChat.id : null;
-      if (firstChat && firstChat.config) state.chatConfig = { provider: 'Personal', model: null, effort: 'medium', contextLimit: '32k', ...firstChat.config };
+      if (firstChat && firstChat.config) state.chatConfig = { provider: 'Personal', model: null, effort: 'default', contextLimit: '32k', ...firstChat.config };
       state.projectMenuOpen = false;
       navigate('dashboard');
     }
@@ -3933,9 +3942,18 @@
         const cfg = LLM_PROVIDER_CONFIG[p] || LLM_PROVIDER_CONFIG.Personal;
         const models = cfg.defaultModels && cfg.defaultModels.length ? cfg.defaultModels : [];
         const pLabel = t('onboarding.providers.' + p.toLowerCase());
-        models.forEach(m => out.push({ value: p + '|' + m, label: pLabel + ' / ' + m }));
+        models.forEach(m => out.push({ value: p + '|' + m, label: pLabel + ' / ' + m, icon: cfg.icon || 'sparkle' }));
       }
       return out;
+    }
+    function defaultModelEffort(model) {
+      const m = String(model || '').toLowerCase();
+      if (/flash|mini|lite|haiku|free|fast/i.test(m)) return 'low';
+      if (/ultra|opus|max|pro|think|reasoner/i.test(m)) return 'high';
+      return 'medium';
+    }
+    function resolvedEffort() {
+      return state.chatConfig.effort === 'default' ? defaultModelEffort(state.chatConfig.model) : state.chatConfig.effort;
     }
     function chatContextUsage() {
       const chat = activeChat();
@@ -3984,7 +4002,7 @@
         <div class="my-1.5 border-t border-border"></div>
         ${row('lock', t('assistant.permissions'), "setChatMorePanel('permissions')")}
         ${row('activity', t('assistant.mcps'), "setChatMorePanel('mcps')")}
-        ${row('settings', t('assistant.model'), "document.getElementById('chat-agent') && toggleRcSelect('chat-agent', event); state.chatMoreOpen = false; state.chatMorePanel = null; render()", state.chatConfig.provider + ' / ' + state.chatConfig.model)}`;
+        ${row('settings', t('assistant.model'), "chatMoreOpenModelSelect(event)", state.chatConfig.provider + ' / ' + state.chatConfig.model)}`;
     }
     function renderChatComposer() {
       const model = state.chatConfig.model && currentChatModelList().includes(state.chatConfig.model) ? state.chatConfig.model : currentChatModelList()[0];
@@ -3995,7 +4013,8 @@
       const attachBtn = (kind, iconName, labelKey) => `
             <button type="button" onclick="attachChatFiles('${kind}')" title="${t(labelKey)}" aria-label="${t(labelKey)}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus">${icon(iconName, 'w-5 h-5')}</button>`;
       return `
-      <div class="chat-composer rounded-2xl border border-border bg-card shadow-sm p-3 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/30 transition" data-od-id="chat-composer">
+      <div id="chat-composer" class="chat-composer relative rounded-2xl border border-border bg-card shadow-sm p-3 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/30 transition" data-od-id="chat-composer">
+        ${state.chatSlashOpen ? renderChatSlashMenu() : ''}
         ${(state.chatAttachments.length || activeSkills.length) ? `
         <div class="flex flex-wrap gap-2 mb-2.5">
           ${activeSkills.map(s => {
@@ -4044,8 +4063,8 @@
           </div>
           <div class="flex items-center gap-3">
             <div class="flex flex-col gap-1 min-w-0">
-              <span class="caption text-muted">${t('assistant.effort')}</span>
-              ${rcSelect({ id: 'chat-effort', size: 'sm', cls: 'min-w-[5.5rem]', options: [{ value: 'low', label: t('assistant.effortLow') }, { value: 'medium', label: t('assistant.effortMedium') }, { value: 'high', label: t('assistant.effortHigh') }], value: state.chatConfig.effort, onChange: 'onChatEffortChange()' })}
+              <span class="caption text-muted flex items-center gap-1">${t('assistant.effort')}${state.chatConfig.effort === 'default' ? `<span class="text-[10px] text-primary/70">· ${resolvedEffort()}</span>` : ''}</span>
+              ${rcSelect({ id: 'chat-effort', size: 'sm', cls: 'min-w-[5.5rem]', options: [{ value: 'default', label: t('assistant.effortDefault') }, { value: 'low', label: t('assistant.effortLow') }, { value: 'medium', label: t('assistant.effortMedium') }, { value: 'high', label: t('assistant.effortHigh') }], value: state.chatConfig.effort, onChange: 'onChatEffortChange()' })}
             </div>
             <div class="min-w-[7rem]" title="${t('assistant.context')}">
               <div class="flex items-baseline justify-between gap-2 mb-1">
@@ -4062,28 +4081,93 @@
         <div class="flex items-end gap-2 mt-2.5 pt-2.5 border-t border-border">
           <span class="caption text-muted pb-2 shrink-0">${t('assistant.model')}</span>
           <div class="flex-1 min-w-0">
-            ${rcSelect({ id: 'chat-agent', size: 'sm', cls: 'w-full', options: chatModelOptions(), value: state.chatConfig.provider + '|' + model, onChange: 'onChatAgentChange()' })}
+            ${rcSelect({ id: 'chat-agent', size: 'xs', variant: 'ghost', cls: 'w-full', options: chatModelOptions(), value: state.chatConfig.provider + '|' + model, onChange: 'onChatAgentChange()' })}
           </div>
         </div>
       </div>`;
     }
-    function toggleChatSkillPopover() { state.chatSkillPopoverOpen = !state.chatSkillPopoverOpen; state.chatMoreOpen = false; state.chatMorePanel = null; render(); }
+    function toggleChatSkillPopover() { state.chatSkillPopoverOpen = !state.chatSkillPopoverOpen; if (state.chatSkillPopoverOpen) { state.chatMoreOpen = false; state.chatMorePanel = null; state.chatSlashOpen = false; } softRender(); }
     function toggleComposerSkill(sid) {
       const chat = ensureChat();
       const arr = chat.skillIds || (chat.skillIds = []);
       const i = arr.indexOf(sid);
       if (i >= 0) arr.splice(i, 1); else arr.push(sid);
-      render();
+      softRender();
     }
-    function toggleChatMore() { state.chatMoreOpen = !state.chatMoreOpen; if (!state.chatMoreOpen) state.chatMorePanel = null; state.chatSkillPopoverOpen = false; render(); }
-    function closeChatMore() { state.chatMoreOpen = false; state.chatMorePanel = null; render(); }
-    function setChatMorePanel(p) { state.chatMorePanel = p; render(); }
-    function toggleChatPerm(k) { state.chatMorePerms[k] = !state.chatMorePerms[k]; render(); }
-    function toggleChatMcp(name) { const i = state.chatMcpOn.indexOf(name); if (i >= 0) state.chatMcpOn.splice(i, 1); else state.chatMcpOn.push(name); render(); }
+    function toggleChatMore() { state.chatMoreOpen = !state.chatMoreOpen; if (!state.chatMoreOpen) state.chatMorePanel = null; state.chatSkillPopoverOpen = false; state.chatSlashOpen = false; softRender(); }
+    function closeChatMore() { state.chatMoreOpen = false; state.chatMorePanel = null; softRender(); }
+    function setChatMorePanel(p) { state.chatMorePanel = p; softRender(); }
+    function toggleChatPerm(k) { state.chatMorePerms[k] = !state.chatMorePerms[k]; softRender(); }
+    function toggleChatMcp(name) { const i = state.chatMcpOn.indexOf(name); if (i >= 0) state.chatMcpOn.splice(i, 1); else state.chatMcpOn.push(name); softRender(); }
+    function chatMoreOpenModelSelect(ev) {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+      state.chatMoreOpen = false; state.chatMorePanel = null; state.chatSlashOpen = false; state.chatSlashQuery = '';
+      const zone = document.querySelector('[data-od-id="chat-more-zone"] .absolute');
+      if (zone) zone.remove();
+      toggleRcSelect('chat-agent', { stopPropagation: function(){} });
+    }
     function onChatAgentChange() {
       const v = document.getElementById('chat-agent').value;
       const i = v.indexOf('|');
       if (i > 0) { state.chatConfig.provider = v.slice(0, i); state.chatConfig.model = v.slice(i + 1); syncChatConfigToActive(); }
+    }
+    function closeSlash() { state.chatSlashOpen = false; state.chatSlashQuery = ''; softRender(); }
+    function renderChatSlashMenu() {
+      const chat = activeChat();
+      const activeSkills = chat ? (chat.skillIds || []) : [];
+      const q = (state.chatSlashQuery || '').toLowerCase();
+      const skillItems = CHAT_SKILLS.filter(s => !q || s.label.toLowerCase().includes(q));
+      const attachItems = [['image', t('assistant.addImage')], ['fileText', t('assistant.addPdf')], ['link', t('assistant.addLink')], ['code', t('assistant.addTex')]]
+        .filter(([, l]) => !q || l.toLowerCase().includes(q));
+      const toolItems = [['permissions', t('assistant.permissions')], ['mcps', t('assistant.mcps')], ['model', t('assistant.model')]]
+        .filter(([, l]) => !q || l.toLowerCase().includes(q));
+      const none = !skillItems.length && !attachItems.length && !toolItems.length;
+      return `
+      <div data-od-id="chat-slash-menu" class="absolute bottom-full left-0 right-0 mb-2 max-h-72 overflow-y-auto rounded-xl border border-border bg-white shadow-xl z-40 p-1.5 animate-fade-up">
+        ${skillItems.length ? `
+        <p class="px-2 py-1 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.skills')}</p>
+        ${skillItems.map(s => `
+        <label class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-100 transition">
+          <span class="text-xs font-medium font-mono truncate">${icon('sparkle', 'w-3.5 h-3.5 text-muted mr-1.5')}${esc(s.label)}</span>
+          <input type="checkbox" class="switch" ${activeSkills.includes(s.id) ? 'checked' : ''} onchange="toggleComposerSkill('${s.id}')">
+        </label>`).join('')}` : ''}
+        ${attachItems.length ? `
+        <p class="px-2 py-1 text-[11px] font-semibold text-muted uppercase tracking-wider mt-0.5">${t('assistant.attach')}</p>
+        ${attachItems.map(([ic, l]) => `
+        <button type="button" onclick="closeSlash(); ${ic === 'link' ? 'attachChatLink()' : `attachChatFiles('${ic}')`}" class="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition">
+          ${icon(ic, 'w-4 h-4 text-muted shrink-0')}<span>${l}</span>
+        </button>`).join('')}` : ''}
+        ${toolItems.length ? `
+        <div class="my-1 border-t border-border"></div>
+        <p class="px-2 py-1 text-[11px] font-semibold text-muted uppercase tracking-wider">${t('assistant.more')}</p>
+        ${toolItems.map(([k, l]) => `
+        <button type="button" onclick="closeSlash(); ${k === 'model' ? 'toggleRcSelect(\'chat-agent\', event); if (event && event.stopPropagation) event.stopPropagation()' : `if (event && event.stopPropagation) event.stopPropagation(); state.chatMoreOpen = true; state.chatMorePanel = '${k}'; softRender()`}" class="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition">
+          ${icon(k === 'permissions' ? 'lock' : k === 'mcps' ? 'activity' : 'settings', 'w-4 h-4 text-muted shrink-0')}<span>${l}</span>
+        </button>`).join('')}` : ''}
+        ${none ? `<p class="px-2 py-3 text-xs text-muted text-center">${t('project.empty')}</p>` : ''}
+      </div>`;
+    }
+    function softRender() {
+      const cur = document.getElementById('chat-composer');
+      if (!cur) { render(); return; }
+      const parent = cur.parentNode;
+      const input = document.getElementById('chat-input');
+      const val = input ? input.value : '';
+      const caret = input ? input.selectionStart : 0;
+      const fresh = document.createElement('div');
+      fresh.innerHTML = renderChatComposer().trim();
+      const node = fresh.firstElementChild;
+      parent.replaceChild(node, cur);
+      bindAssistant();
+      const ni = document.getElementById('chat-input');
+      if (ni && val !== null) {
+        ni.value = val || '';
+        if (typeof caret === 'number') { ni.focus(); ni.setSelectionRange(caret, caret); }
+        ni.style.height = 'auto';
+        ni.style.height = Math.min(ni.scrollHeight, 160) + 'px';
+      }
+      const list = document.getElementById('chat-list');
+      if (list) list.scrollTop = list.scrollHeight;
     }
     function bindAssistant() {
       const input = document.getElementById('chat-input');
@@ -4091,7 +4175,16 @@
       const send = document.getElementById('chat-send');
       const syncSend = () => { if (send) send.disabled = !(input.value.trim() || state.chatAttachments.length); };
       input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } };
-      input.oninput = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; syncSend(); };
+      input.oninput = () => {
+        input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; syncSend();
+        const v = input.value;
+        const isSlash = v.charAt(0) === '/';
+        if (isSlash !== state.chatSlashOpen || (isSlash && state.chatSlashQuery !== v.slice(1))) {
+          state.chatSlashOpen = isSlash;
+          state.chatSlashQuery = isSlash ? v.slice(1) : '';
+          softRender();
+        }
+      };
       syncSend();
       setTimeout(() => {
         const list = document.getElementById('chat-list');
@@ -4160,6 +4253,8 @@
       chat.messages.push({ role: 'user', text: text || t('assistant.attachmentsOnly'), tool: null, attachments: state.chatAttachments.slice() });
       chat.updatedDays = 0;
       state.chatAttachments = [];
+      state.chatSlashOpen = false;
+      state.chatSlashQuery = '';
       state.chatThinking = true;
       render();
       const list = document.getElementById('chat-list');
@@ -5015,6 +5110,7 @@
         if (state.actionDetailOpen) { closeActionDetail(); return; }
         if (state.chatHistoryOpen) { closeChatHistory(); return; }
         if (state.chatSettingsOpen) { closeChatSettings(); return; }
+        if (state.chatSlashOpen) { closeSlash(); return; }
         if (state.chatSkillPopoverOpen) { state.chatSkillPopoverOpen = false; render(); return; }
         if (state.chatMoreOpen) { state.chatMoreOpen = false; state.chatMorePanel = null; render(); return; }
         if (state.projectMenuOpen) { state.projectMenuOpen = false; render(); return; }
@@ -5030,6 +5126,7 @@
       if (state.chatMoreOpen && !e.target.closest('[data-od-id="chat-more-zone"]') && !e.target.closest('.rc-select')) {
         state.chatMoreOpen = false; state.chatMorePanel = null; render();
       }
+      if (state.chatSlashOpen && !e.target.closest('#chat-composer')) { state.chatSlashOpen = false; state.chatSlashQuery = ''; softRender(); }
       if (state.projectMenuOpen && !e.target.closest('[onclick*="toggleProjectMenu"]') && !e.target.closest('.relative > .absolute')) {
         state.projectMenuOpen = false; render();
       }
