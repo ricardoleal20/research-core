@@ -11,6 +11,7 @@ use crate::domain::missions::{
 };
 use crate::eventstore::{EventStore, NewEvent};
 use crate::runtime;
+use crate::runtime::{AgentRuntime, AgentStepResult};
 use tauri::State;
 use uuid::Uuid;
 
@@ -84,4 +85,25 @@ pub async fn get_mission_runs(
     let c = db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(err)?;
     Ok(MissionsProjection::runs_for(&events, mission_id))
+}
+
+/// Run ONE agent step for a mission's role (Story 2.1): the role's
+/// (provider, model) resolves through the provider layer (AD-9), the
+/// step's spend is recorded role-tagged (AD-10), and the result carries
+/// what the role produced. Fails loudly on unknown mission / role or an
+/// empty task.
+#[tauri::command]
+pub async fn run_agent_step(
+    db: State<'_, Db>,
+    mission_id: String,
+    role: String,
+    task: String,
+) -> Result<AgentStepResult, String> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|e| format!("invalid mission id `{mission_id}`: {e}"))?;
+    AgentRuntime::new(db.inner().clone())
+        .run_step(mission_id, &role, &task)
+        .await
+        .map_err(err)
 }

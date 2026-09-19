@@ -60,18 +60,20 @@ impl Message {
 /// A chat request through the uniform interface: (messages, model,
 /// temperature). `model` falls back to the layer's configured model when
 /// empty; `mission_id` links the call's spend to a mission when the call is
-/// mission-scoped.
+/// mission-scoped; `role` tags the call's spend with the agent role that
+/// made it (Story 2.1 per-role receipts).
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub model: String,
     pub temperature: f32,
     pub mission_id: Option<Uuid>,
+    pub role: Option<String>,
 }
 
 impl ChatRequest {
     pub fn new(messages: Vec<Message>) -> Self {
-        Self { messages, model: String::new(), temperature: 0.4, mission_id: None }
+        Self { messages, model: String::new(), temperature: 0.4, mission_id: None, role: None }
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -88,6 +90,14 @@ impl ChatRequest {
     /// the mission (AD-10).
     pub fn for_mission(mut self, mission_id: Uuid) -> Self {
         self.mission_id = Some(mission_id);
+        self
+    }
+
+    /// Tag the call with the agent role that made it (Story 2.1): the
+    /// `spend.recorded` event carries the role so receipts can show per-role
+    /// spend.
+    pub fn with_role(mut self, role: impl Into<String>) -> Self {
+        self.role = Some(role.into());
         self
     }
 }
@@ -263,7 +273,15 @@ impl ProviderSettings {
 /// row remains only as the fallback for keys that could not be moved.
 fn load_api_key(conn: &Connection) -> String {
     let provider = crate::db::get_setting(conn, "provider");
-    let account = crate::eventstore::migration::keychain_account(&provider);
+    provider_key(conn, &provider)
+}
+
+/// The key for one provider: the OS keychain account named for it (AD-16),
+/// with the legacy `settings.api_key` row as a fallback only for the
+/// configured provider. Role-scoped resolution (Story 2.1) reads the account
+/// named for the role's provider.
+fn provider_key(conn: &Connection, provider: &str) -> String {
+    let account = crate::eventstore::migration::keychain_account(provider);
     if let Ok(entry) =
         keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
     {
@@ -273,7 +291,10 @@ fn load_api_key(conn: &Connection) -> String {
             }
         }
     }
-    crate::db::get_setting(conn, "api_key")
+    if provider.trim() == crate::db::get_setting(conn, "provider").trim() {
+        return crate::db::get_setting(conn, "api_key");
+    }
+    String::new()
 }
 
 /// The provider layer: the ONLY door LLM calls go through. Resolves the
@@ -320,6 +341,58 @@ impl ProviderLayer {
     fn has_real_provider(s: &ProviderSettings) -> bool {
         !s.api_key.trim().is_empty()
             && (!s.base_url.trim().is_empty() || default_base_url(&s.name).is_some())
+    }
+
+    /// Resolve the adapter for one agent role's (provider, model) pair
+    /// (Story 2.1, AD-9): the simulated fallback for `simulated`, the local
+    /// CLI adapter for `cli` (the role's model on the configured CLI), and
+    /// the BYOK registry otherwise — with the key read from the OS keychain
+    /// account named for the role's provider (AD-16) and the base URL taken
+    /// from settings when the role runs the configured provider, else the
+    /// provider's canonical endpoint.
+    pub fn for_role(
+        db: &Db,
+        conn: &Connection,
+        role: &crate::domain::missions::RoleConfig,
+    ) -> Result<Self, ProviderError> {
+        let name = role.provider.trim().to_string();
+        if name.is_empty() || name == "simulated" {
+            return Ok(Self::simulated(db));
+        }
+        if role.model.trim().is_empty() {
+            return Err(ProviderError::MissingModel(name));
+        }
+        let settings = ProviderSettings::load(conn);
+        if name == "cli" {
+            return Ok(Self {
+                db: db.clone(),
+                kind: Kind::Cli,
+                name: "cli".into(),
+                model: role.model.trim().to_string(),
+                client: Box::new(cli::Cli::new(&settings.cli)),
+            });
+        }
+        let key = provider_key(conn, &name);
+        if key.trim().is_empty() {
+            return Err(ProviderError::MissingCredential(name));
+        }
+        let base_url = if name == settings.name.trim() {
+            settings.base_url.trim().to_string()
+        } else {
+            String::new()
+        };
+        Self::remote(
+            db,
+            &ProviderSettings {
+                mode: "provider".into(),
+                name,
+                base_url,
+                api_key: key,
+                model: role.model.trim().to_string(),
+                cli: String::new(),
+                cli_model: String::new(),
+            },
+        )
     }
 
     fn simulated(db: &Db) -> Self {
@@ -470,10 +543,51 @@ impl ProviderLayer {
             output_tokens: resp.usage.output_tokens,
             cost_cents: pricing::cost_cents(&self.name, &req.model, &resp.usage),
             mission_id: req.mission_id,
+            role: req.role.clone(),
         })?;
         let conn = self.db.0.lock().await;
         EventStore::new(&conn).append(event)?;
         Ok(())
+    }
+}
+
+/// A fake remote client returning fixed content + usage — the no-network
+/// stand-in tests across the crate use to exercise real-call paths (spend,
+/// receipts) without touching HTTP.
+#[cfg(test)]
+pub(crate) struct FakeRemote {
+    pub content: &'static str,
+    pub usage: Usage,
+}
+
+#[cfg(test)]
+impl ProviderClient for FakeRemote {
+    fn name(&self) -> &str {
+        "fake"
+    }
+    fn chat(&self, _req: ChatRequest) -> BoxFuture<'_, Result<ChatResponse, ProviderError>> {
+        Box::pin(async move {
+            Ok(ChatResponse { content: self.content.to_string(), usage: self.usage })
+        })
+    }
+}
+
+/// A remote-shaped layer around `FakeRemote` (Story 2.1): runtime tests
+/// resolve role adapters against it so spend paths run without network.
+#[cfg(test)]
+pub(crate) fn fake_remote_layer(
+    db: &Db,
+    name: &str,
+    model: &str,
+    content: &'static str,
+    usage: Usage,
+) -> ProviderLayer {
+    ProviderLayer {
+        db: db.clone(),
+        kind: Kind::Remote,
+        name: name.into(),
+        model: model.into(),
+        client: Box::new(FakeRemote { content, usage }),
     }
 }
 
@@ -495,33 +609,14 @@ mod tests {
 
     /// A fake remote provider returning fixed content + usage — exercises the
     /// layer's spend path without network.
-    struct FakeRemote {
-        content: &'static str,
-        usage: Usage,
-    }
-
-    impl ProviderClient for FakeRemote {
-        fn name(&self) -> &str {
-            "fake"
-        }
-        fn chat(&self, _req: ChatRequest) -> BoxFuture<'_, Result<ChatResponse, ProviderError>> {
-            Box::pin(async move {
-                Ok(ChatResponse { content: self.content.to_string(), usage: self.usage })
-            })
-        }
-    }
-
     fn remote_layer(db: &Db) -> ProviderLayer {
-        ProviderLayer {
-            db: db.clone(),
-            kind: Kind::Remote,
-            name: "custom".into(),
-            model: "test-model".into(),
-            client: Box::new(FakeRemote {
-                content: "contenido de prueba",
-                usage: Usage { input_tokens: 1200, output_tokens: 800 },
-            }),
-        }
+        super::fake_remote_layer(
+            db,
+            "custom",
+            "test-model",
+            "contenido de prueba",
+            Usage { input_tokens: 1200, output_tokens: 800 },
+        )
     }
 
     async fn spend_events(db: &Db) -> Vec<crate::eventstore::StoredEvent> {
@@ -642,6 +737,26 @@ mod tests {
         assert_eq!(stream.content(), "contenido de prueba");
         assert_eq!(stream.usage().input_tokens, 1200);
         assert_eq!(spend_events(&db).await.len(), 1);
+    }
+
+    /// Story 2.1: a role-tagged call records its role in `spend.recorded`
+    /// (per-role receipts); untagged calls carry no role field at all.
+    #[tokio::test]
+    async fn role_tagged_calls_record_their_role_in_spend() {
+        let db = test_db();
+        let layer = remote_layer(&db);
+        layer
+            .chat(ChatRequest::new(vec![Message::user("x")]).with_role("critic"))
+            .await
+            .unwrap();
+        let events = spend_events(&db).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["role"], json!("critic"));
+        // untagged calls (the Asistente chat flow) record no role field
+        layer.chat(ChatRequest::new(vec![Message::user("y")])).await.unwrap();
+        let events = spend_events(&db).await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].payload.get("role"), None);
     }
 
     #[tokio::test]

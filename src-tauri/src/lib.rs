@@ -159,6 +159,7 @@ pub fn run() {
             missions_commands::create_mission,
             missions_commands::list_missions,
             missions_commands::get_mission_runs,
+            missions_commands::run_agent_step,
             hypotheses_commands::create_hypothesis,
             hypotheses_commands::list_hypotheses,
             hypotheses_commands::transition_hypothesis,

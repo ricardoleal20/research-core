@@ -28,6 +28,11 @@ pub struct SpendRecordedPayload {
     pub cost_cents: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mission_id: Option<Uuid>,
+    /// The agent role the call ran for (Story 2.1): `drafter` | `critic` —
+    /// present only on role-scoped runtime calls, so receipts can show
+    /// per-role spend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 impl NewEvent {
@@ -65,6 +70,7 @@ mod tests {
             output_tokens: 800,
             cost_cents: 1,
             mission_id: None,
+            role: None,
         }
     }
 
@@ -94,8 +100,11 @@ mod tests {
         let store = EventStore::new(&conn);
         let mut p = payload();
         p.mission_id = Some(mission);
+        p.role = Some("critic".into());
         let stored = store.append(NewEvent::spend_recorded(p).unwrap()).unwrap();
         assert_eq!(stored.payload["mission_id"].as_str(), Some(mission.to_string().as_str()));
+        // the role tag rides along (Story 2.1 per-role receipts)
+        assert_eq!(stored.payload["role"].as_str(), Some("critic"));
     }
 
     #[test]
