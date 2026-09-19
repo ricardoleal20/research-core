@@ -33,6 +33,11 @@ pub struct SpendRecordedPayload {
     /// per-role spend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The reservation token the call ran under (Story 2.4, AD-10): the
+    /// `spend.reserved` run id, present only on runtime-dispatched calls —
+    /// so per-run spend folds from the ledger ("last run: 82¢ of 100¢").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 impl NewEvent {
@@ -71,6 +76,7 @@ mod tests {
             cost_cents: 1,
             mission_id: None,
             role: None,
+            run_id: None,
         }
     }
 

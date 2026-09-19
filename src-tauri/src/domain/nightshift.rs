@@ -340,6 +340,31 @@ pub fn run_stats_for(events: &[StoredEvent], mission_id: Uuid) -> RunStats {
     stats
 }
 
+/// Did a cost ceiling stop this mission's runs? (Story 2.4, AD-12
+/// interplay.) `true` when a `spend.refused` event references the mission —
+/// the runtime refused to cross one of its ceilings — or one of its runs
+/// failed with the `cost_ceiling_reached` reason. The evaluator turns either
+/// into `mission.stopped` with the `cost_ceiling_reached` signal: the "$X
+/// spent" stop condition, reached by refusal rather than by spend alone.
+pub fn ceiling_reached(events: &[StoredEvent], mission_id: Uuid) -> bool {
+    events.iter().any(|event| {
+        let refs_mission = event.causes.contains(&mission_id)
+            || event
+                .payload
+                .get("mission_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|s| s == mission_id.to_string())
+                .unwrap_or(false);
+        if !refs_mission {
+            return false;
+        }
+        event.kind == crate::domain::trust::SPEND_REFUSED
+            || (event.kind == RUN_FAILED
+                && event.payload.get("reason").and_then(serde_json::Value::as_str)
+                    == Some(crate::domain::trust::COST_CEILING_RUN_REASON))
+    })
+}
+
 /// Evaluate every mission in the log and append the terminal event for each
 /// ACTIVE mission the evaluator can decide (AD-12: no mission rests without
 /// a terminal state once decidable). Never double-emits: the fold's status
@@ -347,6 +372,13 @@ pub fn run_stats_for(events: &[StoredEvent], mission_id: Uuid) -> RunStats {
 /// is skipped. Appending the terminal updates the fold, so a second call is
 /// a no-op for that mission. Returns the terminal events appended (empty
 /// when nothing was decidable).
+///
+/// Story 2.4 (AD-12 interplay): a cost-ceiling refusal counts toward the
+/// terminal state — a run whose only live reservation was refused ends
+/// `run.failed(cost_ceiling_reached)`, and the evaluator decides
+/// `mission.stopped(cost_ceiling_reached)` from it (priority: completed >
+/// cost-ceiling-stopped > stopped > failed — a criterion met over a reached
+/// ceiling still completes).
 pub fn evaluate_terminals(store: &EventStore<'_>) -> Result<Vec<StoredEvent>, EventError> {
     let events = store.events_all()?;
     let missions = MissionsProjection::fold(&events)?;
@@ -359,10 +391,24 @@ pub fn evaluate_terminals(store: &EventStore<'_>) -> Result<Vec<StoredEvent>, Ev
         let mission_board: Vec<Hypothesis> =
             board.iter().filter(|h| h.mission_id == mission.id).cloned().collect();
         let runs = run_stats_for(&events, mission.id);
-        let Some(kind) = terminal_evaluation(mission, &mission_board, &runs) else {
+        let ceiling = ceiling_reached(&events, mission.id);
+        // A cost-ceiling refusal outranks the all-runs-failed reading (the
+        // runs did not fail on their own merits — the ceiling stopped them),
+        // and decides `stopped` even when nothing else can.
+        let kind = terminal_evaluation(mission, &mission_board, &runs)
+            .map(|k| if k == TerminalKind::Failed && ceiling { TerminalKind::Stopped } else { k })
+            .or_else(|| ceiling.then_some(TerminalKind::Stopped));
+        let Some(kind) = kind else {
             continue;
         };
-        let signal = terminal_signal(mission, &mission_board, kind);
+        let signal = if kind == TerminalKind::Stopped
+            && ceiling
+            && mission.spend_state != crate::domain::missions::SpendState::Blocked
+        {
+            crate::domain::trust::COST_CEILING_RUN_REASON.to_string()
+        } else {
+            terminal_signal(mission, &mission_board, kind)
+        };
         let extra = match kind {
             TerminalKind::Stopped => serde_json::json!({
                 "spend_cents": mission.spend_cents,

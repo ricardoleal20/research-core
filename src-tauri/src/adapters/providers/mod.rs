@@ -61,7 +61,10 @@ impl Message {
 /// temperature). `model` falls back to the layer's configured model when
 /// empty; `mission_id` links the call's spend to a mission when the call is
 /// mission-scoped; `role` tags the call's spend with the agent role that
-/// made it (Story 2.1 per-role receipts).
+/// made it (Story 2.1 per-role receipts); `reservation` is the runtime
+/// reservation token (the `spend.reserved` run id) a REAL provider call must
+/// carry — the layer refuses spend-bearing calls that arrive without one
+/// (Story 2.4, AD-10: enforcement is solely the runtime's).
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub messages: Vec<Message>,
@@ -69,11 +72,19 @@ pub struct ChatRequest {
     pub temperature: f32,
     pub mission_id: Option<Uuid>,
     pub role: Option<String>,
+    pub reservation: Option<String>,
 }
 
 impl ChatRequest {
     pub fn new(messages: Vec<Message>) -> Self {
-        Self { messages, model: String::new(), temperature: 0.4, mission_id: None, role: None }
+        Self {
+            messages,
+            model: String::new(),
+            temperature: 0.4,
+            mission_id: None,
+            role: None,
+            reservation: None,
+        }
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -98,6 +109,14 @@ impl ChatRequest {
     /// spend.
     pub fn with_role(mut self, role: impl Into<String>) -> Self {
         self.role = Some(role.into());
+        self
+    }
+
+    /// Attach the runtime's reservation token (Story 2.4, AD-10): the
+    /// `spend.reserved` run id. The `spend.recorded` event carries it as its
+    /// run id so per-run spend folds from the ledger.
+    pub fn with_reservation(mut self, run_id: impl Into<String>) -> Self {
+        self.reservation = Some(run_id.into());
         self
     }
 }
@@ -165,6 +184,8 @@ pub enum ProviderError {
     Request { name: String, source: reqwest::Error },
     #[error("cli adapter: {0}")]
     Cli(String),
+    #[error("no_reservation: a real provider call must carry a runtime reservation (spend.reserved run id) — enforcement is solely the runtime's (AD-10)")]
+    NoReservation,
     #[error("spend ledger append failed (AD-10): {0}")]
     Spend(#[from] EventError),
 }
@@ -496,16 +517,26 @@ impl ProviderLayer {
 
     /// Complete a chat through the uniform interface. Real provider calls
     /// append one `spend.recorded` event; simulated and CLI calls do not.
+    /// A real provider call that arrives WITHOUT a runtime reservation is
+    /// refused (Story 2.4, AD-10): adapters never bypass the runtime's
+    /// enforcement — the typed `no_reservation:` error names the contract.
     pub async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let req = self.prepare(req)?;
+        if self.kind == Kind::Remote && req.reservation.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(ProviderError::NoReservation);
+        }
         let resp = self.client.chat(req.clone()).await?;
         self.record_spend(&req, &resp).await?;
         Ok(resp)
     }
 
-    /// Streaming variant — see `ChatStream` for the Story 1.6 shape.
+    /// Streaming variant — see `ChatStream` for the Story 1.6 shape. Same
+    /// reservation contract as `chat`.
     pub async fn stream_chat(&self, req: ChatRequest) -> Result<ChatStream, ProviderError> {
         let req = self.prepare(req)?;
+        if self.kind == Kind::Remote && req.reservation.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(ProviderError::NoReservation);
+        }
         let stream = self.client.stream_chat(req.clone()).await?;
         let usage = stream.usage();
         self.record_spend(&req, &ChatResponse { content: String::new(), usage })
@@ -544,6 +575,7 @@ impl ProviderLayer {
             cost_cents: pricing::cost_cents(&self.name, &req.model, &resp.usage),
             mission_id: req.mission_id,
             role: req.role.clone(),
+            run_id: req.reservation.clone(),
         })?;
         let conn = self.db.0.lock().await;
         EventStore::new(&conn).append(event)?;
@@ -588,6 +620,48 @@ pub(crate) fn fake_remote_layer(
         name: name.into(),
         model: model.into(),
         client: Box::new(FakeRemote { content, usage }),
+    }
+}
+
+/// A fake remote that sleeps before answering (Story 2.4 test seam): keeps a
+/// reservation IN FLIGHT across an await point, so the TOCTOU test can prove
+/// a concurrent dispatch sees it and cannot overshoot the ceiling (AD-10).
+#[cfg(test)]
+pub(crate) struct SlowRemote {
+    pub content: &'static str,
+    pub usage: Usage,
+    pub delay_ms: u64,
+}
+
+#[cfg(test)]
+impl ProviderClient for SlowRemote {
+    fn name(&self) -> &str {
+        "fake-slow"
+    }
+    fn chat(&self, _req: ChatRequest) -> BoxFuture<'_, Result<ChatResponse, ProviderError>> {
+        Box::pin(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            Ok(ChatResponse { content: self.content.to_string(), usage: self.usage })
+        })
+    }
+}
+
+/// A remote-shaped layer around `SlowRemote` (Story 2.4 test seam).
+#[cfg(test)]
+pub(crate) fn slow_remote_layer(
+    db: &Db,
+    name: &str,
+    model: &str,
+    content: &'static str,
+    usage: Usage,
+    delay_ms: u64,
+) -> ProviderLayer {
+    ProviderLayer {
+        db: db.clone(),
+        kind: Kind::Remote,
+        name: name.into(),
+        model: model.into(),
+        client: Box::new(SlowRemote { content, usage, delay_ms }),
     }
 }
 
@@ -644,7 +718,7 @@ mod tests {
             Message::user("Redacta un párrafo conectando el learning rate con las scaling laws."),
         ];
         let resp = layer
-            .chat(ChatRequest::new(messages).with_temperature(0.4))
+            .chat(ChatRequest::new(messages).with_temperature(0.4).with_reservation("test-run"))
             .await
             .unwrap();
         assert!(!resp.content.trim().is_empty(), "simulated reply must be sensible");
@@ -661,7 +735,7 @@ mod tests {
         assert_eq!(layer.kind(), Kind::Remote);
 
         let resp = layer
-            .chat(ChatRequest::new(vec![Message::user("hola")]))
+            .chat(ChatRequest::new(vec![Message::user("hola")]).with_reservation("test-run"))
             .await
             .unwrap();
         assert_eq!(resp.content, "contenido de prueba");
@@ -684,7 +758,7 @@ mod tests {
             }
         );
         // two calls => two events, usage attributed per call
-        layer.chat(ChatRequest::new(vec![Message::user("otra")])).await.unwrap();
+        layer.chat(ChatRequest::new(vec![Message::user("otra")]).with_reservation("test-run")).await.unwrap();
         assert_eq!(spend_events(&db).await.len(), 2);
     }
 
@@ -709,7 +783,7 @@ mod tests {
         };
 
         layer
-            .chat(ChatRequest::new(vec![Message::user("run")]).for_mission(mission.id))
+            .chat(ChatRequest::new(vec![Message::user("run")]).for_mission(mission.id).with_reservation("test-run"))
             .await
             .unwrap();
 
@@ -731,7 +805,7 @@ mod tests {
         let db = test_db();
         let layer = remote_layer(&db);
         let stream = layer
-            .stream_chat(ChatRequest::new(vec![Message::user("hola")]))
+            .stream_chat(ChatRequest::new(vec![Message::user("hola")]).with_reservation("test-run"))
             .await
             .unwrap();
         assert_eq!(stream.chunks().len(), 1);
@@ -747,14 +821,14 @@ mod tests {
         let db = test_db();
         let layer = remote_layer(&db);
         layer
-            .chat(ChatRequest::new(vec![Message::user("x")]).with_role("critic"))
+            .chat(ChatRequest::new(vec![Message::user("x")]).with_role("critic").with_reservation("test-run"))
             .await
             .unwrap();
         let events = spend_events(&db).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload["role"], json!("critic"));
         // untagged calls (the Asistente chat flow) record no role field
-        layer.chat(ChatRequest::new(vec![Message::user("y")])).await.unwrap();
+        layer.chat(ChatRequest::new(vec![Message::user("y")]).with_reservation("test-run")).await.unwrap();
         let events = spend_events(&db).await;
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].payload.get("role"), None);
@@ -765,13 +839,37 @@ mod tests {
         let db = test_db();
         let mut layer = remote_layer(&db);
         layer.model = String::new();
-        let err = layer.chat(ChatRequest::new(vec![Message::user("x")])).await;
+        let err = layer.chat(ChatRequest::new(vec![Message::user("x")]).with_reservation("test-run")).await;
         assert!(
             matches!(err, Err(ProviderError::MissingModel(ref p)) if p == "custom"),
             "expected MissingModel, got {err:?}"
         );
         // nothing was spent on a refused call
         assert!(spend_events(&db).await.is_empty());
+    }
+
+    /// Story 2.4 (AD-10): a real provider call that arrives WITHOUT a runtime
+    /// reservation is refused by the adapter itself — typed `no_reservation:`,
+    /// nothing spent. Enforcement is solely the runtime's; the adapter is the
+    /// last line of defense, not the first.
+    #[tokio::test]
+    async fn a_real_call_without_a_runtime_reservation_is_refused() {
+        let db = test_db();
+        let layer = remote_layer(&db);
+        let err = layer.chat(ChatRequest::new(vec![Message::user("x")])).await;
+        assert!(
+            matches!(err, Err(ProviderError::NoReservation)),
+            "expected NoReservation, got {err:?}"
+        );
+        assert!(spend_events(&db).await.is_empty(), "nothing was spent on a refused call");
+        // a blank reservation is as good as none
+        let err = layer
+            .chat(ChatRequest::new(vec![Message::user("x")]).with_reservation("   "))
+            .await;
+        assert!(matches!(err, Err(ProviderError::NoReservation)));
+        // simulated and CLI calls need no reservation (they cost nothing)
+        let sim = ProviderLayer::simulated(&db);
+        assert!(sim.chat(ChatRequest::new(vec![Message::user("x")])).await.is_ok());
     }
 
     #[test]
@@ -942,7 +1040,7 @@ mod tests {
             content: "respuesta",
             usage: Usage { input_tokens: 100, output_tokens: 50 },
         });
-        layer.chat(ChatRequest::new(vec![Message::user("hola")])).await.unwrap();
+        layer.chat(ChatRequest::new(vec![Message::user("hola")]).with_reservation("test-run")).await.unwrap();
 
         // No event — kind, payload, actor, anything — contains the key.
         let conn = db.0.lock().await;

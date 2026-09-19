@@ -71,6 +71,8 @@ pub enum RuntimeError {
     Proposal(#[from] proposals::ProposalError),
     #[error(transparent)]
     Store(#[from] crate::eventstore::EventError),
+    #[error(transparent)]
+    Trust(#[from] crate::trust::TrustError),
 }
 
 impl AgentRuntime {
@@ -133,22 +135,39 @@ impl AgentRuntime {
             Message::system(role_prompt(&config)),
             Message::user(format!("{task}\n\n{}", board_context(&mission, &hypotheses))),
         ];
-        let resp = layer
-            .chat(
-                ChatRequest::new(messages)
-                    .with_model(&config.model)
-                    .for_mission(mission_id)
-                    .with_role(&config.name),
-            )
-            .await?;
-        // AD-12 (Story 2.3): the step's events (its role-tagged spend may
-        // have reached the ceiling) are mission-scoped — evaluate the
-        // terminators right after; a decided mission never rests active.
+        // The trust dispatch (Story 2.4, AD-10/15d/15e): reserve against the
+        // ceilings (kill switch + dial checked first), dispatch with the
+        // reservation token attached, settle after — the adapter refuses
+        // real calls that arrive without one.
+        let plan = crate::trust::CallPlan {
+            run_id: format!("step-{}", Uuid::new_v4().simple()),
+            target: layer.name().to_string(),
+            model: config.model.clone(),
+            mission_id: Some(mission_id),
+            estimate_cents: crate::trust::estimate_cents(&layer, &config.model),
+            autonomous: true,
+        };
+        let resp = crate::trust::reserve_and_chat(
+            &self.db,
+            &layer,
+            ChatRequest::new(messages)
+                .with_model(&config.model)
+                .for_mission(mission_id)
+                .with_role(&config.name),
+            plan,
+        )
+        .await;
+        // AD-12 (Story 2.3 + 2.4): the step's events are mission-scoped — its
+        // role-tagged spend may have reached the ceiling, and a REFUSED step
+        // lands `spend.refused` (a cost-ceiling refusal counts toward the
+        // terminal state). Evaluate the terminators on both paths; a decided
+        // mission never rests active.
         {
             let conn = self.db.0.lock().await;
             let store = EventStore::new(&conn);
             crate::domain::nightshift::evaluate_terminals(&store)?;
         }
+        let resp = resp?;
         Ok(AgentStepResult {
             mission_id,
             role: config.name.clone(),
@@ -313,6 +332,7 @@ mod tests {
         Autonomy, MissionCreatedPayload, SpendState, SPEND_RECORDED,
     };
     use crate::eventstore::{NewEvent, StoredEvent};
+    use chrono::{Local, TimeZone};
     use rusqlite::Connection;
 
     fn settings(mode: &str, name: &str, model: &str) -> ProviderSettings {
@@ -675,5 +695,287 @@ mod tests {
         let conn = db.0.lock().await;
         let events = EventStore::new(&conn).events_all().unwrap();
         assert!(!events.iter().any(|e| e.kind == "proposal.created"));
+    }
+
+    // ---- Story 2.4: the trust dispatch (AD-10/15d/15e) ----
+
+    use crate::domain::trust::{
+        SPEND_REFUSED, SPEND_RESERVED, TARGET_SPEND_RECORDED as TARGET_SPEND_RECORDED_KIND,
+    };
+    use crate::domain::missions::MISSION_STOPPED;
+
+    /// A slow-remote resolver: every role answers through a delayed
+    /// no-network remote layer (claude rates ⇒ a 67¢ nominal estimate), so a
+    /// reservation stays IN FLIGHT across an await point — the TOCTOU shape.
+    fn slow_resolver(
+        db: &Db,
+        _conn: &Connection,
+        role: &RoleConfig,
+    ) -> Result<ProviderLayer, ProviderError> {
+        Ok(crate::adapters::providers::slow_remote_layer(
+            db,
+            &role.provider,
+            &role.model,
+            "Hallazgo: la afirmación central quedó anclada; propongo avanzar a prueba.",
+            Usage { input_tokens: 1_000, output_tokens: 500 },
+            150,
+        ))
+    }
+
+    fn slow_runtime(db: &Db) -> AgentRuntime {
+        AgentRuntime { db: db.clone(), resolver: slow_resolver }
+    }
+
+    async fn remote_mission(db: &Db, ceiling: u64, autonomy: Autonomy) -> StoredEvent {
+        let conn = db.0.lock().await;
+        EventStore::new(&conn)
+            .append(
+                NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A rater agrees.".into(),
+                    autonomy,
+                    spend_ceiling_cents: ceiling,
+                    // rate choices so the nominal estimate per call is 68¢
+                    // (sonnet rates) and 50¢ (gpt-4o rates): either order,
+                    // two concurrent reservations exceed a 100¢ headroom
+                    roles: vec![
+                        RoleConfig::drafter("anthropic", "claude-sonnet-4-5"),
+                        RoleConfig::critic("openai", "gpt-4o"),
+                    ],
+                    schedule: "off".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+    }
+
+    /// AD-10's TOCTOU test: TWO CONCURRENT dispatches over a $1.00 headroom
+    /// cannot both pass. Each call's reservation estimate is 67¢; the
+    /// ceiling leaves exactly 100¢ of headroom. The first dispatch reserves
+    /// and is in flight (the slow remote holds the call open); the second
+    /// check reads recorded spend PLUS the in-flight reservation —
+    /// 0 + 67 + 67 > 100 — and is refused as an event.
+    #[tokio::test]
+    async fn two_concurrent_steps_over_a_dollar_headroom_one_succeeds_one_is_refused() {
+        let db = test_db();
+        let mission = remote_mission(&db, 100, Autonomy::Suggest).await;
+        let runtime = slow_runtime(&db);
+        let (a, b) = tokio::join!(
+            runtime.run_step(mission.id, ROLE_DRAFTER, "Escanea la literatura."),
+            runtime.run_step(mission.id, ROLE_CRITIC, "Evalúa el borrador."),
+        );
+        // exactly one succeeded, exactly one was refused on the ceiling
+        let (ok, refused) = match (a, b) {
+            (Ok(_), Err(e)) | (Err(e), Ok(_)) => (true, e),
+            (Ok(_), Ok(_)) => panic!("both concurrent dispatches passed — TOCTOU violation"),
+            (Err(a), Err(b)) => panic!("both refused: {a} / {b}"),
+        };
+        assert!(ok);
+        assert!(refused.to_string().starts_with("cost_ceiling:"), "unexpected: {refused}");
+
+        let (reserved, refusals, recorded, target_recorded) = {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            (
+                events.iter().filter(|e| e.kind == SPEND_RESERVED).count(),
+                events.iter().filter(|e| e.kind == SPEND_REFUSED).cloned().collect::<Vec<_>>(),
+                events.iter().filter(|e| e.kind == SPEND_RECORDED).count(),
+                events.iter().filter(|e| e.kind == TARGET_SPEND_RECORDED_KIND).count(),
+            )
+        };
+        assert_eq!(reserved, 1, "exactly one reservation went through");
+        assert_eq!(refusals.len(), 1, "the refusal is an event");
+        assert_eq!(refusals[0].payload["scope"], serde_json::json!("mission"));
+        assert_eq!(refusals[0].payload["ceiling_cents"], serde_json::json!(100));
+        assert!(refusals[0].payload["would_be_cost_cents"].as_u64().unwrap() > 100);
+        assert_eq!(refusals[0].payload["mission_id"], serde_json::json!(mission.id.to_string()));
+        // the successful call's full protocol: recorded + target-attributed
+        assert_eq!(recorded, 1);
+        assert_eq!(target_recorded, 1, "the cost is attributed to the compute target");
+
+        // the mission's spend NEVER exceeded its ceiling, and the refusal
+        // counted toward the terminal state: mission.stopped(cost_ceiling_reached)
+        let (spend, stopped) = {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            let missions = MissionsProjection::fold(&events).unwrap();
+            let m = missions.iter().find(|m| m.id == mission.id).unwrap();
+            let stopped = events
+                .iter()
+                .find(|e| e.kind == MISSION_STOPPED)
+                .cloned();
+            (m.spend_cents, stopped)
+        };
+        assert!(spend <= 100, "the ceiling was never overshot: {spend}¢");
+        let stopped = stopped.expect("the refusal decided the terminal state");
+        assert_eq!(stopped.payload["signal"], serde_json::json!("cost_ceiling_reached"));
+        assert_eq!(
+            stopped.actor,
+            crate::eventstore::Actor::System {
+                component: crate::eventstore::SystemComponent::Runtime
+            }
+        );
+    }
+
+    /// AD-15e: while `runtime.killed` is the latest runtime-state event, the
+    /// dispatcher refuses every dispatch — run_step AND the Night Shift tick;
+    /// `runtime.resumed` restores both.
+    #[tokio::test]
+    async fn a_killed_runtime_refuses_run_step_and_the_tick_until_resumed() {
+        let db = test_db();
+        let mission = remote_mission(&db, 500, Autonomy::Suggest).await;
+        {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).append(NewEvent::runtime_killed().unwrap()).unwrap();
+        }
+        let runtime = slow_runtime(&db);
+        // run_step is refused — typed killed:
+        let err = runtime
+            .run_step(mission.id, ROLE_DRAFTER, "Escanea la literatura.")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("killed:"), "unexpected: {err}");
+        // the Night Shift tick is refused too (AD-15e: every dispatch)
+        let shift = crate::nightshift::NightShift::with_resolver(db.clone(), slow_resolver);
+        let err = shift
+            .tick(Local::now())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("killed:"), "unexpected: {err}");
+        {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            assert!(
+                !events.iter().any(|e| e.kind == crate::domain::nightshift::RUN_STARTED),
+                "no scan ran while killed"
+            );
+        }
+        // resume restores both
+        {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).append(NewEvent::runtime_resumed().unwrap()).unwrap();
+        }
+        runtime
+            .run_step(mission.id, ROLE_DRAFTER, "Escanea la literatura.")
+            .await
+            .expect("resumed runtime dispatches again");
+        shift.tick(Local::now()).await.expect("resumed tick runs");
+    }
+
+    /// AD-15d: the dial gates autonomous dispatch (watch refuses; suggest
+    /// and act-with-receipts dispatch) — and NO position enables an
+    /// auto-merge: every state mutation stays a proposal at every stop.
+    #[tokio::test]
+    async fn the_dial_gates_dispatch_but_no_position_ever_auto_merges() {
+        let db = test_db();
+        let mission = remote_mission(&db, 500, Autonomy::ActWithReceipts).await;
+        // a watch mission dial (most restrictive wins over the permissive
+        // creation autonomy)
+        {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(
+                    NewEvent::autonomy_configured(crate::domain::trust::AutonomyConfiguredPayload {
+                        scope: crate::domain::trust::Scope::Mission,
+                        scope_id: Some(mission.id.to_string()),
+                        mode: Autonomy::Watch,
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let runtime = slow_runtime(&db);
+        let err = runtime
+            .run_step(mission.id, ROLE_DRAFTER, "Escanea la literatura.")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("autonomy:"), "unexpected: {err}");
+
+        // back to act_with_receipts — the most permissive stop: dispatch
+        // runs, and the step's intended change STILL lands as a pending
+        // proposal (AD-3 holds at every dial position — no auto-merge)
+        {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(
+                    NewEvent::autonomy_configured(crate::domain::trust::AutonomyConfiguredPayload {
+                        scope: crate::domain::trust::Scope::Mission,
+                        scope_id: Some(mission.id.to_string()),
+                        mode: Autonomy::ActWithReceipts,
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let step = runtime
+            .run_step(mission.id, ROLE_DRAFTER, "Evalúa y propone el siguiente paso.")
+            .await
+            .unwrap();
+        let hyp = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap()
+        };
+        let proposal = runtime
+            .propose_transition(
+                mission.id,
+                hyp.id,
+                "testing",
+                "el redactor pidió una corrida de prueba",
+                &format!("{}:{}", step.provider, step.role),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            proposal.status,
+            crate::domain::proposals::ProposalStatus::Pending,
+            "even at act_with_receipts a mutation waits for a human merge"
+        );
+        let conn = db.0.lock().await;
+        let events = EventStore::new(&conn).events_all().unwrap();
+        let board = HypothesesProjection::fold(&events).unwrap();
+        assert_eq!(
+            board[0].status,
+            crate::domain::hypotheses::HypothesisStatus::Proposed,
+            "the board never moves on the agent's own authority"
+        );
+    }
+
+    /// A ceiling-refused Night Shift scan ends run.failed(cost_ceiling_reached)
+    /// and the AD-12 evaluator decides mission.stopped from it (the "$X
+    /// spent" stop condition, reached by refusal).
+    #[tokio::test]
+    async fn a_ceiling_refused_scan_fails_the_run_and_stops_the_mission() {
+        let db = test_db();
+        // ceiling 30¢: a single 67¢ estimate cannot fit — the scan is refused
+        let mission = remote_mission(&db, 30, Autonomy::Suggest).await;
+        let shift = crate::nightshift::NightShift::with_resolver(db.clone(), slow_resolver);
+        let records = shift.run_all().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].finished, "the scan was refused, not run");
+        assert_eq!(records[0].detail, "cost_ceiling_reached");
+        let conn = db.0.lock().await;
+        let events = EventStore::new(&conn).events_all().unwrap();
+        let failed: Vec<&StoredEvent> = events
+            .iter()
+            .filter(|e| e.kind == crate::domain::nightshift::RUN_FAILED)
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0].payload["reason"],
+            serde_json::json!("cost_ceiling_reached")
+        );
+        let stopped = events
+            .iter()
+            .find(|e| e.kind == MISSION_STOPPED)
+            .expect("the refusal stopped the mission (AD-12)");
+        assert_eq!(stopped.payload["signal"], serde_json::json!("cost_ceiling_reached"));
+        let missions = MissionsProjection::fold(&events).unwrap();
+        assert_eq!(
+            missions.iter().find(|m| m.id == mission.id).unwrap().status,
+            crate::domain::missions::MissionStatus::Stopped
+        );
     }
 }

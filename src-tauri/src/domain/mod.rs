@@ -10,3 +10,4 @@ pub mod missions;
 pub mod onboarding;
 pub mod proposals;
 pub mod spend;
+pub mod trust;

@@ -47,11 +47,32 @@ pub async fn assistant_reply(
 
     let mut messages = vec![Message::system(system)];
     messages.extend(history);
-    let resp = layer
-        .chat(ChatRequest::new(messages).with_temperature(0.4))
-        .await
-        .map_err(|e| e.to_string())?;
+    // The trust dispatch (Story 2.4, AD-10): user-initiated, so the dial does
+    // not gate it — but the kill switch and the ceilings do, and a real call
+    // still needs its runtime reservation.
+    let resp = crate::trust::reserve_and_chat(
+        db,
+        &layer,
+        ChatRequest::new(messages).with_temperature(0.4),
+        assistant_plan(&layer, "assistant"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok((resp.content, None))
+}
+
+/// The call plan for a user-initiated assistant flow (Story 2.4): never
+/// dial-gated (the user pressed the button), still kill-switched and
+/// ceiling-checked, still reserved when it costs.
+fn assistant_plan(layer: &providers::ProviderLayer, prefix: &str) -> crate::trust::CallPlan {
+    crate::trust::CallPlan {
+        run_id: format!("{prefix}-{}", uuid::Uuid::new_v4().simple()),
+        target: layer.name().to_string(),
+        model: layer.model().to_string(),
+        mission_id: None,
+        estimate_cents: crate::trust::estimate_cents(layer, layer.model()),
+        autonomous: false,
+    }
 }
 
 /// Run an AI review over the project. Creates a review record, findings, and
@@ -98,10 +119,15 @@ pub async fn run_review(
         Message::system(system),
         Message::user(format!("Revisa: {}", focus)),
     ];
-    let resp = layer
-        .chat(ChatRequest::new(messages).with_temperature(0.4))
-        .await
-        .map_err(|e| e.to_string())?;
+    // The trust dispatch (Story 2.4): same contract as the assistant reply.
+    let resp = crate::trust::reserve_and_chat(
+        db,
+        &layer,
+        ChatRequest::new(messages).with_temperature(0.4),
+        assistant_plan(&layer, "review"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Parse the JSON every mode returns (real providers and CLIs verbatim;
     // the simulated provider reconstructs it from the prompt markers).

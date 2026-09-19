@@ -37,6 +37,8 @@ use uuid::Uuid;
 pub enum NightShiftError {
     #[error(transparent)]
     Store(#[from] crate::eventstore::EventError),
+    #[error("killed: the runtime is killed — the Night Shift refuses to dispatch until runtime.resumed (AD-15e)")]
+    Killed,
 }
 
 /// One Night Shift run's outcome, as the tick reports it.
@@ -75,7 +77,13 @@ impl NightShift {
     /// One scheduled tick at `now` (local time): reap dead runs, run every
     /// due mission, then evaluate all terminators (the AD-12 catch-up —
     /// user-driven board changes get decided within a tick of landing).
+    /// A killed runtime refuses the tick entirely (AD-15e): no reap, no
+    /// scans, no evaluation — every dispatch is refused while `runtime.killed`
+    /// is the latest runtime-state event by seq.
     pub async fn tick(&self, now: DateTime<Local>) -> Result<Vec<RunRecord>, NightShiftError> {
+        if self.runtime_killed().await? {
+            return Err(NightShiftError::Killed);
+        }
         self.reap_dead_runs(now.with_timezone(&Utc)).await?;
         let missions = self.fold_missions().await?;
         let mut records = Vec::new();
@@ -95,7 +103,11 @@ impl NightShift {
     /// The manual trigger (`run_night_shift_now`, FR-4.1 UX seam): run every
     /// ACTIVE mission's scan once, ignoring due-ness — an explicit user
     /// action, so even a mission scheduled `off` runs when asked directly.
+    /// Refused while the runtime is killed, like every dispatch (AD-15e).
     pub async fn run_all(&self) -> Result<Vec<RunRecord>, NightShiftError> {
+        if self.runtime_killed().await? {
+            return Err(NightShiftError::Killed);
+        }
         let missions = self.fold_missions().await?;
         let mut records = Vec::new();
         for mission in &missions {
@@ -106,6 +118,14 @@ impl NightShift {
         }
         self.evaluate().await?;
         Ok(records)
+    }
+
+    /// Is the runtime killed? (AD-15e — the latest runtime-state event by
+    /// seq decides; `runtime.resumed` restores.)
+    async fn runtime_killed(&self) -> Result<bool, NightShiftError> {
+        let conn = self.db.0.lock().await;
+        let events = EventStore::new(&conn).events_all()?;
+        Ok(crate::domain::trust::trust_config(&events).runtime_killed)
     }
 
     /// Is the mission's schedule due at `now`? Thin wrapper: the mission's
@@ -388,6 +408,11 @@ fn reason_code(e: &crate::runtime::RuntimeError) -> String {
         RuntimeError::EmptyTask | RuntimeError::EmptyBasis | RuntimeError::EmptyRunId => {
             "empty_input".into()
         }
+        // Story 2.4 (AD-12 interplay): a cost-ceiling refusal fails the run
+        // with `cost_ceiling_reached` — the signal the terminal evaluator
+        // recognizes as `mission.stopped`; a killed runtime fails it with
+        // `runtime_killed`; a watch dial with `autonomy_watch`.
+        RuntimeError::Trust(trust) => trust.run_reason(),
         _ => "runtime_error".into(),
     }
 }

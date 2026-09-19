@@ -60,6 +60,11 @@ pub enum OnboardingError {
     Event(#[from] EventError),
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
+    /// The trust dispatch refused the call (Story 2.4): killed runtime,
+    /// autonomy dial, or a cost ceiling — the first value never generates
+    /// around the enforcement (AD-10/15d/15e).
+    #[error(transparent)]
+    Trust(#[from] crate::trust::TrustError),
 }
 
 /// Parse a pasted arXiv URL into the bare arXiv id. Accepts
@@ -252,8 +257,11 @@ struct CandidateDraft {
 
 /// Generate the candidates THROUGH the provider layer (AD-9): one chat call,
 /// the reply parsed leniently (markdown fences stripped, confidence clamped,
-/// at most 3 candidates, at least 1 or the flow fails honestly).
+/// at most 3 candidates, at least 1 or the flow fails honestly). The call is
+/// runtime-dispatched (Story 2.4, AD-10): user-initiated (not dial-gated),
+/// but kill-switched, ceiling-checked, and reserved when it costs.
 async fn generate_candidates(
+    db: &Db,
     layer: &ProviderLayer,
     paper: &Paper,
     lang: &str,
@@ -263,7 +271,15 @@ async fn generate_candidates(
         Message::user("Genera los 3 candidatos de hipótesis."),
     ])
     .with_temperature(0.3);
-    let resp = layer.chat(req).await?;
+    let plan = crate::trust::CallPlan {
+        run_id: format!("first-value-{}", uuid::Uuid::new_v4().simple()),
+        target: layer.name().to_string(),
+        model: layer.model().to_string(),
+        mission_id: None,
+        estimate_cents: crate::trust::estimate_cents(layer, layer.model()),
+        autonomous: false,
+    };
+    let resp = crate::trust::reserve_and_chat(db, layer, req, plan).await?;
     let drafts = parse_candidates(&resp.content)?;
     let cost_cents = if layer.kind() == Kind::Remote {
         pricing::cost_cents(layer.name(), layer.model(), &resp.usage)
@@ -471,7 +487,7 @@ pub async fn run_first_value(
 
     // Phase 2 (provider call — AD-9; never hold the lock across it).
     let model = assessing_model(layer);
-    let (drafts, cost_cents) = generate_candidates(layer, &paper, &lang).await?;
+    let (drafts, cost_cents) = generate_candidates(db, layer, &paper, &lang).await?;
 
     // Phase 3 (locked): mission.created + one hypothesis.created per candidate.
     let (mission, candidates) = {

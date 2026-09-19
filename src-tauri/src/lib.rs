@@ -11,6 +11,7 @@ mod proposals_commands;
 mod nightshift;
 mod runtime;
 mod server;
+mod trust;
 
 pub mod adapters;
 pub mod domain;
