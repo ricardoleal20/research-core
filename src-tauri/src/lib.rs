@@ -168,6 +168,7 @@ pub fn run() {
             missions_commands::create_mission,
             missions_commands::list_missions,
             missions_commands::get_mission_runs,
+            missions_commands::get_run_receipt,
             missions_commands::run_agent_step,
             nightshift_commands::get_morning_digest,
             nightshift_commands::run_night_shift_now,

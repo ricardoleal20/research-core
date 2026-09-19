@@ -9,5 +9,6 @@ pub mod hypotheses;
 pub mod missions;
 pub mod onboarding;
 pub mod proposals;
+pub mod receipts;
 pub mod spend;
 pub mod trust;

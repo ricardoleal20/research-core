@@ -72,6 +72,9 @@ pub struct DigestRow {
     /// The seq of the mission's latest `run.started` in the window — the
     /// receipts link's anchor (receipts open in the run view).
     pub receipt_seq: i64,
+    /// The latest run's id (Story 2.5, FR-6.2): the receipts drill-down's
+    /// target — the row's "receipts →" link opens this run's receipt.
+    pub run_id: String,
     pub last_run_ts: DateTime<Utc>,
 }
 
@@ -142,6 +145,7 @@ struct MissionNight {
     latest_failed_reason: Option<String>,
     last_run_ts: Option<DateTime<Utc>>,
     receipt_seq: i64,
+    latest_run_id: Option<String>,
 }
 
 impl MissionNight {
@@ -151,6 +155,11 @@ impl MissionNight {
             RUN_STARTED => {
                 self.started += 1;
                 self.receipt_seq = event.seq;
+                self.latest_run_id = event
+                    .payload
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(String::from);
             }
             RUN_FINISHED => self.finished += 1,
             RUN_FAILED => {
@@ -310,6 +319,7 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
             spend_cents: mission.spend_cents,
             ceiling_cents: mission.spend_ceiling_cents,
             receipt_seq: night.receipt_seq,
+            run_id: night.latest_run_id.clone().unwrap_or_default(),
             last_run_ts: night.last_run_ts.unwrap_or(now),
         });
     }
@@ -432,6 +442,9 @@ mod tests {
         assert_eq!(row.failure_reason, None);
         assert_eq!(row.status, MissionStatus::Active);
         assert_eq!(row.receipt_seq, store.events_all().unwrap()[1].seq);
+        // Story 2.5 (FR-6.2): the row carries its latest run's id — the
+        // receipts drill-down's target
+        assert_eq!(row.run_id, "ns-1");
         // the renderer contract: one line, no newline, ≤120 chars
         let line = row.verdict_line();
         assert!(!line.contains('\n'));

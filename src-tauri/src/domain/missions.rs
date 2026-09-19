@@ -368,6 +368,12 @@ pub struct MissionRun {
     /// per-role receipts); `None` for events without a role tag.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The run the event belongs to (Story 2.5, FR-6.2): the payload `run_id`
+    /// (run lifecycle, spend, reservation events) or the agent actor's run id
+    /// (proposals); `None` for events without a run link. The runs list's
+    /// receipt drill-down opens this run's receipt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 fn actor_label(actor: &Actor) -> String {
@@ -473,6 +479,15 @@ impl MissionsProjection {
                     .get("role")
                     .and_then(serde_json::Value::as_str)
                     .map(String::from),
+                run_id: event
+                    .payload
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(String::from)
+                    .or_else(|| match &event.actor {
+                        Actor::Agent { run_id } => Some(run_id.clone()),
+                        _ => None,
+                    }),
             })
             .collect()
     }
@@ -948,6 +963,9 @@ mod tests {
                     kind: MISSION_AWAITING_REVIEW.into(),
                     actor: "agent".into(),
                     role: None,
+                    // the agent actor's run id (Story 2.5): the receipt
+                    // drill-down's target
+                    run_id: Some("r1".into()),
                 },
                 MissionRun {
                     seq: spend_event.seq,
@@ -956,6 +974,7 @@ mod tests {
                     kind: SPEND_RECORDED.into(),
                     actor: "system:telemetry".into(),
                     role: Some("critic".into()),
+                    run_id: None,
                 },
             ]
         );

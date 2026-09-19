@@ -44,6 +44,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             get(hypothesis_evidence),
         )
         .route("/api/digest", get(digest))
+        .route("/api/runs/{run_id}/receipt", get(run_receipt))
         .route("/api/trust", get(trust))
         .route("/api/proposals", get(all_proposals))
         .route(
@@ -111,6 +112,27 @@ async fn hypothesis_evidence(
 /// on run success.
 async fn digest(State(state): State<ServerState>) -> Result<Json<MorningDigest>, StatusCode> {
     morning_digest(&state.db).await.map(Json).map_err(|_| internal())
+}
+
+/// One run's timeline receipt (Story 2.5, FR-6.1/6.2 — read-only per AD-14):
+/// the ordered audit ledger the drill-down renders — a pure query over the
+/// shared core, so the served browser view replays the identical ledger the
+/// desktop webview does. An unknown run id (no `run.started` carries it) is
+/// an honest 404, never an empty receipt.
+async fn run_receipt(
+    State(state): State<ServerState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<crate::domain::receipts::RunReceipt>, StatusCode> {
+    let run_id = run_id.trim().to_string();
+    if run_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    crate::domain::receipts::render_receipt(&events, &run_id)
+        .map_err(|_| internal())?
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// The trust status (Story 2.4, FR-5 — read-only per AD-14): runtime state,
@@ -477,6 +499,103 @@ mod tests {
         // single writer (AD-14): merging stays on the Tauri command path
         let res = app(db)
             .oneshot(Request::post("/api/proposals").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// The run receipt route (Story 2.5, FR-6.1): read-only over the shared
+    /// core — the drill-down's ledger, replayed identically from the events.
+    #[tokio::test]
+    async fn get_api_run_receipt_renders_the_ledger_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(
+                    NewEvent::mission_created(
+                        crate::domain::missions::MissionCreatedPayload {
+                            question: "Does X hold up?".into(),
+                            stop_condition: "Stop after $5.".into(),
+                            success_criterion: "A blind rater agrees.".into(),
+                            autonomy: Autonomy::Suggest,
+                            spend_ceiling_cents: 100,
+                            roles: vec![],
+                            schedule: "daily-03:00".into(),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(
+                    NewEvent::run_started(
+                        "ns-42",
+                        mission.id,
+                        "daily-03:00",
+                        crate::domain::nightshift::SCAN_STEP,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(
+                    NewEvent::spend_recorded(crate::domain::spend::SpendRecordedPayload {
+                        provider: "openrouter".into(),
+                        model: "GLM-5.3".into(),
+                        input_tokens: 3_812,
+                        output_tokens: 964,
+                        cost_cents: 9,
+                        mission_id: Some(mission.id),
+                        role: Some("drafter".into()),
+                        run_id: Some("step-1".into()),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(NewEvent::run_finished("ns-42", mission.id, "1 scan done", 0).unwrap())
+                .unwrap();
+        }
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/runs/ns-42/receipt").body(Body::empty()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let receipt: crate::domain::receipts::RunReceipt = body_json(res.into_body()).await;
+        assert_eq!(receipt.run_id, "ns-42");
+        assert_eq!(
+            receipt.outcome,
+            crate::domain::receipts::RunOutcome::Finished
+        );
+        assert_eq!(receipt.spend_cents, 9);
+        // the ledger: run start, the scan's search, the call, the finish —
+        // in seq order, with e-seq refs
+        let kinds: Vec<&str> = receipt
+            .rows
+            .iter()
+            .map(|r| r.action.kind())
+            .collect();
+        assert_eq!(kinds, vec!["run_start", "search", "call", "run_end"]);
+        assert!(receipt.rows.iter().all(|r| r.seq > 0));
+        // an unknown run id is an honest 404 — no run.started, no receipt
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/runs/never-heard-of/receipt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // single writer (AD-14): the receipt is a read — POST is not routed
+        let res = app(db)
+            .oneshot(
+                Request::post("/api/runs/ns-42/receipt").body(Body::empty()).unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);

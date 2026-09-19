@@ -9,6 +9,7 @@ use crate::db::Db;
 use crate::domain::missions::{
     Autonomy, Mission, MissionCreatedPayload, MissionRun, MissionsProjection, RoleConfig,
 };
+use crate::domain::receipts::{render_receipt, RunReceipt};
 use crate::eventstore::{EventStore, NewEvent};
 use crate::runtime;
 use crate::runtime::{AgentRuntime, AgentStepResult};
@@ -89,6 +90,25 @@ pub async fn get_mission_runs(
     let c = db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(err)?;
     Ok(MissionsProjection::runs_for(&events, mission_id))
+}
+
+/// One run's timeline receipt (Story 2.5, FR-6.1): the ordered audit ledger
+/// of every autonomous action — a pure query over the log (AD-2), so the
+/// same run id always replays the identical ledger. `None` when the run id
+/// has no `run.started`: not every run-scoped token is a run (reservation
+/// tokens are not), and the drill-down surfaces that honestly.
+#[tauri::command]
+pub async fn get_run_receipt(
+    db: State<'_, Db>,
+    run_id: String,
+) -> Result<Option<RunReceipt>, String> {
+    let run_id = run_id.trim().to_string();
+    if run_id.is_empty() {
+        return Err("invalid run id — a receipt names its run".into());
+    }
+    let c = db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(err)?;
+    render_receipt(&events, &run_id).map_err(err)
 }
 
 /// Run ONE agent step for a mission's role (Story 2.1): the role's
