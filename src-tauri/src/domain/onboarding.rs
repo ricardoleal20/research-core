@@ -348,6 +348,7 @@ fn starter_mission_payload(paper: &Paper, lang: &str) -> MissionCreatedPayload {
         success_criterion,
         autonomy: Autonomy::Suggest,
         spend_ceiling_cents: 100,
+    roles: vec![],
     }
 }
 

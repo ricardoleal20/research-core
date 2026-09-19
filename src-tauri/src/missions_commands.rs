@@ -4,11 +4,13 @@
 // camelCase from the frontend (Tauri 2 convention) and are parsed into domain
 // types before construction.
 
+use crate::adapters::providers::ProviderSettings;
 use crate::db::Db;
 use crate::domain::missions::{
-    Autonomy, Mission, MissionCreatedPayload, MissionRun, MissionsProjection,
+    Autonomy, Mission, MissionCreatedPayload, MissionRun, MissionsProjection, RoleConfig,
 };
 use crate::eventstore::{EventStore, NewEvent};
+use crate::runtime;
 use tauri::State;
 use uuid::Uuid;
 
@@ -18,7 +20,9 @@ fn err(e: impl ToString) -> String {
 
 /// Create a mission: append one `mission.created` event (actor=user) and
 /// return the folded mission read model. Fails loudly when terminator fields
-/// are empty (AD-12) or the autonomy stop is unknown.
+/// are empty (AD-12), the autonomy stop is unknown, or the resolved role
+/// config violates the different-model critic rule (NFR-3 — the typed
+/// constructor rejects it BEFORE any event is appended).
 #[tauri::command]
 pub async fn create_mission(
     db: State<'_, Db>,
@@ -27,15 +31,28 @@ pub async fn create_mission(
     success_criterion: String,
     autonomy: String,
     spend_ceiling_cents: u64,
+    roles: Option<Vec<RoleConfig>>,
 ) -> Result<Mission, String> {
     let autonomy = Autonomy::parse(&autonomy)
         .ok_or_else(|| format!("unknown autonomy stop `{autonomy}` — expected watch | suggest | act_with_receipts"))?;
+    // Resolve the mission's agent-role config: the layer's defaults, with the
+    // caller's overrides applied by role name (Story 2.1). The typed
+    // constructor validates the resolved set — a same-model critic fails
+    // creation before anything is appended.
+    let roles = {
+        let c = db.0.lock().await;
+        runtime::merge_roles(
+            runtime::default_roles(&ProviderSettings::load(&c)),
+            roles,
+        )
+    };
     let event = NewEvent::mission_created(MissionCreatedPayload {
         question,
         stop_condition,
         success_criterion,
         autonomy,
         spend_ceiling_cents,
+        roles,
     })
     .map_err(err)?;
     let c = db.0.lock().await;

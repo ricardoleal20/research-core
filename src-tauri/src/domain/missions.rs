@@ -14,6 +14,45 @@ use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const MISSION_CREATED: &str = "mission.created";
 
+/// The two agent role names a mission's runtime config knows (Story 2.1,
+/// AD-9): drafters advance the mission; critics evaluate the drafters' work.
+pub const ROLE_DRAFTER: &str = "drafter";
+pub const ROLE_CRITIC: &str = "critic";
+
+/// One agent role of a mission's runtime config (Story 2.1, NFR-3): a named
+/// role bound to one (provider, model) pair resolved through the provider
+/// layer (AD-9) — never one algorithm grading its own homework.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleConfig {
+    /// `drafter` | `critic` — the role's name is its identity.
+    pub name: String,
+    /// The provider-layer provider name (or `simulated` / `cli`).
+    pub provider: String,
+    /// The model identifier the role runs on.
+    pub model: String,
+}
+
+impl RoleConfig {
+    pub fn drafter(provider: &str, model: &str) -> Self {
+        Self { name: ROLE_DRAFTER.into(), provider: provider.into(), model: model.into() }
+    }
+
+    pub fn critic(provider: &str, model: &str) -> Self {
+        Self { name: ROLE_CRITIC.into(), provider: provider.into(), model: model.into() }
+    }
+
+    /// The (provider, model) pair the different-model rule compares (NFR-3):
+    /// trimmed and lowercased — `OpenAI`/`GPT-4o` and `openai`/`gpt-4o` are
+    /// the same algorithm.
+    pub fn pair(&self) -> (String, String) {
+        (
+            self.provider.trim().to_lowercase(),
+            self.model.trim().to_lowercase(),
+        )
+    }
+}
+
 /// Mission status transitions (Story 1.4 read side): recognized kinds of the
 /// events that move a mission's lifecycle. The fold derives status from the
 /// log — last transition in `seq` order wins.
@@ -67,6 +106,13 @@ pub struct MissionCreatedPayload {
     pub success_criterion: String,
     pub autonomy: Autonomy,
     pub spend_ceiling_cents: u64,
+    /// The mission's agent-role config (Story 2.1): drafter + critic, each
+    /// bound to a (provider, model) pair. Shells resolve layer defaults
+    /// before construction, so a post-2.1 creation always carries a full
+    /// config; the `serde` default keeps pre-2.1 events foldable (their
+    /// roles resolve from the layer at step time).
+    #[serde(default)]
+    pub roles: Vec<RoleConfig>,
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<(), EventError> {
@@ -74,6 +120,48 @@ fn require_non_empty(field: &str, value: &str) -> Result<(), EventError> {
         return Err(EventError::Invalid(format!(
             "mission.{field} must not be empty — a mission that cannot end cannot exist (AD-12)"
         )));
+    }
+    Ok(())
+}
+
+/// Validate a mission's role config (NFR-3, AD-9) — BEFORE any event exists.
+/// Every role needs a known name and a complete (provider, model) pair, and
+/// no critic may resolve to the same pair as any drafter: never one
+/// algorithm grading its own homework. The simulated fallback is exempt —
+/// it is the no-key mock, not an algorithm, and exempting it keeps the app
+/// fully usable with no provider key configured (Story 2.1 AC).
+fn validate_roles(roles: &[RoleConfig]) -> Result<(), EventError> {
+    for role in roles {
+        if role.name != ROLE_DRAFTER && role.name != ROLE_CRITIC {
+            return Err(EventError::Invalid(format!(
+                "mission.roles: unknown role name `{}` — expected drafter | critic",
+                role.name
+            )));
+        }
+        if role.provider.trim().is_empty() || role.model.trim().is_empty() {
+            return Err(EventError::Invalid(format!(
+                "mission.roles: role `{}` requires a provider and a model — every role runs through the provider layer (AD-9)",
+                role.name
+            )));
+        }
+    }
+    let drafters: Vec<(String, String)> = roles
+        .iter()
+        .filter(|r| r.name == ROLE_DRAFTER)
+        .map(RoleConfig::pair)
+        .collect();
+    for critic in roles.iter().filter(|r| r.name == ROLE_CRITIC) {
+        let pair = critic.pair();
+        if pair.0 == "simulated" {
+            continue;
+        }
+        if drafters.contains(&pair) {
+            return Err(EventError::Invalid(format!(
+                "same_model_critic: the critic role resolves to {} + {} — the same (provider, model) pair as a drafter. Configure a different model for the critic (NFR-3: never one algorithm grading its own homework)",
+                critic.provider.trim(),
+                critic.model.trim()
+            )));
+        }
     }
     Ok(())
 }
@@ -87,6 +175,7 @@ impl NewEvent {
         require_non_empty("question", &payload.question)?;
         require_non_empty("stop_condition", &payload.stop_condition)?;
         require_non_empty("success_criterion", &payload.success_criterion)?;
+        validate_roles(&payload.roles)?;
         Self::new(
             MISSION_CREATED,
             Actor::User,
@@ -150,6 +239,10 @@ pub struct Mission {
     pub success_criterion: String,
     pub autonomy: Autonomy,
     pub spend_ceiling_cents: u64,
+    /// The mission's agent-role config, as appended with `mission.created`
+    /// (Story 2.1); empty for pre-2.1 missions (roles resolve from the layer
+    /// at step time).
+    pub roles: Vec<RoleConfig>,
     /// Derived: lifecycle status from events referencing this mission.
     pub status: MissionStatus,
     /// Derived: total `spend.recorded` cost against the ceiling, in cents.
@@ -173,6 +266,10 @@ pub struct MissionRun {
     pub kind: String,
     /// Short actor label: `user` | `agent` | `system:<component>`.
     pub actor: String,
+    /// The agent role a `spend.recorded` event is attributed to (Story 2.1
+    /// per-role receipts); `None` for events without a role tag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 fn actor_label(actor: &Actor) -> String {
@@ -266,6 +363,11 @@ impl MissionsProjection {
                 ts: event.ts,
                 kind: event.kind.clone(),
                 actor: actor_label(&event.actor),
+                role: event
+                    .payload
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .map(String::from),
             })
             .collect()
     }
@@ -287,6 +389,7 @@ impl MissionsProjection {
             success_criterion: payload.success_criterion,
             autonomy: payload.autonomy,
             spend_ceiling_cents: payload.spend_ceiling_cents,
+            roles: payload.roles,
             status: MissionStatus::Active,
             spend_cents: 0,
             spend_state: SpendState::Ok,
@@ -308,6 +411,10 @@ mod tests {
             success_criterion: "A blind rater finds zero fabricated citations in 20 sampled claims.".into(),
             autonomy: Autonomy::Suggest,
             spend_ceiling_cents: 500,
+            roles: vec![
+                RoleConfig::drafter("openai", "gpt-4o"),
+                RoleConfig::critic("anthropic", "claude-sonnet-4-5"),
+            ],
         }
     }
 
@@ -349,8 +456,103 @@ mod tests {
                 "success_criterion": "A blind rater finds zero fabricated citations in 20 sampled claims.",
                 "autonomy": "suggest",
                 "spend_ceiling_cents": 500,
+                "roles": [
+                    { "name": "drafter", "provider": "openai", "model": "gpt-4o" },
+                    { "name": "critic", "provider": "anthropic", "model": "claude-sonnet-4-5" },
+                ],
             })
         );
+    }
+
+    #[test]
+    fn constructor_rejects_a_critic_on_a_drafter_s_pair() {
+        // The matrix (NFR-3): critic == drafter on the same (provider, model)
+        // pair is rejected — before any event exists.
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("openai", "gpt-4o"),
+            RoleConfig::critic("openai", "gpt-4o"),
+        ];
+        let err = NewEvent::mission_created(p)
+            .expect_err("a critic on the drafter's exact pair must be rejected");
+        assert!(
+            err.to_string().contains("same_model_critic:"),
+            "error must carry the typed prefix: {err}"
+        );
+        // same provider, different model => accepted (different algorithm)
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("openai", "gpt-4o"),
+            RoleConfig::critic("openai", "gpt-4o-mini"),
+        ];
+        assert!(NewEvent::mission_created(p).is_ok());
+        // different provider, same model name => accepted (different algorithm)
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("openai", "m"),
+            RoleConfig::critic("anthropic", "m"),
+        ];
+        assert!(NewEvent::mission_created(p).is_ok());
+        // the pair comparison is normalized: case and whitespace do not
+        // create a "different" model
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("OpenAI", " GPT-4o "),
+            RoleConfig::critic("openai", "gpt-4o"),
+        ];
+        let err = NewEvent::mission_created(p)
+            .expect_err("normalized pairs must still collide");
+        assert!(err.to_string().contains("same_model_critic:"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn constructor_rejects_multi_role_configs_where_any_critic_collides() {
+        // Two drafters on different pairs; the critic collides with the
+        // second drafter => rejected.
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("openai", "gpt-4o"),
+            RoleConfig::drafter("google", "gemini-2.0-flash"),
+            RoleConfig::critic("google", "gemini-2.0-flash"),
+        ];
+        let err = NewEvent::mission_created(p)
+            .expect_err("a critic colliding with ANY drafter must be rejected");
+        assert!(err.to_string().contains("same_model_critic:"), "unexpected: {err}");
+        // a second critic on its own pair does not condemn the first
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("openai", "gpt-4o"),
+            RoleConfig::critic("anthropic", "claude-sonnet-4-5"),
+            RoleConfig::critic("google", "gemini-2.0-flash"),
+        ];
+        assert!(NewEvent::mission_created(p).is_ok());
+    }
+
+    #[test]
+    fn simulated_roles_are_exempt_from_the_different_model_rule() {
+        // With no key configured both roles run the simulated fallback — the
+        // app stays fully usable (Story 2.1 AC); the mock is not an algorithm
+        // grading its own homework.
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("simulated", "simulated"),
+            RoleConfig::critic("simulated", "simulated"),
+        ];
+        assert!(NewEvent::mission_created(p).is_ok());
+    }
+
+    #[test]
+    fn constructor_rejects_unknown_or_incomplete_roles() {
+        // unknown role name
+        let mut p = payload();
+        p.roles = vec![RoleConfig { name: "judge".into(), provider: "openai".into(), model: "m".into() }];
+        let err = NewEvent::mission_created(p).expect_err("unknown role names must fail");
+        assert!(err.to_string().contains("judge"), "unexpected: {err}");
+        // missing model — a role without a pair cannot run through the layer
+        let mut p = payload();
+        p.roles = vec![RoleConfig::drafter("openai", "  "), RoleConfig::critic("anthropic", "m")];
+        let err = NewEvent::mission_created(p).expect_err("incomplete roles must fail");
+        assert!(err.to_string().contains("provider and a model"), "unexpected: {err}");
     }
 
     #[test]
@@ -392,6 +594,7 @@ mod tests {
                 success_criterion: stored.payload["success_criterion"].as_str().unwrap().into(),
                 autonomy: Autonomy::Suggest,
                 spend_ceiling_cents: 500,
+                roles: payload().roles.clone(),
                 status: MissionStatus::Active,
                 spend_cents: 0,
                 spend_state: SpendState::Ok,
@@ -525,13 +728,14 @@ mod tests {
                     .with_causes(vec![created.id]),
             )
             .unwrap();
-        // a payload-linked event also references the mission
+        // a payload-linked event also references the mission — role-tagged
+        // spend (Story 2.1) carries its role into the run receipt
         let spend_event = store
             .append(
                 NewEvent::new(
                     SPEND_RECORDED,
                     Actor::System { component: crate::eventstore::SystemComponent::Telemetry },
-                    json!({ "mission_id": created.id.to_string(), "cost_cents": 10 }),
+                    json!({ "mission_id": created.id.to_string(), "cost_cents": 10, "role": "critic" }),
                 )
                 .unwrap(),
             )
@@ -547,6 +751,7 @@ mod tests {
                     ts: run_event.ts,
                     kind: MISSION_AWAITING_REVIEW.into(),
                     actor: "agent".into(),
+                    role: None,
                 },
                 MissionRun {
                     seq: spend_event.seq,
@@ -554,6 +759,7 @@ mod tests {
                     ts: spend_event.ts,
                     kind: SPEND_RECORDED.into(),
                     actor: "system:telemetry".into(),
+                    role: Some("critic".into()),
                 },
             ]
         );

@@ -6,6 +6,7 @@ mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
 mod onboarding_commands;
+mod runtime;
 mod server;
 
 pub mod adapters;

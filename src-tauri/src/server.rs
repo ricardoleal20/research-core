@@ -174,6 +174,7 @@ mod tests {
                         success_criterion: "A blind rater agrees.".into(),
                         autonomy: Autonomy::Suggest,
                         spend_ceiling_cents: 500,
+                    roles: vec![],
                     })
                     .unwrap(),
                 )
@@ -204,6 +205,7 @@ mod tests {
                         success_criterion: "A blind rater agrees.".into(),
                         autonomy: Autonomy::Watch,
                         spend_ceiling_cents: 500,
+                    roles: vec![],
                     })
                     .unwrap(),
                 )
@@ -262,6 +264,7 @@ mod tests {
                     success_criterion: "A blind rater agrees.".into(),
                     autonomy: Autonomy::Watch,
                     spend_ceiling_cents: 500,
+                roles: vec![],
                 })
                 .unwrap())
                 .unwrap();
@@ -308,6 +311,7 @@ mod tests {
                     success_criterion: "A blind rater agrees.".into(),
                     autonomy: Autonomy::Watch,
                     spend_ceiling_cents: 500,
+                roles: vec![],
                 })
                 .unwrap())
                 .unwrap();

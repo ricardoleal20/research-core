@@ -246,6 +246,17 @@ impl ProviderSettings {
             cli_model: crate::db::get_setting(conn, "llm_cli_model"),
         }
     }
+
+    /// Would this configuration resolve to the simulated fallback? Mirrors
+    /// `ProviderLayer::from_settings`'s resolution so Story 2.1's role
+    /// defaults describe the adapter that would actually answer.
+    pub fn is_simulated(&self) -> bool {
+        match self.mode.trim() {
+            "simulate" => true,
+            "cli" | "provider" => false,
+            _ => !ProviderLayer::has_real_provider(self),
+        }
+    }
 }
 
 /// API keys live in the OS keychain (AD-16); the legacy `settings.api_key`
@@ -596,6 +607,7 @@ mod tests {
                     success_criterion: "c".into(),
                     autonomy: Autonomy::Suggest,
                     spend_ceiling_cents: 500,
+                roles: vec![],
                 }).unwrap())
                 .unwrap()
         };
