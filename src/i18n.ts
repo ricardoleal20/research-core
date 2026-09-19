@@ -317,6 +317,22 @@ const DICT: Record<string, Record<Lang, string>> = {
   "ev.artifact": { es: "Artefacto numérico", en: "Numerical artifact", pt: "Artefacto numérico", fr: "Artefact numérique" },
   "ev.artifactPh": { es: "p. ej. runs/007/table-3.csv", en: "e.g. runs/007/table-3.csv", pt: "ex. runs/007/table-3.csv", fr: "ex. runs/007/table-3.csv" },
   "ev.contentQuoted": { es: "Contenido anclado", en: "Anchored content", pt: "Conteúdo ancorado", fr: "Contenu ancré" },
+
+  // board at a glance (FR-2.4, Story 1.8): all hypotheses, all states,
+  // one view — with the checkpoint control in its header.
+  "board.title": { es: "El tablero de un vistazo", en: "The board at a glance", pt: "O quadro num relance", fr: "Le tableau en un coup d'œil" },
+  "board.sub": { es: "Todas las hipótesis y sus estados, en una sola vista.", en: "Every hypothesis and its state, in one view.", pt: "Todas as hipóteses e os seus estados, numa só vista.", fr: "Toutes les hypothèses et leurs états, en une seule vue." },
+  "board.filter": { es: "Filtrar por estado", en: "Filter by status", pt: "Filtrar por estado", fr: "Filtrer par état" },
+  "board.all": { es: "Todos los estados", en: "All states", pt: "Todos os estados", fr: "Tous les états" },
+  "board.empty": { es: "Aún no hay hipótesis — las misiones propondrán las primeras.", en: "No hypotheses yet — missions will propose the first.", pt: "Ainda não há hipóteses — as missões propõem as primeiras.", fr: "Pas encore d'hypothèses — les missions proposeront les premières." },
+  "board.filterEmpty": { es: "Ninguna hipótesis en ese estado.", en: "No hypotheses in that state.", pt: "Nenhuma hipótese nesse estado.", fr: "Aucune hypothèse dans cet état." },
+  "board.loadError": { es: "No se pudo cargar el tablero: ", en: "Could not load the board: ", pt: "Não foi possível carregar o quadro: ", fr: "Impossible de charger le tableau : " },
+  "board.mission": { es: "Misión", en: "Mission", pt: "Missão", fr: "Mission" },
+
+  // checkpoints (entry point for Story 2.6): the board header control and
+  // its empty restore-points list state — presence and UI only.
+  "cp.title": { es: "Puntos de control", en: "Checkpoints", pt: "Pontos de controlo", fr: "Points de contrôle" },
+  "cp.empty": { es: "Aún no hay puntos de control.", en: "No checkpoints yet.", pt: "Ainda não há pontos de controlo.", fr: "Pas encore de points de contrôle." },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

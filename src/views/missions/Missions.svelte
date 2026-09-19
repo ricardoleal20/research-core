@@ -2,6 +2,7 @@
   import { api } from "../../api";
   import { t } from "../../i18n";
   import type { Autonomy, Mission } from "../../types";
+  import BoardGlance from "./BoardGlance.svelte";
   import MissionCard from "./MissionCard.svelte";
 
   // Read-model only (AD-8): `missions` holds exactly what commands returned;
@@ -216,6 +217,11 @@
   {/if}
 
   {#if newestFirst.length > 0}
+    <!-- Board at a glance (FR-2.4, Story 1.8): ALL hypotheses and their
+         states in one view, above the per-mission sections — the board
+         surface, with the checkpoint control in its header (Story 2.6's
+         entry point). -->
+    <BoardGlance missions={newestFirst} />
     <section class="missions-list" aria-label={t("missions.title")}>
       {#each newestFirst as mission (mission.id)}
         <MissionCard {mission} />
