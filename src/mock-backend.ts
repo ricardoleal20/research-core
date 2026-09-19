@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -271,28 +271,28 @@ const seededRows: DigestRow[] = [
     question: "Does retrieval grounding reduce hallucinated citations?",
     status: "active", runs: 1, finished: 1, failed: 0, failureReason: null,
     ceilingReached: false, proposalsPending: 2, spendCents: 42, ceilingCents: 100,
-    receiptSeq: 101, lastRunTs: "2026-09-19T03:04:00Z",
+    receiptSeq: 101, runId: "nightshift-21", lastRunTs: "2026-09-19T03:04:00Z",
   },
   {
     missionId: "m22-seed", missionSeq: 22,
     question: "Does sparse attention hold at long context?",
     status: "active", runs: 1, finished: 1, failed: 0, failureReason: null,
     ceilingReached: true, proposalsPending: 0, spendCents: 100, ceilingCents: 100,
-    receiptSeq: 102, lastRunTs: "2026-09-19T02:14:00Z",
+    receiptSeq: 102, runId: "nightshift-22", lastRunTs: "2026-09-19T02:14:00Z",
   },
   {
     missionId: "m24-seed", missionSeq: 24,
     question: "Is linear complexity competitive with quadratic attention?",
     status: "completed", runs: 2, finished: 2, failed: 0, failureReason: null,
     ceilingReached: false, proposalsPending: 0, spendCents: 31, ceilingCents: 100,
-    receiptSeq: 103, lastRunTs: "2026-09-19T01:44:00Z",
+    receiptSeq: 103, runId: "nightshift-24", lastRunTs: "2026-09-19T01:44:00Z",
   },
   {
     missionId: "m26-seed", missionSeq: 26,
     question: "Does MoE routing stay stable under distribution shift?",
     status: "failed", runs: 1, finished: 0, failed: 1, failureReason: "provider_error",
     ceilingReached: false, proposalsPending: 0, spendCents: 0, ceilingCents: 100,
-    receiptSeq: 104, lastRunTs: "2026-09-19T02:58:00Z",
+    receiptSeq: 104, runId: "nightshift-26", lastRunTs: "2026-09-19T02:58:00Z",
   },
 ];
 const seededDigest: MorningDigest = {
@@ -305,6 +305,136 @@ const seededDigest: MorningDigest = {
     { runId: "nightshift-17", missionId: "m26-seed", missionSeq: 26, heartbeatTs: "2026-09-19T02:31:00Z", receiptSeq: 104 },
   ],
 };
+
+// Seeded run receipts (mirrors the event-sourced core, Story 2.5, FR-6.1):
+// the frame's flagship ledger — an honest partial run that hit its ceiling —
+// plus one per seeded digest row, so the drill-down shows in the dev browser
+// on first load. Live mock runs (runNightShiftNow) fold their receipts from
+// the run lists at query time — replay = re-query, same as the core.
+const seededReceipts: Record<string, RunReceipt> = {
+  "nightshift-21": {
+    runId: "nightshift-21", missionId: "m21-seed", missionSeq: 21,
+    outcome: "failed", ceilingHit: true,
+    reason: "cost_ceiling_reached", verdict: null,
+    startedTs: "2026-09-19T02:31:04Z", endedTs: "2026-09-19T03:12:58Z", durationSecs: 2514,
+    spendCents: 82, ceilingCents: 100, models: ["GLM-5.3"],
+    rows: [
+      { seq: 101, ts: "2026-09-19T02:31:04Z", kind: "run_start", step: "literature-scan", schedule: "daily-03:00" },
+      { seq: 102, ts: "2026-09-19T02:31:19Z", kind: "search", query: "retrieval-augmented generation hallucination" },
+      { seq: 103, ts: "2026-09-19T02:33:47Z", kind: "call", provider: "openrouter", model: "GLM-5.3", role: "drafter", inputTokens: 3812, outputTokens: 964, costCents: 9 },
+      { seq: 104, ts: "2026-09-19T02:36:02Z", kind: "claim", text: "Passage length conditions the grounding effect." },
+      { seq: 105, ts: "2026-09-19T02:39:31Z", kind: "call", provider: "openrouter", model: "GLM-5.3", role: "critic", inputTokens: 4096, outputTokens: 1204, costCents: 12 },
+      { seq: 106, ts: "2026-09-19T02:44:10Z", kind: "search", query: "hallucination long-form generation" },
+      { seq: 107, ts: "2026-09-19T02:51:26Z", kind: "proposal", proposalId: "pr-107", proposalSeq: 107, to: "revised", status: "pending" },
+      { seq: 108, ts: "2026-09-19T03:12:58Z", kind: "refused", scope: "mission", ceilingCents: 100, wouldBeCostCents: 101 },
+      { seq: 109, ts: "2026-09-19T03:12:58Z", kind: "run_end", outcome: "failed", reason: "cost_ceiling_reached", verdict: null },
+    ],
+  },
+  "nightshift-22": {
+    runId: "nightshift-22", missionId: "m22-seed", missionSeq: 22,
+    outcome: "finished", ceilingHit: true,
+    reason: null, verdict: "1 scan · sparse attention holds at 32k",
+    startedTs: "2026-09-19T02:04:00Z", endedTs: "2026-09-19T02:14:00Z", durationSecs: 600,
+    spendCents: 100, ceilingCents: 100, models: ["GLM-5.3"],
+    rows: [
+      { seq: 112, ts: "2026-09-19T02:04:00Z", kind: "run_start", step: "literature-scan", schedule: "daily-03:00" },
+      { seq: 113, ts: "2026-09-19T02:04:12Z", kind: "search", query: "sparse attention long context" },
+      { seq: 114, ts: "2026-09-19T02:08:40Z", kind: "call", provider: "openrouter", model: "GLM-5.3", role: "drafter", inputTokens: 2914, outputTokens: 702, costCents: 7 },
+      { seq: 115, ts: "2026-09-19T02:13:58Z", kind: "refused", scope: "global", ceilingCents: 100, wouldBeCostCents: 103 },
+      { seq: 116, ts: "2026-09-19T02:14:00Z", kind: "run_end", outcome: "finished", reason: null, verdict: "1 scan · sparse attention holds at 32k" },
+    ],
+  },
+  "nightshift-24": {
+    runId: "nightshift-24", missionId: "m24-seed", missionSeq: 24,
+    outcome: "finished", ceilingHit: false,
+    reason: null, verdict: "2 scans · board settled, criterion met",
+    startedTs: "2026-09-19T01:31:00Z", endedTs: "2026-09-19T01:44:00Z", durationSecs: 780,
+    spendCents: 31, ceilingCents: 100, models: ["GLM-5.3"],
+    rows: [
+      { seq: 121, ts: "2026-09-19T01:31:00Z", kind: "run_start", step: "literature-scan", schedule: "daily-03:00" },
+      { seq: 122, ts: "2026-09-19T01:31:09Z", kind: "search", query: "linear complexity attention quality" },
+      { seq: 123, ts: "2026-09-19T01:37:44Z", kind: "call", provider: "openrouter", model: "GLM-5.3", role: "drafter", inputTokens: 2204, outputTokens: 588, costCents: 6 },
+      { seq: 124, ts: "2026-09-19T01:41:03Z", kind: "proposal", proposalId: "pr-124", proposalSeq: 124, to: "supported", status: "merged" },
+      { seq: 125, ts: "2026-09-19T01:52:30Z", kind: "decision", proposalId: "pr-124", proposalSeq: 124, decision: "merged" },
+      { seq: 126, ts: "2026-09-19T01:44:00Z", kind: "run_end", outcome: "finished", reason: null, verdict: "2 scans · board settled, criterion met" },
+    ],
+  },
+  // the dead-run alert's run (FR-9.1): an honest failed receipt — the run
+  // died with a stale heartbeat and never reached a provider
+  "nightshift-17": {
+    runId: "nightshift-17", missionId: "m26-seed", missionSeq: 26,
+    outcome: "failed", ceilingHit: false,
+    reason: "stale_heartbeat", verdict: null,
+    startedTs: "2026-09-19T02:31:00Z", endedTs: "2026-09-19T03:01:00Z", durationSecs: 1800,
+    spendCents: 0, ceilingCents: 100, models: [],
+    rows: [
+      { seq: 131, ts: "2026-09-19T02:31:00Z", kind: "run_start", step: "literature-scan", schedule: "daily-03:00" },
+      { seq: 132, ts: "2026-09-19T02:31:08Z", kind: "search", query: "MoE routing distribution shift" },
+      { seq: 133, ts: "2026-09-19T03:01:00Z", kind: "run_end", outcome: "failed", reason: "stale_heartbeat", verdict: null },
+    ],
+  },
+  "nightshift-26": {
+    runId: "nightshift-26", missionId: "m26-seed", missionSeq: 26,
+    outcome: "failed", ceilingHit: false,
+    reason: "provider_error", verdict: null,
+    startedTs: "2026-09-19T02:58:00Z", endedTs: "2026-09-19T02:58:41Z", durationSecs: 41,
+    spendCents: 0, ceilingCents: 100, models: [],
+    rows: [
+      { seq: 141, ts: "2026-09-19T02:58:00Z", kind: "run_start", step: "literature-scan", schedule: "daily-03:00" },
+      { seq: 142, ts: "2026-09-19T02:58:05Z", kind: "search", query: "MoE routing distribution shift" },
+      { seq: 143, ts: "2026-09-19T02:58:41Z", kind: "released", reason: "provider_error" },
+      { seq: 144, ts: "2026-09-19T02:58:41Z", kind: "run_end", outcome: "failed", reason: "provider_error", verdict: null },
+    ],
+  },
+};
+
+/** Fold a live mock run's receipt from its run list (replay = re-query —
+ * mirrors the core's pure fold: run boundaries, the scan's search, the run's
+ * quarantined proposals; simulated mock calls cost nothing, so no call rows
+ * and zero spend — the honest ledger of what actually happened). */
+function mockReceiptFor(runId: string): RunReceipt | null {
+  for (const [missionId, runs] of Object.entries(missionRuns)) {
+    const started = runs.find((r) => r.kind === "run.started" && r.runId === runId);
+    if (!started) continue;
+    const mission = missions.find((m) => m.id === missionId);
+    const finished = runs.find((r) => r.kind === "run.finished" && r.runId === runId);
+    const failed = runs.find((r) => r.kind === "run.failed" && r.runId === runId);
+    const terminal = failed ?? finished;
+    const runProposals = proposals.filter((p) => p.runId === runId);
+    const rows: ReceiptRow[] = [
+      { seq: started.seq, ts: started.ts, kind: "run_start", step: "literature-scan", schedule: mission?.schedule ?? "daily-03:00" },
+      { seq: started.seq, ts: started.ts, kind: "search", query: mission?.question ?? "" },
+      ...runProposals.map((p): ReceiptRow => ({
+        seq: p.seq, ts: p.ts, kind: "proposal",
+        proposalId: p.id, proposalSeq: p.seq,
+        to: p.proposedPayload.to, status: p.status,
+      })),
+    ];
+    if (terminal) {
+      rows.push({
+        seq: terminal.seq, ts: terminal.ts, kind: "run_end",
+        outcome: failed ? "failed" : "finished",
+        reason: failed ? ((failed as any).reason ?? "provider_error") : null,
+        verdict: finished ? "1 scan · 1 proposal pending" : null,
+      });
+    }
+    const endedTs = terminal?.ts ?? null;
+    return {
+      runId, missionId, missionSeq: mission?.seq ?? 0,
+      outcome: failed ? "failed" : finished ? "finished" : "open",
+      ceilingHit: !!mission && mission.spendCents >= mission.spendCeilingCents && mission.spendCeilingCents > 0,
+      reason: failed ? ((failed as any).reason ?? "provider_error") : null,
+      verdict: finished ? "1 scan · 1 proposal pending" : null,
+      startedTs: started.ts, endedTs,
+      durationSecs: endedTs ? Math.round((Date.parse(endedTs) - Date.parse(started.ts)) / 1000) : null,
+      spendCents: 0, // simulated mock calls cost nothing — nothing was spent
+      ceilingCents: mission?.spendCeilingCents ?? 0,
+      models: [],
+      rows: rows.sort((a, b) => a.seq - b.seq),
+    };
+  }
+  return null;
+}
 
 /** The mock digest: the seed plus one live row per active mock mission that
  *  has run (the manual trigger appends them — mirrors the core's fold). */
@@ -335,6 +465,7 @@ function currentMockDigest(): MorningDigest {
         spendCents: m.spendCents,
         ceilingCents: m.spendCeilingCents,
         receiptSeq: lastStarted?.seq ?? 0,
+        runId: lastStarted?.runId ?? "",
         lastRunTs: lastStarted?.ts ?? seededAt,
       };
       return row;
@@ -697,6 +828,15 @@ export const mockApi = {
   },
   listMissions: async () => { await delay(); return [...missions]; },
   getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
+  // run receipts (Story 2.5, FR-6.1): the seeded ledgers plus a live fold
+  // for runs the mock Night Shift created — `null` when the run id has no
+  // run.started (an honest "no receipt", same as the core's 404)
+  getRunReceipt: async (runId: string): Promise<RunReceipt | null> => {
+    await delay();
+    const seeded = seededReceipts[runId];
+    if (seeded) return { ...seeded, rows: seeded.rows.map((r) => ({ ...r })), models: [...seeded.models] };
+    return mockReceiptFor(runId);
+  },
   // agent steps (Story 2.1): one role step through the mock provider — the
   // dev browser answers with the simulated voice, no spend. Story 2.2: the
   // drafter's step also EMITS a quarantined proposal for the mission's first
@@ -1019,6 +1159,9 @@ export const mockApi = {
           ts: nowISO(),
           kind,
           actor: "system:scheduler",
+          // run lifecycle events carry their run id (Story 2.5) — the
+          // receipt drill-down's target
+          ...(kind.startsWith("run.") ? { runId } : {}),
         });
       };
       push("run.started");

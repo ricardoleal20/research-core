@@ -7,6 +7,7 @@
   import MorningDigest from "./MorningDigest.svelte";
   import Onboarding from "./Onboarding.svelte";
   import QuarantineReview from "./QuarantineReview.svelte";
+  import RunReceiptDrawer from "./RunReceiptDrawer.svelte";
 
   // Read-model only (AD-8): `missions` holds exactly what commands returned;
   // every change flows through create_mission / list_missions.
@@ -18,6 +19,12 @@
   // change — BoardGlance re-folds off this signal (its mission set is
   // unchanged by a merge, the hypotheses are not).
   let boardRevision = $state(0);
+
+  // Run receipt drill-down (Story 2.5, FR-6.2): the drawer's open run id.
+  // The receipt is reachable ONLY through this state — mission cards' runs
+  // lists and digest rows open it; there is no nav entry, no parallel
+  // surface. Null = closed.
+  let receiptRunId = $state<string | null>(null);
 
   // Question box
   let question = $state("");
@@ -301,7 +308,7 @@
     <!-- Morning Digest (Story 2.3, FR-4): the Night Shift result, above the
          board — the night's work (and its failures) waits at the top; a
          manual run re-folds missions (spend, proposals, statuses move). -->
-    <MorningDigest onran={load} />
+    <MorningDigest onran={load} onopenreceipt={(runId: string) => (receiptRunId = runId)} />
     <!-- Board at a glance (FR-2.4, Story 1.8): ALL hypotheses and their
          states in one view, above the per-mission sections — the board
          surface, with the checkpoint control in its header (Story 2.6's
@@ -313,11 +320,15 @@
     <QuarantineReview ondecided={() => (boardRevision += 1)} />
     <section class="missions-list" aria-label={t("missions.title")}>
       {#each newestFirst as mission (mission.id)}
-        <MissionCard {mission} />
+        <MissionCard {mission} onopenreceipt={(runId: string) => (receiptRunId = runId)} />
       {/each}
     </section>
   {/if}
   {/if}
+
+  <!-- The receipt drawer (Story 2.5, FR-6.2): the run timeline's ONLY
+       surface — rendered from the drill-down state above, never a nav item. -->
+  <RunReceiptDrawer runId={receiptRunId} onclose={() => (receiptRunId = null)} />
 </div>
 
 <style>

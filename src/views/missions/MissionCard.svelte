@@ -4,7 +4,10 @@
   import { api } from "../../api";
   import HypothesesBoard from "./HypothesesBoard.svelte";
 
-  let { mission }: { mission: Mission } = $props();
+  let {
+    mission,
+    onopenreceipt = () => {},
+  }: { mission: Mission; onopenreceipt?: (runId: string) => void } = $props();
 
   // Runs drill-down (FR-1.3): loaded lazily on first expand; the full
   // receipts timeline is a later story — this is the basic run list.
@@ -212,6 +215,19 @@
               <span class="mc-run-kind mono">{run.kind}</span>
               <span class="mc-run-actor">{run.actor}</span>
               <span class="mc-run-ts">{new Date(run.ts).toLocaleString()}</span>
+              <!-- The receipts drill-down (Story 2.5, FR-6.2): run lifecycle
+                   rows carry their run id — the row opens the run's receipt
+                   drawer. The timeline is ONLY this drill-down, never a
+                   parallel surface. -->
+              {#if run.kind === "run.started" && run.runId}
+                <button
+                  class="mc-run-receipt mono"
+                  type="button"
+                  onclick={() => run.runId && onopenreceipt(run.runId)}
+                >
+                  {t("receipt.open")} →
+                </button>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -451,6 +467,25 @@
   .mc-run-ts {
     color: var(--rc-ink-muted);
     font-variant-numeric: tabular-nums;
+  }
+  .mc-run-receipt {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--rc-accent);
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .mc-run-receipt:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .mc-run-receipt:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
   }
   .mc-runs-empty,
   .mc-runs-error {

@@ -168,6 +168,7 @@ export interface MissionRun {
   kind: string; // raw event kind, rendered in mono (receipt voice)
   actor: string; // "user" | "agent" | "system:<component>"
   role?: string; // the agent role a role-scoped event is attributed to
+  runId?: string; // the run the event belongs to (Story 2.5) — the receipt drill-down's target
 }
 
 // One completed agent step (Story 2.1): which role ran, on which
@@ -333,6 +334,7 @@ export interface DigestRow {
   spendCents: number; // the mission's folded spend vs ceiling
   ceilingCents: number;
   receiptSeq: number; // the latest run.started seq — the receipts link
+  runId: string; // the latest run's id (Story 2.5) — the receipt drill-down's target
   lastRunTs: string; // ISO-8601 UTC
 }
 
@@ -462,4 +464,86 @@ export interface TrustStatus {
   missions: MissionMeter[];
   targets: TargetMeter[];
   lastRun: LastRunSpend | null;
+}
+
+// ---- Run Timeline Receipts (Story 2.5, FR-6): the drill-down audit ledger ----
+
+// The run's terminal state for the outcome chip.
+export type RunOutcome = "finished" | "failed" | "open";
+
+// The ledger row vocabulary (the receipt frame's chips): run start, search,
+// provider call, claim, merge proposal (quarantined), the human's decision
+// on one, the honest ceiling refusal, a released reservation, the run's end.
+// The `kind` tag discriminates the wire form; every row carries its audit
+// seq (the e-{seq} ref) and timestamp.
+export type ReceiptRow =
+  | { seq: number; ts: string; kind: "run_start"; step: string; schedule: string }
+  | { seq: number; ts: string; kind: "search"; query: string }
+  | {
+      seq: number;
+      ts: string;
+      kind: "call";
+      provider: string;
+      model: string;
+      role?: string;
+      inputTokens: number;
+      outputTokens: number;
+      costCents: number;
+    }
+  | { seq: number; ts: string; kind: "claim"; text: string }
+  | {
+      seq: number;
+      ts: string;
+      kind: "proposal";
+      proposalId: string;
+      proposalSeq: number; // the pr-n label
+      to: string; // the transition the proposal intends
+      status: string; // pending | merged | rejected | superseded | voided
+    }
+  | {
+      seq: number;
+      ts: string;
+      kind: "decision";
+      proposalId: string;
+      proposalSeq: number;
+      decision: string; // merged | rejected | superseded
+    }
+  | {
+      seq: number;
+      ts: string;
+      kind: "refused"; // the honest "dispatch refused" alert row
+      scope: string;
+      ceilingCents: number;
+      wouldBeCostCents: number;
+    }
+  | { seq: number; ts: string; kind: "released"; reason: string }
+  | {
+      seq: number;
+      ts: string;
+      kind: "run_end";
+      outcome: RunOutcome;
+      reason?: string | null;
+      verdict?: string | null;
+    };
+
+// One run's receipt (FR-6.1): the meta header — outcome chip, duration,
+// spend vs ceiling ("82¢ of 100¢"), the models it called — plus the ordered
+// ledger. A pure projection (AD-2): re-querying replays the identical
+// ledger. Reachable ONLY as drill-down from missions and the digest
+// (FR-6.2) — never a parallel surface.
+export interface RunReceipt {
+  runId: string;
+  missionId: string;
+  missionSeq: number; // the M-n breadcrumb label
+  outcome: RunOutcome;
+  ceilingHit: boolean; // a ceiling refused one of the run's dispatches
+  reason: string | null; // code-form failure reason
+  verdict: string | null; // the finished run's one-liner
+  startedTs: string;
+  endedTs: string | null;
+  durationSecs: number | null;
+  spendCents: number;
+  ceilingCents: number;
+  models: string[]; // the models the run called, first-call order
+  rows: ReceiptRow[]; // seq order — the run's every logged atom
 }

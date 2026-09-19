@@ -7,7 +7,12 @@
   // the Night Shift result, skimmable in ninety seconds. Read-model only
   // (AD-8): the digest holds exactly what get_morning_digest returned; the
   // manual trigger is the one action, and it re-folds everything after.
-  let { onran = () => {} }: { onran?: () => void } = $props();
+  // Story 2.5 (FR-6.2): each row's "receipts →" link drills into its run's
+  // receipt drawer — the run timeline is never a parallel surface.
+  let {
+    onran = () => {},
+    onopenreceipt = () => {},
+  }: { onran?: () => void; onopenreceipt?: (runId: string) => void } = $props();
 
   let digest = $state<MorningDigest | null>(null);
   let loadError = $state("");
@@ -139,9 +144,16 @@
           <span class="status-chip" style={`color:${statusColor[row.status]};background:color-mix(in srgb, ${statusColor[row.status]} 10%, transparent)`}>
             {t(`missions.status.${row.status}`)}
           </span>
-          <a class="d-link mono" href={`#mission-${row.missionId}`}>
-            {t("digest.receipts")} ↗
-          </a>
+          <!-- The receipts drill-down (FR-6.2): opens the run's receipt
+               drawer — the row carries its run id for exactly this -->
+          <button
+            class="d-link mono"
+            type="button"
+            onclick={() => row.runId && onopenreceipt(row.runId)}
+            disabled={!row.runId}
+          >
+            {t("digest.receipts")} →
+          </button>
         </div>
       </div>
     {/each}
@@ -157,9 +169,14 @@
           })}
         </p>
         <div class="d-side">
-          <a class="d-link mono" href={`#mission-${alert.missionId}`}>
-            {t("digest.receipts")} ↗
-          </a>
+          <!-- the dead run's receipt drills down the same way (FR-6.2) -->
+          <button
+            class="d-link mono"
+            type="button"
+            onclick={() => alert.runId && onopenreceipt(alert.runId)}
+          >
+            {t("digest.receipts")} →
+          </button>
         </div>
       </div>
     {/each}
@@ -326,6 +343,7 @@
     padding: 2px 10px;
   }
   .d-link {
+    /* a button styled as the row's quiet mono link (FR-6.2 drill-down) */
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -333,12 +351,24 @@
     font-size: 11.5px;
     font-weight: 500;
     color: var(--rc-accent);
-    text-decoration: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
     white-space: nowrap;
   }
-  .d-link:hover {
+  .d-link:hover:not(:disabled) {
     text-decoration: underline;
     text-underline-offset: 3px;
+  }
+  .d-link:disabled {
+    color: var(--rc-ink-muted);
+    opacity: 0.6;
+    cursor: default;
+  }
+  .d-link:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
   }
   .d-note {
     margin: 12px 20px;

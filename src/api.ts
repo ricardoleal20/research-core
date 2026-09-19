@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -41,6 +41,18 @@ const browserApi = {
     (await servedByCore)
       ? httpJson<MissionRun[]>(`/api/missions/${missionId}/runs`)
       : mockApi.getMissionRuns(missionId),
+  // Run receipts (Story 2.5, FR-6.1): the drill-down's audit ledger — a read
+  // over the same-origin API (the served browser view replays the identical
+  // ledger the desktop webview does); unknown runs are an honest 404.
+  getRunReceipt: async (runId: string) => {
+    if (await servedByCore) {
+      const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/receipt`);
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return (await r.json()) as RunReceipt;
+    }
+    return mockApi.getRunReceipt(runId);
+  },
   createMission: async (m: CreateMissionInput) => {
     if (await servedByCore) {
       throw new Error(
@@ -345,6 +357,9 @@ export const api = mockActive ? browserApi : {
     invoke<Mission>("create_mission", { ...m, roles: m.roles ?? null }),
   listMissions: () => invoke<Mission[]>("list_missions"),
   getMissionRuns: (missionId: string) => invoke<MissionRun[]>("get_mission_runs", { missionId }),
+  // run receipts (Story 2.5, FR-6.1): one run's ordered audit ledger — a
+  // pure query over the log (replay = re-query)
+  getRunReceipt: (runId: string) => invoke<RunReceipt | null>("get_run_receipt", { runId }),
   // agent steps (Story 2.1): one role step through the provider layer —
   // spend recorded role-tagged, result returned to the caller
   runAgentStep: (missionId: string, role: string, task: string) =>
