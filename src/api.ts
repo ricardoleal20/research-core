@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -80,6 +80,35 @@ const browserApi = {
       );
     }
     return mockApi.addRelation(fromHypothesisId, toHypothesisId, relationKind);
+  },
+  listEvidence: async (hypothesisId: string) =>
+    (await servedByCore)
+      ? httpJson<Claim[]>(`/api/hypotheses/${hypothesisId}/evidence`)
+      : mockApi.listEvidence(hypothesisId),
+  registerClaim: async (hypothesisId: string, text: string, sourceMessageId: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage evidence from the desktop app / " +
+          "Vista de solo lectura — gestiona la evidencia desde la app de escritorio"
+      );
+    }
+    return mockApi.registerClaim(hypothesisId, text, sourceMessageId);
+  },
+  pinClaimToCitation: async (
+    claimId: string,
+    hypothesisId: string,
+    refId: string,
+    excerpt: string,
+    confidence: number,
+    assessingModel: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage evidence from the desktop app / " +
+          "Vista de solo lectura — gestiona la evidencia desde la app de escritorio"
+      );
+    }
+    return mockApi.pinClaimToCitation(claimId, hypothesisId, refId, excerpt, confidence, assessingModel);
   },
 };
 
@@ -173,6 +202,29 @@ export const api = mockActive ? browserApi : {
     invoke<Hypothesis>("transition_hypothesis", { hypothesisId, to, basis }),
   addRelation: (fromHypothesisId: string, toHypothesisId: string, relationKind: string) =>
     invoke<Hypothesis>("add_relation", { fromHypothesisId, toHypothesisId, relationKind }),
+
+  // evidence pins (event-sourced, Story 1.7: claim.registered +
+  // evidence.pinned; the digest is computed in the core, never sent)
+  registerClaim: (hypothesisId: string, text: string, sourceMessageId: string | null) =>
+    invoke<Claim>("register_claim", { hypothesisId, text, sourceMessageId }),
+  pinClaimToCitation: (
+    claimId: string,
+    hypothesisId: string,
+    refId: string,
+    excerpt: string,
+    confidence: number,
+    assessingModel: string,
+  ) =>
+    invoke<Claim>("pin_claim_to_citation", {
+      claimId,
+      hypothesisId,
+      refId,
+      excerpt,
+      confidence,
+      assessingModel,
+    }),
+  listEvidence: (hypothesisId: string) =>
+    invoke<Claim[]>("list_evidence", { hypothesisId }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

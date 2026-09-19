@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -80,6 +80,31 @@ const allowedNext: Record<HypothesisStatus, HypothesisStatus[]> = {
   revised: ["testing"],
 };
 
+// Mock library refs (mirrors the core's seeded refs) so the citation
+// pin's reference picker flows in the dev browser.
+const mockRefs: Ref[] = [
+  { id: "r1", project_id: "p1", collection_id: null, title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", isbn: "", attachment: null, status: "read", tags: "transformer,attention", used: 1, citation_count: 2, created_at: nowISO() },
+  { id: "r2", project_id: "p1", collection_id: null, title: "Neural Machine Translation by Jointly Learning to Align and Translate", authors: "Bahdanau et al.", year: 2015, venue: "ICLR", doi: "10.48550/arXiv.1409.0473", url: "https://arxiv.org/abs/1409.0473", isbn: "", attachment: null, status: "read", tags: "attention,NLP", used: 1, citation_count: 1, created_at: nowISO() },
+  { id: "r3", project_id: "p1", collection_id: null, title: "Scaling Laws for Neural Language Models", authors: "Kaplan et al.", year: 2020, venue: "arXiv", doi: "10.48550/arXiv.2001.08361", url: "https://arxiv.org/abs/2001.08361", isbn: "", attachment: null, status: "read", tags: "scaling,NLP", used: 1, citation_count: 1, created_at: nowISO() },
+  { id: "r4", project_id: "p1", collection_id: null, title: "A Survey on Large Language Models", authors: "Zhao et al.", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2303.18223", url: "https://arxiv.org/abs/2303.18223", isbn: "", attachment: null, status: "unread", tags: "survey,LLM", used: 0, citation_count: 0, created_at: nowISO() },
+];
+
+/** sha-256 hex of an excerpt — the mock mirrors the core's digest so the
+ *  pinned pin renders the same mono digest the desktop app shows. */
+async function sha256Hex(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// In-memory claims (mirrors the event-sourced core): registered claims
+// start unpinned (FR-3.4); pinning attaches the AD-5 pin shape with the
+// digest computed here, never accepted from the caller.
+const claims: Claim[] = [];
+let claimSeq = 0;
+
 /** Upsert a relation chip onto one endpoint (latest event per endpoint
  *  pair wins — editing a relation appends, mirroring the core's fold). */
 function upsertMockRelation(
@@ -128,12 +153,22 @@ export const mockApi = {
   getDashboard: async () => { await delay(); return { refs_total: 24, refs_used: 11, active_actions: 3, reviews: 2 }; },
 
   // refs
-  listRefs: async () => [] as Ref[],
+  listRefs: async () => { await delay(); return [...mockRefs]; },
   getRef: async () => { throw new Error("not in mock"); },
   createRef: async (r: any) => r as Ref,
   updateRef: async () => {},
   deleteRef: async () => {},
-  searchRefs: async () => [] as Ref[],
+  searchRefs: async (_pid: string, q: string) => {
+    await delay();
+    const needle = q.trim().toLowerCase();
+    return mockRefs.filter(
+      (r) =>
+        !needle ||
+        r.title.toLowerCase().includes(needle) ||
+        r.authors.toLowerCase().includes(needle) ||
+        String(r.year).includes(needle),
+    );
+  },
   searchRefsExternal: async () => [],
   listCollections: async () => [],
 
@@ -301,6 +336,81 @@ export const mockApi = {
     upsertMockRelation(from, seq, kind, "outgoing", to);
     upsertMockRelation(to, seq, kind, "incoming", from);
     return { ...from };
+  },
+
+  // evidence — mirrors the typed core: registered claims start unpinned
+  // (FR-3.4), the pin digest is computed here (AD-5), confidence is
+  // attributed to the assessing model (FR-3.6), and the ref must exist.
+  registerClaim: async (hypothesisId: string, text: string, sourceMessageId: string | null) => {
+    await delay();
+    if (!text.trim()) throw new Error("claim.text must not be empty — a claim says something");
+    if (!hypotheses.some((h) => h.id === hypothesisId)) {
+      throw new Error(`not_found: no hypothesis with id \`${hypothesisId}\``);
+    }
+    claimSeq += 1;
+    const claim: Claim = {
+      id: "cl" + claimSeq + "-" + Date.now(),
+      seq: claimSeq,
+      ts: nowISO(),
+      hypothesisId,
+      text: text.trim(),
+      sourceMessageId,
+      pinned: false,
+      pin: null,
+    };
+    claims.push(claim);
+    return { ...claim };
+  },
+  pinClaimToCitation: async (
+    claimId: string,
+    hypothesisId: string,
+    refId: string,
+    excerpt: string,
+    confidence: number,
+    assessingModel: string,
+  ) => {
+    await delay();
+    const claim = claims.find((c) => c.id === claimId);
+    if (!claim) throw new Error(`not_found: no claim with id \`${claimId}\``);
+    const trimmedRef = refId.trim();
+    const ref = mockRefs.find((r) => r.id === trimmedRef);
+    if (!trimmedRef || !ref) {
+      throw new Error(`invalid_ref: \`${trimmedRef}\` — no reference with this id in the library`);
+    }
+    if (!excerpt.trim()) {
+      throw new Error("evidence.excerpt must not be empty — a pin quotes the passage it rests on");
+    }
+    if (typeof confidence !== "number" || Number.isNaN(confidence) || confidence < 0 || confidence > 1) {
+      throw new Error(`invalid confidence \`${confidence}\` — agent-assessed confidence is a number in [0.0, 1.0] (FR-3.6)`);
+    }
+    if (!assessingModel.trim()) {
+      throw new Error("evidence.assessing_model must not be empty — confidence is attributed to the assessing model, never anonymous (FR-3.6)");
+    }
+    // The digest is computed here, from the excerpt — never trusted from
+    // the caller (AD-5).
+    const digest = await sha256Hex(excerpt);
+    claimSeq += 1;
+    claim.pinned = true;
+    claim.pin = {
+      seq: claimSeq,
+      ts: nowISO(),
+      claimId: claim.id,
+      hypothesisId,
+      kind: "citation",
+      refId: trimmedRef,
+      excerpt,
+      digest,
+      confidence,
+      assessingModel: assessingModel.trim(),
+      refLabel: `${ref.authors} ${ref.year}`,
+    };
+    return { ...claim };
+  },
+  listEvidence: async (hypothesisId: string) => {
+    await delay();
+    return claims
+      .filter((c) => c.hypothesisId === hypothesisId)
+      .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
   },
 
   // danger zone

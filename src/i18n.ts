@@ -280,6 +280,35 @@ const DICT: Record<string, Record<Lang, string>> = {
   "hyp.relKind.extends": { es: "extiende", en: "extends", pt: "estende", fr: "étend" },
   "hyp.relKind.specializes": { es: "especializa", en: "specializes", pt: "especializa", fr: "spécialise" },
   "hyp.relKind.supports_the_same_claim": { es: "sostiene la misma afirmación", en: "supports the same claim", pt: "sustenta a mesma alegação", fr: "soutient la même affirmation" },
+
+  // evidence pins (FR-3, Story 1.7): claims on hypothesis cards, the
+  // unpinned amber chip (FR-3.4), and the citation pin anatomy (source
+  // icon + author-year + confidence dot labeled with the assessing model).
+  "ev.claims": { es: "Afirmaciones de IA", en: "AI claims", pt: "Alegações de IA", fr: "Affirmations IA" },
+  "ev.empty": { es: "Sin afirmaciones aún — añade un fragmento de la salida de IA.", en: "No claims yet — attach a fragment of the AI output.", pt: "Sem alegações — anexa um fragmento da saída de IA.", fr: "Pas encore d'affirmations — ajoute un fragment de la sortie IA." },
+  "ev.addPh": { es: "Fragments de afirmaciones de IA…", en: "AI claim fragments…", pt: "Fragmentos de alegações de IA…", fr: "Fragments d'affirmations IA…" },
+  "ev.add": { es: "Añadir afirmación", en: "Add claim", pt: "Adicionar alegação", fr: "Ajouter l'affirmation" },
+  "ev.claimLabel": { es: "Afirmación", en: "Claim", pt: "Alegação", fr: "Affirmation" },
+  "ev.unpinned": { es: "sin ancla", en: "unpinned", pt: "sem âncora", fr: "sans ancrage" },
+  "ev.pinnedTo": { es: "anclada a", en: "pinned to", pt: "ancorada em", fr: "ancrée à" },
+  "ev.pin": { es: "Anclar a cita", en: "Pin to citation", pt: "Ancorar a citação", fr: "Ancrer à la citation" },
+  "ev.pinning": { es: "Anclando…", en: "Pinning…", pt: "A ancorar…", fr: "Ancrage…" },
+  "ev.pinClaim": { es: "Anclar afirmación", en: "Pin claim", pt: "Ancorar alegação", fr: "Ancrer l'affirmation" },
+  "ev.refPick": { es: "Elige una referencia…", en: "Pick a reference…", pt: "Escolhe uma referência…", fr: "Choisis une référence…" },
+  "ev.excerpt": { es: "Extracto citado", en: "Quoted excerpt", pt: "Excerto citado", fr: "Extrait cité" },
+  "ev.excerptPh": { es: "Pega el pasaje exacto que sostiene la afirmación…", en: "Paste the exact passage supporting the claim…", pt: "Cola a passagem exata que sustenta a alegação…", fr: "Collez le passage exact qui soutient l'affirmation…" },
+  "ev.excerptPrefill": { es: "Se rellena con el texto de la afirmación — confírmalo o edítalo.", en: "Prefilled with the claim text — confirm or edit it.", pt: "Pré-preenchido com o texto da alegação — confirma ou edita.", fr: "Prérempli avec le texte de l'affirmation — confirmez ou modifiez." },
+  "ev.confidence": { es: "Confianza (0–1)", en: "Confidence (0–1)", pt: "Confiança (0–1)", fr: "Confiance (0–1)" },
+  "ev.model": { es: "Modelo que evalúa", en: "Assessing model", pt: "Modelo avaliador", fr: "Modèle évaluateur" },
+  "ev.modelPh": { es: "p. ej. GLM-5.3", en: "e.g. GLM-5.3", pt: "ex. GLM-5.3", fr: "ex. GLM-5.3" },
+  "ev.confirmExcerpt": { es: "Confirmar extracto", en: "Confirm excerpt", pt: "Confirmar excerto", fr: "Confirmer l'extrait" },
+  "ev.digest": { es: "sha-256", en: "sha-256", pt: "sha-256", fr: "sha-256" },
+  "ev.excerptQuoted": { es: "Extracto citado", en: "Quoted excerpt", pt: "Excerto citado", fr: "Extrait cité" },
+  "ev.pinError": { es: "No se pudo anclar: ", en: "Could not pin: ", pt: "Não foi possível ancorar: ", fr: "Impossible d'ancrer : " },
+  "ev.claimError": { es: "No se pudo registrar la afirmación: ", en: "Could not register the claim: ", pt: "Não foi possível registar a alegação: ", fr: "Impossible d'enregistrer l'affirmation : " },
+  "ev.loadError": { es: "No se pudo cargar el evidencia: ", en: "Could not load evidence: ", pt: "Não foi possível carregar o evidência: ", fr: "Impossible de charger les preuves : " },
+  "ev.required": { es: "El extracto, la referencia y el modelo son obligatorios.", en: "Excerpt, reference, and model are required.", pt: "Excerto, referência e modelo são obrigatórios.", fr: "Extrait, référence et modèle sont requis." },
+  "ev.claimRequired": { es: "La afirmación no puede quedar vacía.", en: "The claim text is required.", pt: "O texto da alegação é obrigatório.", fr: "Le texte de l'affirmation est requis." },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

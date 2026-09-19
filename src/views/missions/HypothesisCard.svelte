@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "../../api";
   import { t } from "../../i18n";
-  import type { Hypothesis, HypothesisStatus, RelationChip, RelationKind } from "../../types";
+  import type { Claim, Hypothesis, HypothesisStatus, RelationChip, RelationKind, Ref } from "../../types";
 
   // Hypothesis card (DESIGN.md components.hypothesis-card): statement,
   // lifecycle chip top-right, relation chips inline, audit-stamp strip in
@@ -107,19 +107,156 @@
       relating = false;
     }
   }
+
+  // ---- Evidence pins (FR-3, Story 1.7) ----
+  // Read-model only: `claims` holds exactly what `list_evidence` folded
+  // (pinned + unpinned, FR-3.4); every mutation re-reads from the log.
+
+  let claims = $state<Claim[]>([]);
+  let evidenceError = $state("");
+
+  // Register-claim control: attach an AI output fragment as a claim.
+  let claimText = $state("");
+  let claiming = $state(false);
+  let claimError = $state("");
+  let claimSubmitted = $state(false);
+
+  // Pin-to-citation control (FR-3.1/3.5/3.6): pick a library ref, confirm
+  // the excerpt, state the agent-assessed confidence + assessing model.
+  let pinningClaimId = $state<string | null>(null);
+  let refs = $state<Ref[]>([]);
+  let refsLoaded = $state(false);
+  let pinRefId = $state("");
+  let pinExcerpt = $state("");
+  let pinConfidence = $state("0.8");
+  let pinModel = $state("");
+  let pinning = $state(false);
+  let pinError = $state("");
+  let pinSubmitted = $state(false);
+
+  const claimTextMissing = $derived(claimText.trim() === "");
+  const canClaim = $derived(!claimTextMissing && !claiming);
+  const unpinnedCount = $derived(claims.filter((c) => !c.pinned).length);
+  const pinConfidenceNum = $derived(Number(pinConfidence));
+  const pinValid = $derived(
+    pinRefId !== "" &&
+      pinExcerpt.trim() !== "" &&
+      pinModel.trim() !== "" &&
+      !Number.isNaN(pinConfidenceNum) &&
+      pinConfidenceNum >= 0 &&
+      pinConfidenceNum <= 1,
+  );
+
+  $effect(() => {
+    loadEvidence();
+    // Prefill the assessing model from the configured provider model —
+    // attribution with a sensible default, still editable.
+    api.getSettings().then((s) => {
+      if (!pinModel && s.model) pinModel = s.model;
+    }).catch(() => {});
+  });
+
+  async function loadEvidence() {
+    try {
+      claims = await api.listEvidence(hypothesis.id);
+      evidenceError = "";
+    } catch (e) {
+      evidenceError = t("ev.loadError") + e;
+    }
+  }
+
+  async function addClaim() {
+    claimSubmitted = true;
+    if (!canClaim) return;
+    claiming = true;
+    claimError = "";
+    try {
+      await api.registerClaim(hypothesis.id, claimText.trim(), null);
+      claimText = "";
+      claimSubmitted = false;
+      await loadEvidence();
+    } catch (e) {
+      claimError = t("ev.claimError") + e;
+    } finally {
+      claiming = false;
+    }
+  }
+
+  /** Open the pin form for one claim: load the library refs (once) and
+   *  prefill the excerpt with the claim text — the user confirms or edits
+   *  it (the "confirm the excerpt" step). */
+  async function openPin(claim: Claim) {
+    pinningClaimId = claim.id;
+    pinRefId = "";
+    pinExcerpt = claim.text;
+    pinError = "";
+    pinSubmitted = false;
+    if (!refsLoaded) {
+      try {
+        const project = await api.getActiveProject();
+        refs = await api.listRefs(project.id);
+        refsLoaded = true;
+      } catch (e) {
+        pinError = t("ev.loadError") + e;
+      }
+    }
+  }
+
+  async function pin() {
+    if (!pinningClaimId) return;
+    pinSubmitted = true;
+    if (!pinValid) return;
+    pinning = true;
+    pinError = "";
+    try {
+      await api.pinClaimToCitation(
+        pinningClaimId,
+        hypothesis.id,
+        pinRefId,
+        pinExcerpt,
+        pinConfidenceNum,
+        pinModel.trim(),
+      );
+      pinningClaimId = null;
+      await loadEvidence();
+    } catch (e) {
+      pinError = t("ev.pinError") + e;
+    } finally {
+      pinning = false;
+    }
+  }
+
+  /** The confidence dot's color (DESIGN.md citation-pin anatomy): green at
+   *  0.75+, amber 0.5–0.75, red below — never a "verified" label. */
+  function confidenceColor(c: number): string {
+    if (c >= 0.75) return "#047857";
+    if (c >= 0.5) return "#B45309";
+    return "#BE123C";
+  }
+
+  const pct = (c: number) => `${Math.round(c * 100)}%`;
 </script>
 
 <article class="hyp-card">
   <header class="hc-head">
     <span class="hc-id mono">{shortId}</span>
-    <!-- Lifecycle chip (DESIGN.md components.lifecycle-chip): pill, soft
-         background + ink text + 20% ring inset — never color alone, the
-         label always renders. -->
-    <span
-      class="hc-chip"
-      style={`--ink:${tokens.ink};--soft:${tokens.soft}`}
-    >
-      {statusLabel}
+    <span class="hc-head-chips">
+      <!-- Card-level unpinned flag (FR-3.4): amber chip whenever this
+           hypothesis carries claims without evidence pins. -->
+      {#if unpinnedCount > 0}
+        <span class="hc-chip hc-unpinned-card" title={t("ev.unpinned")}>
+          {unpinnedCount} · {t("ev.unpinned")}
+        </span>
+      {/if}
+      <!-- Lifecycle chip (DESIGN.md components.lifecycle-chip): pill, soft
+           background + ink text + 20% ring inset — never color alone, the
+           label always renders. -->
+      <span
+        class="hc-chip"
+        style={`--ink:${tokens.ink};--soft:${tokens.soft}`}
+      >
+        {statusLabel}
+      </span>
     </span>
   </header>
   <p class="hc-statement">{hypothesis.statement}</p>
@@ -140,6 +277,169 @@
       {/each}
     </ul>
   {/if}
+
+  <!-- Evidence claims (FR-3, Story 1.7): AI-generated claims with inline
+       pin state. Pinned claims render the citation pin anatomy (source
+       icon + author-year + confidence dot labeled with the assessing
+       model); unpinned claims render the amber chip (FR-3.4) wherever
+       they appear — claim level and card level. -->
+  <section class="hc-claims" aria-label={t("ev.claims")}>
+    <p class="hc-claims-label">{t("ev.claims")}</p>
+    {#if evidenceError}
+      <p class="hc-error" role="alert">{evidenceError}</p>
+    {:else if claims.length === 0}
+      <p class="hc-claims-empty">{t("ev.empty")}</p>
+    {:else}
+      {#each claims as claim (claim.id)}
+        <div class="hc-claim">
+          <p class="hc-claim-text">{claim.text}</p>
+          {#if claim.pinned && claim.pin}
+            {@const pin = claim.pin}
+            <!-- Citation pin (DESIGN.md citation-pin anatomy): source icon,
+                 author-year, confidence dot labeled with the assessing
+                 model — "GLM-5.3 · 82%", never "verified" (FR-3.6). -->
+            <div class="hc-pin">
+              <span class="hc-pin-main">
+                <svg class="hc-pin-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                  <path
+                    d="M3 2.5A1.5 1.5 0 0 0 1.5 4v3A1.5 1.5 0 0 0 3 8.5h1.5a4.5 4.5 0 0 1-3 4.16V14c3.9-.35 6.5-3.3 6.5-7.5V4A1.5 1.5 0 0 0 6.5 2.5H3Zm8.5 0A1.5 1.5 0 0 0 10 4v3a1.5 1.5 0 0 0 1.5 1.5H13a4.5 4.5 0 0 1-3 4.16V14c3.9-.35 6.5-3.3 6.5-7.5V4A1.5 1.5 0 0 0 15 2.5h-3.5Z"
+                    fill="currentColor"
+                  />
+                </svg>
+                <span class="hc-pin-pinned">{t("ev.pinnedTo")}</span>
+                <span class="hc-pin-ref">{pin.refLabel ?? pin.refId}</span>
+              </span>
+              <span
+                class="hc-pin-conf"
+                title={`${pin.assessingModel} · ${pct(pin.confidence)}`}
+              >
+                <span
+                  class="hc-dot"
+                  style={`background:${confidenceColor(pin.confidence)}`}
+                  aria-hidden="true"
+                ></span>
+                {pin.assessingModel} · {pct(pin.confidence)}
+              </span>
+              <!-- The computed digest, in mono (AD-5): the pin is bound to
+                   exactly the excerpt it quotes. -->
+              <span class="hc-pin-digest mono" title={pin.digest}>
+                {t("ev.digest")} {pin.digest}
+              </span>
+            </div>
+            <blockquote class="hc-excerpt" title={t("ev.excerptQuoted")}>
+              {pin.excerpt}
+            </blockquote>
+          {:else}
+            <div class="hc-claim-foot">
+              <!-- Unpinned amber chip (FR-3.4): the claim carries no
+                   evidence pin — flagged, never hidden. -->
+              <span class="hc-unpinned">{t("ev.unpinned")}</span>
+              <button
+                class="hc-pin-btn"
+                type="button"
+                onclick={() => openPin(claim)}
+              >
+                {t("ev.pin")}
+              </button>
+            </div>
+            {#if pinningClaimId === claim.id}
+              <!-- Pin-to-citation form (FR-3.1/3.5/3.6): pick a library
+                   ref, confirm the excerpt (prefilled with the claim
+                   text), state confidence + assessing model. The digest is
+                   computed in the core — never sent from here. -->
+              <form
+                class="hc-pin-form"
+                onsubmit={(e) => {
+                  e.preventDefault();
+                  pin();
+                }}
+              >
+                <select
+                  class="hc-select hc-pin-ref"
+                  bind:value={pinRefId}
+                  aria-label={t("ev.refPick")}
+                >
+                  <option value="" disabled selected>{t("ev.refPick")}</option>
+                  {#each refs as r (r.id)}
+                    <option value={r.id}>{r.authors} {r.year} · {r.title}</option>
+                  {/each}
+                </select>
+                <textarea
+                  class="hc-excerpt-input"
+                  class:invalid={pinSubmitted && pinExcerpt.trim() === ""}
+                  bind:value={pinExcerpt}
+                  rows="3"
+                  placeholder={t("ev.excerptPh")}
+                  aria-label={t("ev.excerpt")}
+                ></textarea>
+                <p class="hc-pin-hint">{t("ev.excerptPrefill")}</p>
+                <div class="hc-pin-row">
+                  <input
+                    class="hc-conf-input"
+                    class:invalid={pinSubmitted && (Number.isNaN(pinConfidenceNum) || pinConfidenceNum < 0 || pinConfidenceNum > 1)}
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    bind:value={pinConfidence}
+                    aria-label={t("ev.confidence")}
+                  />
+                  <input
+                    class="hc-model-input"
+                    class:invalid={pinSubmitted && pinModel.trim() === ""}
+                    type="text"
+                    bind:value={pinModel}
+                    placeholder={t("ev.modelPh")}
+                    aria-label={t("ev.model")}
+                  />
+                  <button
+                    class="hc-pin-submit"
+                    type="submit"
+                    disabled={!pinValid || pinning}
+                  >
+                    {pinning ? t("ev.pinning") : t("ev.confirmExcerpt")}
+                  </button>
+                </div>
+                {#if pinSubmitted && !pinValid}
+                  <p class="hc-error" role="alert">{t("ev.required")}</p>
+                {/if}
+                {#if pinError}
+                  <p class="hc-error" role="alert">{pinError}</p>
+                {/if}
+              </form>
+            {/if}
+          {/if}
+        </div>
+      {/each}
+    {/if}
+    <!-- Attach an AI output fragment as a claim (it registers unpinned). -->
+    <div class="hc-claim-add">
+      <input
+        class="hc-claim-input"
+        class:invalid={claimSubmitted && claimTextMissing}
+        type="text"
+        bind:value={claimText}
+        placeholder={t("ev.addPh")}
+        aria-label={t("ev.claims")}
+        aria-invalid={claimSubmitted && claimTextMissing}
+        onkeydown={(e) => { if (e.key === "Enter") addClaim(); }}
+      />
+      <button
+        class="hc-pin-btn"
+        type="button"
+        onclick={addClaim}
+        disabled={!canClaim}
+      >
+        {t("ev.add")}
+      </button>
+    </div>
+    {#if claimSubmitted && claimTextMissing}
+      <p class="hc-error" role="alert">{t("ev.claimRequired")}</p>
+    {/if}
+    {#if claimError}
+      <p class="hc-error" role="alert">{claimError}</p>
+    {/if}
+  </section>
 
   <!-- Transition control (FR-2.2): a basis is required for every
        transition; only legal next statuses render as buttons. -->
@@ -269,6 +569,267 @@
     line-height: 1.45;
     color: var(--rc-ink);
     margin: 0;
+  }
+
+  .hc-head-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* Card-level unpinned chip (FR-3.4): amber — claims without pins are
+     flagged, never hidden. */
+  .hc-unpinned-card {
+    --ink: #b45309;
+    --soft: #fef3c7;
+  }
+
+  /* Evidence claims: one bordered row per claim, pin state inline. */
+  .hc-claims {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 2px;
+  }
+  .hc-claims-label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .hc-claims-empty {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--rc-ink-muted);
+  }
+  .hc-claim {
+    border: 1px solid var(--rc-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    background: var(--rc-surface);
+  }
+  .hc-claim-text {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--rc-ink);
+  }
+  .hc-claim-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  /* Unpinned amber chip (FR-3.4, claim level). */
+  .hc-unpinned {
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: #92400e;
+    background: #fef3c7;
+    border-radius: 9999px;
+    padding: 2px 10px;
+    box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.25);
+    white-space: nowrap;
+  }
+
+  /* Citation pin anatomy (DESIGN.md): source icon + author-year +
+     confidence dot labeled with the assessing model, digest in mono. */
+  .hc-pin {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .hc-pin-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--rc-ink);
+  }
+  .hc-pin-icon {
+    color: var(--rc-accent);
+    flex-shrink: 0;
+  }
+  .hc-pin-pinned {
+    color: var(--rc-ink-muted);
+  }
+  .hc-pin-ref {
+    color: var(--rc-accent);
+  }
+  .hc-pin-conf {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--rc-ink);
+    white-space: nowrap;
+  }
+  .hc-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .hc-pin-digest {
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    color: var(--rc-ink-muted);
+    word-break: break-all;
+    flex-basis: 100%;
+  }
+  .hc-excerpt {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--rc-ink-muted);
+    border-left: 2px solid var(--rc-accent-soft);
+    border-left-color: rgba(48, 113, 181, 0.35);
+    padding-left: 10px;
+    white-space: pre-wrap;
+  }
+
+  /* Pin-to-citation form: ref picker, excerpt confirmation, confidence +
+     assessing model. */
+  .hc-pin-form {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    border-top: 1px dashed var(--rc-border);
+    padding-top: 8px;
+  }
+  .hc-pin-ref {
+    max-width: 100%;
+    width: 100%;
+  }
+  .hc-excerpt-input {
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    outline: none;
+    resize: vertical;
+  }
+  .hc-excerpt-input::placeholder,
+  .hc-claim-input::placeholder {
+    color: var(--rc-ink-muted);
+  }
+  .hc-excerpt-input.invalid,
+  .hc-claim-input.invalid,
+  .hc-conf-input.invalid,
+  .hc-model-input.invalid {
+    border-color: var(--rc-danger-ink);
+    background: #fff1f2;
+  }
+  .hc-pin-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--rc-ink-muted);
+  }
+  .hc-pin-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    align-items: center;
+  }
+  .hc-conf-input {
+    width: 84px;
+    font-family: inherit;
+    font-size: 12.5px;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 7px 9px;
+    min-height: 34px;
+    outline: none;
+  }
+  .hc-model-input {
+    flex: 1 1 140px;
+    min-width: 0;
+    font-family: inherit;
+    font-size: 12.5px;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    min-height: 34px;
+    outline: none;
+  }
+  .hc-pin-submit {
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: #ffffff;
+    background: var(--rc-accent);
+    border: 1px solid var(--rc-accent);
+    border-radius: 8px;
+    padding: 7px 12px;
+    min-height: 34px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .hc-pin-submit:hover:not(:disabled) {
+    background: #285f97;
+  }
+  .hc-pin-submit:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* Pin / add-claim buttons: quiet secondary actions. */
+  .hc-pin-btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--rc-accent);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 5px 11px;
+    min-height: 30px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .hc-pin-btn:hover:not(:disabled) {
+    background: var(--rc-accent-soft);
+  }
+  .hc-pin-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .hc-claim-add {
+    display: flex;
+    gap: 7px;
+  }
+  .hc-claim-input {
+    flex: 1;
+    min-width: 0;
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    outline: none;
+    min-height: 32px;
   }
 
   /* Relation chips: inline pills, wrap; H-n label in mono. */
@@ -419,7 +980,8 @@
 
   button:focus-visible,
   input:focus-visible,
-  select:focus-visible {
+  select:focus-visible,
+  textarea:focus-visible {
     outline: 2px solid var(--rc-accent);
     outline-offset: 2px;
   }

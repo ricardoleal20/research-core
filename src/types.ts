@@ -199,3 +199,37 @@ export interface Hypothesis {
   relations: RelationChip[]; // derived: typed relations, both directions
   audit: AuditStamp; // derived: the last lifecycle event's stamp
 }
+
+// Evidence pins (event-sourced read model, Story 1.7): an AI-generated
+// claim attached to a hypothesis; a claim without an evidence.pinned
+// event reads as UNPINNED (FR-3.4) and renders the amber chip.
+export type PinKind = "citation" | "numerical";
+
+// One citation pin (AD-5 shape): the library ref it cites, the excerpt it
+// quotes, the sha-256 digest of that excerpt (computed at construction —
+// never trusted from callers), and the agent-assessed confidence
+// attributed to the assessing model (FR-3.6) — never "verified".
+export interface EvidencePin {
+  seq: number; // the evidence.pinned event's seq (latest per claim wins)
+  ts: string;
+  claimId: string;
+  hypothesisId: string;
+  kind: PinKind;
+  refId: string;
+  excerpt: string;
+  digest: string; // sha-256 hex of the excerpt
+  confidence: number; // 0.0–1.0, agent-assessed
+  assessingModel: string; // e.g. "GLM-5.3" — the confidence's attribution
+  refLabel: string | null; // author-year from the library (shell enrichment)
+}
+
+export interface Claim {
+  id: string; // the claim.registered event id
+  seq: number;
+  ts: string;
+  hypothesisId: string;
+  text: string;
+  sourceMessageId: string | null; // optional assistant-message provenance
+  pinned: boolean; // FR-3.4: false until an evidence.pinned event lands
+  pin: EvidencePin | null;
+}
