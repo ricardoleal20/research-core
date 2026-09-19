@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, ComputeTargetView } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -41,6 +41,46 @@ const browserApi = {
     (await servedByCore)
       ? httpJson<MissionRun[]>(`/api/missions/${missionId}/runs`)
       : mockApi.getMissionRuns(missionId),
+  // Compute jobs (Story 3.2, FR-11.4): the mission card's jobs area reads
+  // the last observed lifecycle over the same-origin API (polling and
+  // submitting stay on the Tauri command path — mutations, AD-14).
+  pollJobs: async (missionId: string) => {
+    if (await servedByCore) {
+      return httpJson<Job[]>(`/api/missions/${missionId}/jobs`);
+    }
+    return mockApi.pollJobs(missionId);
+  },
+  fetchJob: async (jobId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — fetch results from the desktop app / " +
+          "Vista de solo lectura — obtén resultados desde la app de escritorio",
+      );
+    }
+    return mockApi.fetchJob(jobId);
+  },
+  listComputeTargets: async () => {
+    if (await servedByCore) return httpJson<ComputeTargetView[]>("/api/targets");
+    return mockApi.listComputeTargets();
+  },
+  submitJob: async (_missionId: string, _target: string, _spec: JobSpec) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — submit jobs from the desktop app / " +
+          "Vista de solo lectura — envía trabajos desde la app de escritorio",
+      );
+    }
+    return mockApi.submitJob(_missionId, _target, _spec);
+  },
+  declareComputeTarget: async (_name: string, _kind: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — declare targets from the desktop app / " +
+          "Vista de solo lectura — declara destinos desde la app de escritorio",
+      );
+    }
+    return mockApi.declareComputeTarget(_name, _kind);
+  },
   // Run receipts (Story 2.5, FR-6.1): the drill-down's audit ledger — a read
   // over the same-origin API (the served browser view replays the identical
   // ledger the desktop webview does); unknown runs are an honest 404.
@@ -520,6 +560,20 @@ export const api = mockActive ? browserApi : {
     invoke<ExportOutcome>("export_workspace", { dir, scope }),
   inspectExport: (dir: string) =>
     invoke<ExportInspect | null>("inspect_export", { dir }),
+
+  // compute targets + jobs (event-sourced, Story 3.2, FR-11.1/11.2/11.4,
+  // AD-6): specs are typed JSON validated before submit — the runtime
+  // executes argv directly and never constructs shell strings; the
+  // lifecycle (submit → monitor → terminal) is evented, terminals always
+  // stamped + reasoned, and every terminal job attributes its usage to its
+  // target (target.spend_recorded, AD-10)
+  listComputeTargets: () => invoke<ComputeTargetView[]>("list_compute_targets"),
+  declareComputeTarget: (name: string, kind: string) =>
+    invoke<ComputeTargetView[]>("declare_compute_target", { name, kind }),
+  submitJob: (missionId: string, target: string, spec: JobSpec) =>
+    invoke<Job>("submit_job", { missionId, target, spec }),
+  pollJobs: (missionId: string) => invoke<Job[]>("poll_jobs", { missionId }),
+  fetchJob: (jobId: string) => invoke<JobResult>("fetch_job", { jobId }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

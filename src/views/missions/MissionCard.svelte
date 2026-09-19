@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Mission, MissionRun } from "../../types";
+  import type { ComputeTargetView, Job, JobResult, JobSpec, Mission, MissionRun } from "../../types";
   import { t } from "../../i18n";
   import { api } from "../../api";
   import HypothesesBoard from "./HypothesesBoard.svelte";
@@ -14,6 +14,123 @@
   let runsOpen = $state(false);
   let runs = $state<MissionRun[] | null>(null);
   let runsError = $state("");
+
+  // Compute jobs (Story 3.2, FR-11.1/11.2/11.4): the target row + the
+  // typed spec composer + the queued/running/terminal monitor. The spec
+  // is COMPOSED from typed fields with a live JSON preview — never a
+  // freeform shell box (EXPERIENCE.md, AD-6); the core rejects shell
+  // syntax before submit regardless.
+  let jobsOpen = $state(false);
+  let targets = $state<ComputeTargetView[] | null>(null);
+  let selectedTarget = $state("");
+  let jobs = $state<Job[]>([]);
+  let jobsError = $state("");
+  // composer fields — each typed, each named (inline validation, EXPERIENCE.md)
+  let specCmd = $state("");
+  let specArgs = $state("");
+  let specEnv = $state("");
+  let specWorkdir = $state("");
+  let specCpus = $state("");
+  let specMemory = $state("");
+  let submitting = $state(false);
+  let submitError = $state("");
+  // fetched results per job id (terminal jobs only — the quarantine flow
+  // that turns results into evidence is Story 3.4)
+  let results = $state<Record<string, JobResult>>({});
+
+  // The spec as typed JSON — composed from the fields above, never typed
+  // as text. This is exactly what submit_job receives and validates.
+  const draftSpec = $derived.by(() => {
+    const env: Record<string, string> = {};
+    for (const line of specEnv.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq > 0) env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+    }
+    const spec: JobSpec = {
+      cmd: specCmd.trim(),
+      args: specArgs.trim() ? specArgs.trim().split(/\s+/) : [],
+      env,
+    };
+    if (specCpus.trim() || specMemory.trim()) {
+      spec.resources = {
+        ...(specCpus.trim() ? { cpus: Number(specCpus) } : {}),
+        ...(specMemory.trim() ? { memoryMb: Number(specMemory) } : {}),
+      };
+    }
+    if (specWorkdir.trim()) spec.workdir = specWorkdir.trim();
+    return spec;
+  });
+
+  // Phase chips: the queued/running/terminal lifecycle (FR-11.4) — text
+  // always (never color alone), terminal states carry ts + reason below.
+  const phaseColor: Record<Job["phase"], string> = {
+    queued: "#71717a",
+    running: "#3071b5",
+    finished: "#047857",
+    failed: "#be123c",
+  };
+
+  async function toggleJobs() {
+    jobsOpen = !jobsOpen;
+    if (!jobsOpen) return;
+    if (targets === null) {
+      try {
+        targets = await api.listComputeTargets();
+        if (!selectedTarget) selectedTarget = targets[0]?.name ?? "local";
+      } catch (e) {
+        jobsError = t("missions.jobs.loadError") + e;
+      }
+    }
+    try {
+      jobs = await api.pollJobs(mission.id);
+      jobsError = "";
+    } catch (e) {
+      jobsError = t("missions.jobs.loadError") + e;
+    }
+  }
+
+  // The monitor loop, per surface: while the jobs area is open and any
+  // job is live, poll once per 1.5s — each poll appends the observed
+  // transitions (the runtime's poll loop, invoked per command).
+  $effect(() => {
+    if (!jobsOpen) return;
+    const anyLive = jobs.some((j) => j.phase === "queued" || j.phase === "running");
+    if (!anyLive) return;
+    const timer = setInterval(async () => {
+      try {
+        jobs = await api.pollJobs(mission.id);
+      } catch {
+        /* a failed poll keeps the last observed state — the next one retries */
+      }
+    }, 1500);
+    return () => clearInterval(timer);
+  });
+
+  async function submitJob() {
+    if (!draftSpec.cmd || submitting) return;
+    submitting = true;
+    submitError = "";
+    try {
+      const job = await api.submitJob(mission.id, selectedTarget, draftSpec);
+      jobs = [job, ...jobs.filter((j) => j.id !== job.id)];
+    } catch (e) {
+      submitError = String(e);
+    } finally {
+      submitting = false;
+    }
+  }
+
+  async function fetchResults(job: Job) {
+    if (results[job.id]) return;
+    try {
+      results[job.id] = await api.fetchJob(job.id);
+    } catch (e) {
+      submitError = String(e);
+    }
+  }
+
 
   // Hypothesis board drill-down (Story 1.5): the mission's hypothesis
   // cards — lifecycle chips, relation chips, audit stamps. The full
@@ -193,10 +310,170 @@
     <button class="mc-runs-toggle" type="button" onclick={toggleRuns} aria-expanded={runsOpen}>
       {runsOpen ? t("missions.hideRuns") : t("missions.showRuns")}
     </button>
+    <button class="mc-runs-toggle" type="button" onclick={toggleJobs} aria-expanded={jobsOpen}>
+      {jobsOpen ? t("missions.jobs.hide") : t("missions.jobs.show")}
+    </button>
   </footer>
 
   {#if boardOpen}
     <HypothesesBoard {mission} />
+  {/if}
+
+  {#if jobsOpen}
+    <!-- Compute jobs area (Story 3.2, FR-11.1/11.2/11.4): the target row,
+         the typed spec composer (structured JSON preview ONLY — never a
+         freeform shell box, AD-6), and the queued/running/terminal monitor
+         with timestamped, reasoned terminals (EXPERIENCE.md). -->
+    <div class="mc-jobs">
+      {#if jobsError}
+        <p class="mc-jobs-error" role="alert">{jobsError}</p>
+      {/if}
+
+      <!-- Target row: every known compute target as a name chip + its kind
+           (Local in v1; SSH registers in Story 3.3); the selected target is
+           where the composed spec submits. -->
+      <div class="mc-target-row" role="group" aria-label={t("missions.jobs.target")}>
+        <span class="mc-target-label">{t("missions.jobs.target")}</span>
+        {#each targets ?? [] as target (target.name)}
+          <button
+            class="mc-target-chip mono"
+            class:selected={target.name === selectedTarget}
+            type="button"
+            onclick={() => (selectedTarget = target.name)}
+            aria-pressed={target.name === selectedTarget}
+          >
+            {target.name}
+            <span class="mc-target-kind">{target.kind === "local" ? "Local" : target.kind}</span>
+          </button>
+        {/each}
+      </div>
+
+      <!-- Job spec composer: typed fields ONLY (EXPERIENCE.md) — cmd is one
+           executable, arguments are a list, env is KEY=VALUE lines. The
+           preview is composed from these fields, never typed as text. -->
+      <div class="mc-composer">
+        <div class="mc-composer-fields">
+          <label class="mc-field mc-field-cmd">
+            <span>{t("missions.jobs.cmd")}</span>
+            <input
+              class="mono"
+              type="text"
+              bind:value={specCmd}
+              placeholder={t("missions.jobs.cmdPh")}
+              aria-invalid={submitError.includes("freeform_shell")}
+            />
+          </label>
+          <label class="mc-field mc-field-args">
+            <span>{t("missions.jobs.args")}</span>
+            <input
+              class="mono"
+              type="text"
+              bind:value={specArgs}
+              placeholder="train.py --epochs 10"
+            />
+            <small class="mc-field-hint">{t("missions.jobs.argsHint")}</small>
+          </label>
+          <label class="mc-field mc-field-env">
+            <span>{t("missions.jobs.env")}</span>
+            <textarea class="mono" rows="2" bind:value={specEnv} placeholder="EPOCHS=10&#10;LR=3e-4"></textarea>
+            <small class="mc-field-hint">{t("missions.jobs.envHint")}</small>
+          </label>
+          <label class="mc-field">
+            <span>{t("missions.jobs.workdir")}</span>
+            <input class="mono" type="text" bind:value={specWorkdir} placeholder="/tmp/experiment" />
+          </label>
+          <label class="mc-field mc-field-narrow">
+            <span>{t("missions.jobs.cpus")}</span>
+            <input class="mono" type="number" min="1" bind:value={specCpus} placeholder="4" />
+          </label>
+          <label class="mc-field mc-field-narrow">
+            <span>{t("missions.jobs.memory")}</span>
+            <input class="mono" type="number" min="1" bind:value={specMemory} placeholder="2048" />
+          </label>
+        </div>
+        <div class="mc-composer-preview">
+          <span class="mc-preview-label">{t("missions.jobs.preview")}</span>
+          <pre class="mono">{JSON.stringify(draftSpec, null, 2)}</pre>
+        </div>
+      </div>
+      <div class="mc-composer-actions">
+        <button
+          class="mc-submit"
+          type="button"
+          onclick={submitJob}
+          disabled={!draftSpec.cmd || !selectedTarget || submitting}
+        >
+          {submitting ? t("missions.jobs.submitting") : t("missions.jobs.submit")}
+        </button>
+        {#if submitError}
+          <p class="mc-jobs-error" role="alert">{submitError}</p>
+        {/if}
+      </div>
+
+      <!-- Job monitor: queued / running / terminal per job — every terminal
+           carries its timestamp and (on failure) its reason; no job ends
+           silently (AD-12). Fetch results is the explicit action (the
+           quarantine flow for results is Story 3.4). -->
+      {#if jobs.length === 0}
+        <p class="mc-jobs-empty">{t("missions.jobs.empty")}</p>
+      {:else}
+        <ul class="mc-job-list">
+          {#each jobs as job (job.id)}
+            <li class="mc-job" class:live={job.phase === "queued" || job.phase === "running"}>
+              <div class="mc-job-head">
+                <span
+                  class="mc-job-chip"
+                  style={`--ink:${phaseColor[job.phase]}`}
+                >{t(`missions.jobs.phase.${job.phase}`)}</span>
+                <span class="mc-job-cmd mono">{job.spec.cmd} {job.spec.args.join(" ")}</span>
+                <span class="mc-job-target mono">{job.target}</span>
+                <span class="mc-job-ts mono">
+                  {t("missions.jobs.submittedAt")} {new Date(job.ts).toLocaleTimeString()}
+                  {#if job.runningTs}
+                    · {t("missions.jobs.runningAt")} {new Date(job.runningTs).toLocaleTimeString()}
+                  {/if}
+                  {#if job.finishedTs}
+                    · {t("missions.jobs.finishedAt")} {new Date(job.finishedTs).toLocaleTimeString()}
+                  {/if}
+                </span>
+                {#if job.exitCode != null}
+                  <span class="mc-job-code mono">{t("missions.jobs.exit")} {job.exitCode}</span>
+                {/if}
+                {#if job.phase === "finished" || job.phase === "failed"}
+                  <button
+                    class="mc-job-fetch mono"
+                    type="button"
+                    onclick={() => fetchResults(job)}
+                  >
+                    {t("missions.jobs.fetch")} →
+                  </button>
+                {/if}
+              </div>
+              {#if job.reason}
+                <p class="mc-job-reason mono">{t("missions.jobs.reason")}: {job.reason}</p>
+              {/if}
+              {#if results[job.id]}
+                <div class="mc-job-results">
+                  <span class="mc-results-label">{t("missions.jobs.results")}</span>
+                  {#if results[job.id].stdout}
+                    <div class="mc-result-block">
+                      <span class="mono">{t("missions.jobs.stdout")}</span>
+                      <pre class="mono">{results[job.id].stdout}</pre>
+                    </div>
+                  {/if}
+                  {#if results[job.id].stderr}
+                    <div class="mc-result-block">
+                      <span class="mono">{t("missions.jobs.stderr")}</span>
+                      <pre class="mono">{results[job.id].stderr}</pre>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
   {/if}
 
   {#if runsOpen}
@@ -497,12 +774,318 @@
     color: var(--rc-danger-ink);
   }
 
+  /* Compute jobs area (Story 3.2, FR-11.1/11.2/11.4): target row, typed
+     spec composer with a live JSON preview, and the job monitor — chip
+     anatomy per DESIGN.md components.badge (soft bg + ink + 20% ring). */
+  .mc-jobs {
+    border-top: 1px solid var(--rc-border);
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .mc-jobs-empty,
+  .mc-jobs-error {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--rc-ink-muted);
+  }
+  .mc-jobs-error {
+    color: var(--rc-danger-ink);
+    word-break: break-word;
+  }
+  .mc-target-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .mc-target-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .mc-target-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--rc-ink);
+    background: var(--rc-surface-2);
+    border: 1px solid transparent;
+    border-radius: 9999px;
+    padding: 3px 10px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .mc-target-chip:hover {
+    border-color: var(--rc-accent);
+  }
+  .mc-target-chip:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
+  }
+  .mc-target-chip.selected {
+    background: var(--rc-accent-soft);
+    border-color: var(--rc-accent);
+  }
+  .mc-target-kind {
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .mc-target-chip.selected .mc-target-kind {
+    color: var(--rc-accent);
+  }
+
+  /* Composer: typed fields left, structured JSON preview right — the
+     preview is composed from the fields, never typed as text (AD-6). */
+  .mc-composer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    background: var(--rc-surface-2);
+    border: 1px solid var(--rc-border);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .mc-composer-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .mc-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .mc-field span {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .mc-field input,
+  .mc-field textarea {
+    font-size: 12.5px;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    outline: none;
+    min-height: 32px;
+    width: 100%;
+    resize: vertical;
+  }
+  .mc-field input:focus-visible,
+  .mc-field textarea:focus-visible {
+    border-color: var(--rc-accent);
+  }
+  .mc-field input[aria-invalid="true"] {
+    border-color: var(--rc-danger-ink);
+  }
+  .mc-field-cmd,
+  .mc-field-args,
+  .mc-field-env {
+    grid-column: 1 / -1;
+  }
+  .mc-field-narrow input {
+    min-height: 32px;
+  }
+  .mc-field-hint {
+    font-size: 11px;
+    color: var(--rc-ink-muted);
+  }
+  .mc-composer-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .mc-preview-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .mc-composer-preview pre {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 10px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    flex: 1;
+  }
+  .mc-composer-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .mc-submit {
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: #ffffff;
+    background: var(--rc-accent);
+    border: 1px solid var(--rc-accent);
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+  .mc-submit:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+  .mc-submit:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .mc-submit:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
+  }
+
+  /* Job monitor rows: phase chip + argv in mono + stamps; live rows get a
+     quiet accent edge so motion is findable without color alone. */
+  .mc-job-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mc-job {
+    border: 1px solid var(--rc-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mc-job.live {
+    border-color: color-mix(in srgb, var(--rc-accent) 35%, var(--rc-border));
+  }
+  .mc-job-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .mc-job-chip {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink);
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
+    border-radius: 9999px;
+    padding: 2px 10px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
+  }
+  .mc-job-cmd {
+    font-size: 12px;
+    color: var(--rc-ink);
+    word-break: break-all;
+  }
+  .mc-job-target {
+    font-size: 11px;
+    color: var(--rc-ink-muted);
+  }
+  .mc-job-ts {
+    font-size: 11px;
+    color: var(--rc-ink-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .mc-job-code {
+    font-size: 11px;
+    color: var(--rc-ink-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .mc-job-fetch {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--rc-accent);
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .mc-job-fetch:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .mc-job-fetch:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
+  }
+  .mc-job-reason {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--rc-danger-ink);
+    word-break: break-word;
+  }
+  .mc-job-results {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-top: 1px dashed var(--rc-border);
+    padding-top: 6px;
+  }
+  .mc-results-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .mc-result-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .mc-result-block > span {
+    font-size: 10.5px;
+    color: var(--rc-ink-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .mc-result-block pre {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--rc-ink);
+    background: var(--rc-surface-2);
+    border-radius: 8px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   @media (max-width: 640px) {
     .mc-run {
       grid-template-columns: auto 1fr;
     }
     .mc-run-ts {
       grid-column: 2;
+    }
+    .mc-composer {
+      grid-template-columns: 1fr;
     }
   }
 </style>

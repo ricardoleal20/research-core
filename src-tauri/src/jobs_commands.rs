@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::adapters::targets::{
@@ -34,7 +34,7 @@ fn err(e: impl ToString) -> String {
 /// One compute target as the mission card's target row renders it: a name
 /// (mono chip) and the adapter kind behind it. The built-in `local` needs
 /// no declaration (FR-11.1: v1 ships local).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeTargetView {
     pub name: String,

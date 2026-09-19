@@ -270,6 +270,61 @@ const DICT: Record<string, Record<Lang, string>> = {
     fr: "Pas encore d'exécutions pour cette mission.",
   },
 
+  // compute jobs (Story 3.2, FR-11.1/11.2/11.4, AD-6): the mission card's
+  // jobs area — target row, typed spec composer (structured JSON preview,
+  // never a freeform shell box), and the queued/running/terminal monitor.
+  "missions.jobs.show": { es: "Ver trabajos", en: "Show jobs", pt: "Ver trabalhos", fr: "Voir les tâches" },
+  "missions.jobs.hide": { es: "Ocultar trabajos", en: "Hide jobs", pt: "Ocultar trabalhos", fr: "Masquer les tâches" },
+  "missions.jobs.target": { es: "Destino de cómputo", en: "Compute target", pt: "Destino de computação", fr: "Cible de calcul" },
+  "missions.jobs.builtin": { es: "integrado", en: "built-in", pt: "integrado", fr: "intégré" },
+  "missions.jobs.cmd": { es: "Comando (un ejecutable)", en: "Command (one executable)", pt: "Comando (um executável)", fr: "Commande (un exécutable)" },
+  "missions.jobs.cmdPh": { es: "python3", en: "python3", pt: "python3", fr: "python3" },
+  "missions.jobs.args": { es: "Argumentos", en: "Arguments", pt: "Argumentos", fr: "Arguments" },
+  "missions.jobs.argsHint": {
+    es: "separados por espacios — nunca una línea de shell",
+    en: "space-separated — never a shell line",
+    pt: "separados por espaços — nunca uma linha de shell",
+    fr: "séparés par des espaces — jamais une ligne de shell",
+  },
+  "missions.jobs.env": { es: "Variables de entorno", en: "Environment variables", pt: "Variáveis de ambiente", fr: "Variables d'environnement" },
+  "missions.jobs.envHint": {
+    es: "una CLAVE=VALOR por línea",
+    en: "one KEY=VALUE per line",
+    pt: "uma CHAVE=VALOR por linha",
+    fr: "une CLÉ=VALEUR par ligne",
+  },
+  "missions.jobs.workdir": { es: "Directorio de trabajo", en: "Working directory", pt: "Diretório de trabalho", fr: "Répertoire de travail" },
+  "missions.jobs.cpus": { es: "CPUs", en: "CPUs", pt: "CPUs", fr: "CPUs" },
+  "missions.jobs.memory": { es: "Memoria (MB)", en: "Memory (MB)", pt: "Memória (MB)", fr: "Mémoire (Mo)" },
+  "missions.jobs.preview": { es: "Spec (JSON con tipo)", en: "Spec (typed JSON)", pt: "Spec (JSON tipado)", fr: "Spec (JSON typé)" },
+  "missions.jobs.submit": { es: "Enviar trabajo", en: "Submit job", pt: "Enviar trabalho", fr: "Soumettre la tâche" },
+  "missions.jobs.submitting": { es: "Enviando…", en: "Submitting…", pt: "A enviar…", fr: "Soumission…" },
+  "missions.jobs.empty": {
+    es: "Aún no hay trabajos para esta misión.",
+    en: "No jobs for this mission yet.",
+    pt: "Ainda não há trabalhos para esta missão.",
+    fr: "Pas encore de tâches pour cette mission.",
+  },
+  "missions.jobs.phase.queued": { es: "En cola", en: "Queued", pt: "Em fila", fr: "En file" },
+  "missions.jobs.phase.running": { es: "Ejecutando", en: "Running", pt: "Executando", fr: "En cours" },
+  "missions.jobs.phase.finished": { es: "Terminado", en: "Finished", pt: "Terminado", fr: "Terminée" },
+  "missions.jobs.phase.failed": { es: "Fallido", en: "Failed", pt: "Falhou", fr: "Échec" },
+  "missions.jobs.submittedAt": { es: "enviado", en: "submitted", pt: "enviado", fr: "soumis" },
+  "missions.jobs.runningAt": { es: "en ejecución", en: "running", pt: "executando", fr: "en cours" },
+  "missions.jobs.finishedAt": { es: "terminado", en: "finished", pt: "terminado", fr: "terminé" },
+  "missions.jobs.exit": { es: "salida", en: "exit", pt: "saída", fr: "sortie" },
+  "missions.jobs.reason": { es: "razón", en: "reason", pt: "razão", fr: "raison" },
+  "missions.jobs.fetch": { es: "Obtener resultados", en: "Fetch results", pt: "Obter resultados", fr: "Récupérer les résultats" },
+  "missions.jobs.results": { es: "Resultados", en: "Results", pt: "Resultados", fr: "Résultats" },
+  "missions.jobs.stdout": { es: "salida estándar", en: "stdout", pt: "stdout", fr: "stdout" },
+  "missions.jobs.stderr": { es: "salida de error", en: "stderr", pt: "stderr", fr: "stderr" },
+  "missions.jobs.loadError": {
+    es: "No se pudieron cargar los trabajos: ",
+    en: "Could not load jobs: ",
+    pt: "Não foi possível carregar os trabalhos: ",
+    fr: "Impossible de charger les tâches : ",
+  },
+
   // morning digest (Story 2.3, FR-4): the Night Shift result, skimmable in
   // ninety seconds — one verdict per mission, spend vs ceiling, honest
   // failure rows, and the dead-man alert row.

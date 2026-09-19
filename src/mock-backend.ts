@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, ComputeTargetView } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -66,6 +66,72 @@ const missions: Mission[] = [];
 let missionSeq = 0;
 // In-memory run lists per mission id (empty until events would reference them).
 const missionRuns: Record<string, MissionRun[]> = {};
+
+// In-memory compute targets + jobs (Story 3.2, FR-11.1/11.2/11.4): the
+// mock the dev browser's mission card renders. Mirrors the typed core —
+// the same freeform-shell rejection before anything lands, the same
+// queued → running → terminal lifecycle (terminals always stamped +
+// reasoned), advanced here by wall-clock elapsed time since submit.
+const mockTargets: ComputeTargetView[] = [
+  { name: "local", kind: "local", builtin: true, seq: null, ts: null },
+];
+const mockJobs: Job[] = [];
+const mockJobStarts: Record<string, number> = {}; // job id → Date.now() at submit
+let mockJobSeq = 0;
+let mockJobEventSeq = 0;
+// Job timestamps use the real clock (not the fixed nowISO) — the mock
+// lifecycle advances with elapsed time, like the real poll loop.
+const realNowISO = () => new Date().toISOString();
+const MOCK_SHELL_METACHARS = [";", "&", "|", "`", "<", ">", "$", "\n", "\r"];
+
+function validateMockSpec(spec: JobSpec): void {
+  if (!spec.cmd || !spec.cmd.trim()) {
+    throw new Error("invalid_spec: cmd must not be empty — a job names its executable (AD-6)");
+  }
+  const ch = [...spec.cmd].find((c) => MOCK_SHELL_METACHARS.includes(c));
+  if (ch) {
+    throw new Error(
+      `freeform_shell: cmd \`${spec.cmd}\` carries shell syntax (\`${ch}\`) — the runtime never constructs shell strings; pass arguments in args (AD-6)`,
+    );
+  }
+  for (const key of Object.keys(spec.env ?? {})) {
+    if (!key.trim() || key.includes("=") || key.includes("\0")) {
+      throw new Error(`invalid_spec: env key \`${key}\` — keys are names: never empty, never \`=\``);
+    }
+  }
+  const r = spec.resources;
+  if (r && ((r.cpus != null && r.cpus <= 0) || (r.memoryMb != null && r.memoryMb <= 0))) {
+    throw new Error("invalid_spec: resources must be positive — cpus and memoryMb are 1 or more");
+  }
+  if (spec.workdir != null && !spec.workdir.trim()) {
+    throw new Error("invalid_spec: workdir must not be blank when present");
+  }
+}
+
+// Advance the mock lifecycle by elapsed wall-clock time: queued until
+// 700ms after submit, running until 2s, then terminal (finished code 0 —
+// `false` demos a reasoned failure). The poll loop, mirrored.
+function advanceMockJobs(): void {
+  const now = Date.now();
+  for (const job of mockJobs) {
+    const elapsed = now - (mockJobStarts[job.id] ?? now);
+    if (job.phase === "queued" && elapsed >= 700) {
+      job.phase = "running";
+      job.runningTs = realNowISO();
+    }
+    if (job.phase === "running" && elapsed >= 2000) {
+      job.finishedTs = realNowISO();
+      if (job.spec.cmd === "false") {
+        job.phase = "failed";
+        job.exitCode = 1;
+        job.reason = "exit_code_1";
+      } else {
+        job.phase = "finished";
+        job.exitCode = 0;
+      }
+    }
+  }
+}
 
 // In-memory trust state (Story 2.4, FR-5): dials, ceilings, kill switch —
 // the mock the dev-browser trust center renders. Mirrors the core's folded
@@ -1311,6 +1377,109 @@ export const mockApi = {
     }
     mission.schedule = trimmed;
     return { ...mission };
+  },
+
+  // compute targets + jobs (Story 3.2, FR-11.1/11.2/11.4) — mirrors the
+  // typed core: the same freeform-shell rejection before anything lands,
+  // the same queued → running → terminal lifecycle with stamped +
+  // reasoned terminals, advanced by elapsed time on every read.
+  listComputeTargets: async (): Promise<ComputeTargetView[]> => {
+    await delay();
+    return mockTargets.map((t) => ({ ...t }));
+  },
+  declareComputeTarget: async (name: string, kind: string): Promise<ComputeTargetView[]> => {
+    await delay();
+    const trimmedName = name.trim();
+    const trimmedKind = kind.trim();
+    if (trimmedKind !== "local") {
+      throw new Error(`unknown_kind: \`${trimmedKind}\` — no adapter of that kind is registered (v1: local)`);
+    }
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(trimmedName)) {
+      throw new Error(
+        "invalid_name: `" + trimmedName + "` — expected lowercase letters, digits and dashes (e.g. laptop, cluster-1)",
+      );
+    }
+    if (!mockTargets.some((t) => t.name === trimmedName)) {
+      mockTargets.push({
+        name: trimmedName,
+        kind: trimmedKind,
+        builtin: false,
+        seq: ++mockJobEventSeq,
+        ts: realNowISO(),
+      });
+    }
+    return mockTargets.map((t) => ({ ...t }));
+  },
+  submitJob: async (missionId: string, target: string, spec: JobSpec): Promise<Job> => {
+    await delay();
+    const mission = missions.find((m) => m.id === missionId);
+    if (!mission) throw new Error(`not_found: no mission with id \`${missionId}\``);
+    validateMockSpec(spec);
+    if (!mockTargets.some((t) => t.name === target)) {
+      throw new Error(`unknown_target: \`${target}\` — declared targets: ${mockTargets.map((t) => t.name).join(" | ")}`);
+    }
+    mockJobSeq += 1;
+    mockJobEventSeq += 1;
+    const id = "job-" + mockJobSeq + "-" + Date.now();
+    const job: Job = {
+      id,
+      seq: mockJobEventSeq,
+      ts: realNowISO(),
+      missionId,
+      target,
+      handle: "h-" + id,
+      spec: {
+        cmd: spec.cmd,
+        args: [...(spec.args ?? [])],
+        env: { ...(spec.env ?? {}) },
+        ...(spec.resources ? { resources: { ...spec.resources } } : {}),
+        ...(spec.workdir != null && spec.workdir !== "" ? { workdir: spec.workdir } : {}),
+      },
+      phase: "queued",
+      exitCode: null,
+      reason: null,
+      runningTs: null,
+      finishedTs: null,
+    };
+    mockJobs.push(job);
+    mockJobStarts[job.id] = Date.now();
+    // the submission surfaces in the mission's runs drill-down (receipt voice)
+    missionRuns[missionId] = missionRuns[missionId] ?? [];
+    missionRuns[missionId].push({
+      seq: ++mockJobEventSeq,
+      id: "r" + mockJobEventSeq + "-" + Date.now(),
+      ts: realNowISO(),
+      kind: "job.submitted",
+      actor: "user",
+    });
+    advanceMockJobs();
+    return { ...job };
+  },
+  pollJobs: async (missionId: string): Promise<Job[]> => {
+    await delay();
+    if (!missions.some((m) => m.id === missionId)) {
+      throw new Error(`not_found: no mission with id \`${missionId}\``);
+    }
+    advanceMockJobs();
+    return mockJobs.filter((j) => j.missionId === missionId).map((j) => ({ ...j }));
+  },
+  fetchJob: async (jobId: string): Promise<JobResult> => {
+    await delay();
+    advanceMockJobs();
+    const job = mockJobs.find((j) => j.id === jobId);
+    if (!job) throw new Error(`not_found: no job with id \`${jobId}\``);
+    if (job.phase === "queued" || job.phase === "running") {
+      throw new Error(`job_not_terminal: the job is still ${job.phase} — fetch waits for it to end`);
+    }
+    const argv = [job.spec.cmd, ...(job.spec.args ?? [])].join(" ");
+    if (job.phase === "failed") {
+      return { code: job.exitCode ?? null, stdout: "", stderr: `[mock] ${argv} failed: ${job.reason}` };
+    }
+    return {
+      code: 0,
+      stdout: `[mock] ${argv}\n[mock] completed on target \`${job.target}\` — 2.0s, exit 0`,
+      stderr: "",
+    };
   },
 
   // onboarding (Story 1.9) — the arXiv paste door and the Zotero library

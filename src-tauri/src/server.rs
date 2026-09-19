@@ -826,4 +826,103 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
+
+    /// The compute-job + target reads (Story 3.2, read-only per AD-14):
+    /// the mission's jobs fold from the log — the served browser replays
+    /// the last observed lifecycle — and the target list carries the
+    /// built-in `local`. Submitting/polling stay on the Tauri command
+    /// path: POST is not routed.
+    #[tokio::test]
+    async fn get_api_jobs_and_targets_fold_the_shared_core() {
+        let db = test_db();
+        let mission_id;
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold?".into(),
+                        stop_condition: "3 rounds".into(),
+                        success_criterion: "A rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 500,
+                        schedule: "off".into(),
+                        roles: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            mission_id = mission.id;
+            let submitted = store
+                .append(
+                    NewEvent::job_submitted(crate::domain::jobs::JobSubmittedPayload {
+                        mission_id,
+                        target: "local".into(),
+                        handle: "h-1".into(),
+                        spec: crate::domain::jobs::JobSpec {
+                            cmd: "python3".into(),
+                            args: vec!["train.py".into()],
+                            env: Default::default(),
+                            resources: None,
+                            workdir: None,
+                        },
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(NewEvent::job_running(crate::domain::jobs::JobLifecyclePayload {
+                    mission_id,
+                    job_id: submitted.id,
+                    target: "local".into(),
+                    code: None,
+                    reason: None,
+                })
+                .unwrap())
+                .unwrap();
+        }
+        let res = app(db)
+            .oneshot(
+                Request::get(format!("/api/missions/{mission_id}/jobs"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let jobs: Vec<crate::domain::jobs::Job> = body_json(res.into_body()).await;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].phase, crate::domain::jobs::JobPhase::Running);
+        assert_eq!(jobs[0].target, "local");
+        assert!(jobs[0].running_ts.is_some());
+
+        // the target list: the built-in local, no declaration behind it
+        let res = app(test_db())
+            .oneshot(Request::get("/api/targets").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let targets: Vec<crate::jobs_commands::ComputeTargetView> =
+            body_json(res.into_body()).await;
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].name, "local");
+        assert!(targets[0].builtin);
+        // single writer (AD-14): job submission is a mutation — POST is not routed
+        let res = app(test_db())
+            .oneshot(
+                Request::post(format!("/api/missions/{mission_id}/jobs"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        // a malformed mission id is a 400, not a 500
+        let res = app(test_db())
+            .oneshot(Request::get("/api/missions/not-a-uuid/jobs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
 }

@@ -680,3 +680,62 @@ export interface ExportInspect {
   stale: boolean;
   rollbackSeq: number | null;
 }
+
+// --- Compute targets + jobs (Story 3.2, FR-11.1/11.2/11.4, AD-6) ---------
+
+// The resource request a spec may carry (optional; Local records but cannot
+// enforce it — no cgroups on a laptop; the SSH adapter forwards it).
+export interface JobResources {
+  cpus?: number;
+  memoryMb?: number;
+}
+
+// The structured job spec (AD-6): typed fields ONLY — the composer renders
+// them as a live JSON preview and never offers a freeform shell box
+// (EXPERIENCE.md). cmd is a single executable: shell syntax is rejected
+// before submit, on both sides of the wire.
+export interface JobSpec {
+  cmd: string;
+  args: string[];
+  env: Record<string, string>;
+  resources?: JobResources | null;
+  workdir?: string | null;
+}
+
+// The job lifecycle the mission card renders (FR-11.4): queued → running →
+// terminal; every terminal carries a timestamp and (on failure) a reason.
+export type JobPhase = "queued" | "running" | "finished" | "failed";
+
+// A compute job as read from the log — the mission card's jobs area.
+export interface Job {
+  id: string; // the job.submitted event id
+  seq: number;
+  ts: string; // when the job was submitted
+  missionId: string;
+  target: string; // the named compute target ("local" | a declared name)
+  handle: string; // the target adapter's process handle (fetch addresses it)
+  spec: JobSpec;
+  phase: JobPhase;
+  exitCode?: number | null;
+  reason?: string | null; // why a failed job failed (spawn error, exit code, signal)
+  runningTs?: string | null;
+  finishedTs?: string | null; // the terminal stamp — always present once terminal
+}
+
+// A fetched job's captured results (FR-11.5's fetch; the quarantine flow
+// is Story 3.4 — here they surface on the job row).
+export interface JobResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+// One compute target as the mission card's target row renders it: a name
+// and the adapter kind behind it (v1: "local"; SSH registers in Story 3.3).
+export interface ComputeTargetView {
+  name: string;
+  kind: string;
+  builtin: boolean; // the built-in "local" needs no target.declared event
+  seq?: number | null;
+  ts?: string | null;
+}
