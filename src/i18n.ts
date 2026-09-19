@@ -992,6 +992,61 @@ const DICT: Record<string, Record<Lang, string>> = {
     fr: "Échec de l'export : ",
   },
   "export.close": { es: "Cerrar", en: "Close", pt: "Fechar", fr: "Fermer" },
+
+  // Search protocol disclosure (Story 4.1, FR-12.1): the mission's
+  // PRISMA-style Divulgación section — null results render with the
+  // telemetry/info style, never as "nothing happened".
+  "missions.disclosure.show": {
+    es: "Divulgación", en: "Disclosure", pt: "Divulgação", fr: "Divulgation",
+  },
+  "missions.disclosure.hide": {
+    es: "Ocultar divulgación", en: "Hide disclosure", pt: "Ocultar divulgação", fr: "Masquer la divulgation",
+  },
+  "disclosure.title": {
+    es: "Divulgación de búsquedas", en: "Search disclosure",
+    pt: "Divulgação de buscas", fr: "Divulgation des recherches",
+  },
+  "disclosure.summary": {
+    es: "{total} búsquedas · {nulls} resultados nulos",
+    en: "{total} searches · {nulls} null results",
+    pt: "{total} buscas · {nulls} resultados nulos",
+    fr: "{total} recherches · {nulls} résultats nuls",
+  },
+  "disclosure.empty": {
+    es: "Aún no hay búsquedas registradas para esta misión — cuando el Turno Nocturno o la asistente busquen, cada búsqueda se registra aquí, incluidos los resultados nulos.",
+    en: "No searches recorded for this mission yet — when the Night Shift or the assistant search, every search lands here, null results included.",
+    pt: "Ainda não há buscas registradas para esta missão — quando o Turno Noturno ou a assistente pesquisarem, cada busca fica aqui, incluindo resultados nulos.",
+    fr: "Aucune recherche enregistrée pour cette mission pour l'instant — quand le poste de nuit ou l'assistante chercheront, chaque recherche apparaîtra ici, résultats nuls compris.",
+  },
+  "disclosure.error": {
+    es: "Error al cargar la divulgación: ",
+    en: "Failed to load the disclosure: ",
+    pt: "Erro ao carregar a divulgação: ",
+    fr: "Échec du chargement de la divulgation : ",
+  },
+  "disclosure.date": { es: "Fecha", en: "Date", pt: "Data", fr: "Date" },
+  "disclosure.query": { es: "Consulta", en: "Query", pt: "Consulta", fr: "Requête" },
+  "disclosure.database": { es: "Base de datos", en: "Database", pt: "Base de dados", fr: "Base de données" },
+  "disclosure.filters": { es: "Filtros", en: "Filters", pt: "Filtros", fr: "Filtres" },
+  "disclosure.order": { es: "Orden", en: "Order", pt: "Ordem", fr: "Ordre" },
+  "disclosure.results": {
+    es: "{count} resultados", en: "{count} results",
+    pt: "{count} resultados", fr: "{count} résultats",
+  },
+  "disclosure.resultsHeader": {
+    es: "Resultados", en: "Results", pt: "Resultados", fr: "Résultats",
+  },
+  "disclosure.nullResult": {
+    es: "0 resultados (nula)", en: "0 results (null)",
+    pt: "0 resultados (nula)", fr: "0 résultats (nul)",
+  },
+  "disclosure.firstPage": {
+    es: "primera página", en: "first page", pt: "primeira página", fr: "première page",
+  },
+  "disclosure.export": {
+    es: "Exportar con la revisión", en: "Export alongside the review",
+    pt: "Exportar com a revisão", fr: "Exporter avec la revue",
+  },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

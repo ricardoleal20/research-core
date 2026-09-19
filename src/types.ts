@@ -610,6 +610,51 @@ export interface RunReceipt {
   rows: ReceiptRow[]; // seq order — the run's every logged atom
 }
 
+// ---- Search protocol disclosure (Story 4.1, FR-12.1: PRISMA-style) ----
+
+// One disclosure row: the PRISMA record of one search the app performed —
+// query, database, filters, date, result count. Null results are rows
+// (`resultCount: 0`, `nullResult: true`), visibly marked, never hidden —
+// a search that found nothing still happened and still discloses.
+export interface SearchDisclosureRow {
+  seq: number; // the search.run event's seq (the e-{seq} ref)
+  startedAt: string; // ISO-8601 UTC — the event envelope's ts
+  query: string;
+  database: string; // e.g. "arxiv", "semantic-scholar", "zotero", "web"
+  filters: Record<string, unknown>; // date ranges, venues — JSON map
+  order: string | null; // e.g. "relevance", "date-desc"
+  firstPage: boolean; // the PRISMA first-pass marker
+  resultCount: number;
+  nullResult: boolean; // derived: resultCount === 0
+  missionId: string | null;
+  runId: string | null; // the agent run that searched, when run-scoped
+}
+
+// The disclosure of one scope (a mission, or the whole workspace): every
+// search in seq order. `nullResultCount` is the seam the readiness gate
+// (Story 4.3) counts as undisclosed null results.
+export interface SearchDisclosure {
+  rows: SearchDisclosureRow[];
+  total: number;
+  nullResultCount: number;
+}
+
+// One result the search returned (the v1 simulated corpus).
+export interface SearchResult {
+  title: string;
+  authors: string;
+  year: number;
+  venue: string;
+  url: string;
+}
+
+// What run_search returns: the results plus the disclosure row that
+// records what ran (the row IS the log's record of the search).
+export interface SearchRunView {
+  results: SearchResult[];
+  row: SearchDisclosureRow;
+}
+
 // ---- Checkpoints & rollback (Story 2.6, FR-10.1, AD-1) ----
 
 // One restore point as read from the log: the user named the log head at

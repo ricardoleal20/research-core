@@ -3,6 +3,7 @@
   import { t } from "../../i18n";
   import { api } from "../../api";
   import HypothesesBoard from "./HypothesesBoard.svelte";
+  import SearchDisclosure from "./SearchDisclosure.svelte";
 
   let {
     mission,
@@ -147,6 +148,12 @@
   // board-at-a-glance surface is Story 1.8; this section suffices here.
   let boardOpen = $state(false);
 
+  // Search disclosure drill-down (Story 4.1, FR-12.1): the mission's
+  // PRISMA-style Divulgación — every search the runs and the user
+  // performed, null results visibly marked. The section self-loads on
+  // first open; read-model only.
+  let disclosureOpen = $state(false);
+
   // Night Shift schedule (Story 2.3, FR-4.1): off | daily-HH:MM — the
   // compact editor in the card footer; a save appends mission.scheduled.
   let scheduleOpen = $state(false);
@@ -220,6 +227,10 @@
 
   function toggleBoard() {
     boardOpen = !boardOpen;
+  }
+
+  function toggleDisclosure() {
+    disclosureOpen = !disclosureOpen;
   }
 </script>
 
@@ -323,10 +334,22 @@
     <button class="mc-runs-toggle" type="button" onclick={toggleJobs} aria-expanded={jobsOpen}>
       {jobsOpen ? t("missions.jobs.hide") : t("missions.jobs.show")}
     </button>
+    <button
+      class="mc-runs-toggle"
+      type="button"
+      onclick={toggleDisclosure}
+      aria-expanded={disclosureOpen}
+    >
+      {disclosureOpen ? t("missions.disclosure.hide") : t("missions.disclosure.show")}
+    </button>
   </footer>
 
   {#if boardOpen}
     <HypothesesBoard {mission} />
+  {/if}
+
+  {#if disclosureOpen}
+    <SearchDisclosure missionId={mission.id} />
   {/if}
 
   {#if jobsOpen}

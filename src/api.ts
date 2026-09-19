@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -119,6 +119,33 @@ const browserApi = {
       return (await r.json()) as RunReceipt;
     }
     return mockApi.getRunReceipt(runId);
+  },
+  // Search protocol disclosure (Story 4.1, FR-12.1): the disclosure read
+  // goes to the same-origin read-only API over the shared core; running a
+  // search is a mutation — the served browser view refuses it.
+  getSearchDisclosure: async (missionId: string | null) => {
+    if (await servedByCore) {
+      return missionId
+        ? httpJson<SearchDisclosure>(`/api/missions/${missionId}/search-disclosure`)
+        : httpJson<SearchDisclosure>("/api/search-disclosure");
+    }
+    return mockApi.getSearchDisclosure(missionId);
+  },
+  runSearch: async (
+    _query: string,
+    _database: string,
+    _filters: Record<string, unknown> | null,
+    _order: string | null,
+    _firstPage: boolean,
+    _missionId: string | null,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run searches from the desktop app / " +
+          "Vista de solo lectura — ejecuta búsquedas desde la app de escritorio",
+      );
+    }
+    return mockApi.runSearch(_query, _database, _filters, _order, _firstPage, _missionId);
   },
   createMission: async (m: CreateMissionInput) => {
     if (await servedByCore) {
@@ -479,6 +506,28 @@ export const api = mockActive ? browserApi : {
   // run receipts (Story 2.5, FR-6.1): one run's ordered audit ledger — a
   // pure query over the log (replay = re-query)
   getRunReceipt: (runId: string) => invoke<RunReceipt | null>("get_run_receipt", { runId }),
+  // search protocol disclosure (event-sourced, Story 4.1, FR-12.1): the
+  // ONE search entry — executes, appends the search.run PRISMA record,
+  // returns results (nulls logged identically); the disclosure is the
+  // pure fold the mission's Divulgación section renders
+  runSearch: (
+    query: string,
+    database: string,
+    filters: Record<string, unknown> | null,
+    order: string | null,
+    firstPage: boolean,
+    missionId: string | null,
+  ) =>
+    invoke<SearchRunView>("run_search", {
+      query,
+      database,
+      filters: filters ?? null,
+      order: order ?? null,
+      firstPage,
+      missionId: missionId ?? null,
+    }),
+  getSearchDisclosure: (missionId: string | null) =>
+    invoke<SearchDisclosure>("get_search_disclosure", { missionId }),
   // agent steps (Story 2.1): one role step through the provider layer —
   // spend recorded role-tagged, result returned to the caller
   runAgentStep: (missionId: string, role: string, task: string) =>

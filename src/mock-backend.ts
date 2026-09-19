@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -629,6 +629,77 @@ const seededReceipts: Record<string, RunReceipt> = {
   },
 };
 
+// Search protocol disclosure (mirrors the event-sourced core, Story 4.1,
+// FR-12.1): seeded PRISMA rows for the seeded missions — including the
+// honest NULL result (the m21 mission's second search and the failed
+// mission's scan found nothing; they still disclose, identically). Live
+// searches (runSearch, the mock Night Shift scans) append on top; the
+// fold at query time is the disclosure (replay = re-query, same as the
+// core's pure fold).
+let searchSeq = 150;
+const liveSearches: SearchDisclosureRow[] = [];
+const seededSearches: SearchDisclosureRow[] = [
+  {
+    seq: 151, startedAt: "2026-09-19T02:31:19Z",
+    query: "retrieval-augmented generation hallucination",
+    database: "arxiv", filters: { from_year: 2020 }, order: "relevance", firstPage: true,
+    resultCount: 3, nullResult: false, missionId: "m21-seed", runId: "nightshift-21",
+  },
+  {
+    // the honest null: the follow-up search over a narrower corpus —
+    // recorded identically, never hidden (FR-12.1)
+    seq: 156, startedAt: "2026-09-19T02:44:10Z",
+    query: "hallucination long-form generation ablation",
+    database: "semantic-scholar", filters: { venue: "neurips" }, order: null, firstPage: true,
+    resultCount: 0, nullResult: true, missionId: "m21-seed", runId: "nightshift-21",
+  },
+  {
+    seq: 113, startedAt: "2026-09-19T02:04:12Z",
+    query: "Does sparse attention hold at long context?",
+    database: "arxiv", filters: {}, order: null, firstPage: true,
+    resultCount: 2, nullResult: false, missionId: "m22-seed", runId: "nightshift-22",
+  },
+  {
+    seq: 122, startedAt: "2026-09-19T01:31:09Z",
+    query: "Is linear complexity competitive with quadratic attention?",
+    database: "arxiv", filters: { from_year: 2019 }, order: "date-desc", firstPage: true,
+    resultCount: 1, nullResult: false, missionId: "m24-seed", runId: "nightshift-24",
+  },
+  {
+    // the failed mission's scan searched and found nothing — disclosed
+    seq: 132, startedAt: "2026-09-19T02:31:08Z",
+    query: "Does MoE routing stay stable under distribution shift?",
+    database: "web", filters: {}, order: null, firstPage: true,
+    resultCount: 0, nullResult: true, missionId: "m26-seed", runId: "nightshift-17",
+  },
+];
+
+/** The mock corpus (mirrors the core's simulated arXiv corpus): a query
+ *  with no substantive token (≥ 4 chars, not a stopword) matches nothing
+ *  — an honest null result, logged identically. */
+const MOCK_STOPWORDS = new Set([
+  "does", "what", "when", "with", "that", "this", "them", "than", "have", "hold",
+]);
+const MOCK_CORPUS: SearchResult[] = [
+  { title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "arxiv", url: "https://arxiv.org/abs/1706.03762" },
+  { title: "Sparse Attention Memory Costs at Long Context", authors: "Beltagy et al.", year: 2020, venue: "arxiv", url: "https://arxiv.org/abs/2004.05150" },
+  { title: "Retrieval-Augmented Generation Reduces Hallucination", authors: "Lewis et al.", year: 2020, venue: "acl", url: "https://aclanthology.org/2020.acl-main.612" },
+  { title: "Grounding Citations in Retrieved Passages", authors: "Gao et al.", year: 2023, venue: "arxiv", url: "https://arxiv.org/abs/2305.14627" },
+  { title: "Lost in the Middle: Context Confuses Language Models", authors: "Liu et al.", year: 2023, venue: "arxiv", url: "https://arxiv.org/abs/2307.03172" },
+  { title: "Scaling Laws for Neural Language Models", authors: "Kaplan et al.", year: 2020, venue: "arxiv", url: "https://arxiv.org/abs/2001.08361" },
+  { title: "Verifying Claims with Non-LLM Fetchers", authors: "Chen et al.", year: 2024, venue: "arxiv", url: "https://arxiv.org/abs/2402.14871" },
+  { title: "kNN-Augmented Language Models", authors: "Khandelwal et al.", year: 2019, venue: "arxiv", url: "https://arxiv.org/abs/1911.00172" },
+];
+
+function mockSearchResults(query: string): SearchResult[] {
+  const tokens = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 4 && !MOCK_STOPWORDS.has(t));
+  if (tokens.length === 0) return [];
+  return MOCK_CORPUS.filter((r) => tokens.some((t) => r.title.toLowerCase().includes(t)));
+}
+
 /** Fold a live mock run's receipt from its run list (replay = re-query —
  * mirrors the core's pure fold: run boundaries, the scan's search, the run's
  * quarantined proposals; simulated mock calls cost nothing, so no call rows
@@ -1096,6 +1167,54 @@ export const mockApi = {
     if (seeded) return { ...seeded, rows: seeded.rows.map((r) => ({ ...r })), models: [...seeded.models] };
     return mockReceiptFor(runId);
   },
+  // Search protocol disclosure (Story 4.1, FR-12.1): the ONE search entry
+  // — executes the search, records the PRISMA row, returns the results.
+  // Null results record identically (resultCount 0, nullResult true) —
+  // never a hidden nothing.
+  runSearch: async (
+    query: string,
+    database: string,
+    filters: Record<string, unknown> | null,
+    order: string | null,
+    firstPage: boolean,
+    missionId: string | null,
+  ): Promise<SearchRunView> => {
+    await delay(150);
+    const q = query.trim();
+    if (!q) throw new Error("invalid_query: a search records what was searched — the query cannot be empty (FR-12.1)");
+    const db = database.trim();
+    if (!db) throw new Error("invalid_database: a search records where it ran — name the database (FR-12.1)");
+    const results = mockSearchResults(q);
+    const row: SearchDisclosureRow = {
+      seq: ++searchSeq,
+      startedAt: nowISO(),
+      query: q,
+      database: db,
+      filters: filters ?? {},
+      order: order && order.trim() ? order.trim() : null,
+      firstPage,
+      resultCount: results.length,
+      nullResult: results.length === 0,
+      missionId,
+      runId: null, // a UI/assistant search runs as the user
+    };
+    liveSearches.push(row);
+    return { results: results.map((r) => ({ ...r })), row: { ...row } };
+  },
+  // The disclosure read model (FR-12.1): every search's PRISMA row in seq
+  // order — mission-scoped when an id is given, else workspace-wide.
+  getSearchDisclosure: async (missionId: string | null): Promise<SearchDisclosure> => {
+    await delay();
+    const rows = [...seededSearches, ...liveSearches]
+      .filter((r) => (missionId ? r.missionId === missionId : true))
+      .sort((a, b) => a.seq - b.seq)
+      .map((r) => ({ ...r }));
+    return {
+      rows,
+      total: rows.length,
+      nullResultCount: rows.filter((r) => r.nullResult).length,
+    };
+  },
   // agent steps (Story 2.1): one role step through the mock provider — the
   // dev browser answers with the simulated voice, no spend. Story 2.2: the
   // drafter's step also EMITS a quarantined proposal for the mission's first
@@ -1424,6 +1543,24 @@ export const mockApi = {
         });
       };
       push("run.started");
+      // Story 4.1 (FR-12.1): the scan's literature search runs through
+      // the ONE search seam — the PRISMA row lands inside the run before
+      // anything else, null results included and logged identically.
+      const results = mockSearchResults(mission.question);
+      searchSeq += 1;
+      liveSearches.push({
+        seq: searchSeq,
+        startedAt: nowISO(),
+        query: mission.question,
+        database: "arxiv",
+        filters: {},
+        order: null,
+        firstPage: true,
+        resultCount: results.length,
+        nullResult: results.length === 0,
+        missionId: mission.id,
+        runId,
+      });
       // the scan's output lands as a quarantined proposal (FR-4.2)
       const target = hypotheses.find(
         (h) => h.missionId === mission.id && allowedNext[h.status].length > 0,
