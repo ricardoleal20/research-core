@@ -204,6 +204,7 @@ mod tests {
                         success_criterion: "A blind rater agrees.".into(),
                         autonomy: Autonomy::Suggest,
                         spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
                     roles: vec![],
                     })
                     .unwrap(),
@@ -235,6 +236,7 @@ mod tests {
                         success_criterion: "A blind rater agrees.".into(),
                         autonomy: Autonomy::Watch,
                         spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
                     roles: vec![],
                     })
                     .unwrap(),
@@ -294,6 +296,7 @@ mod tests {
                     success_criterion: "A blind rater agrees.".into(),
                     autonomy: Autonomy::Watch,
                     spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
                 roles: vec![],
                 })
                 .unwrap())
@@ -341,6 +344,7 @@ mod tests {
                     success_criterion: "A blind rater agrees.".into(),
                     autonomy: Autonomy::Watch,
                     spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
                 roles: vec![],
                 })
                 .unwrap())
@@ -394,6 +398,7 @@ mod tests {
                     success_criterion: "A blind rater agrees.".into(),
                     autonomy: Autonomy::Watch,
                     spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
                     roles: vec![],
                 })
                 .unwrap())

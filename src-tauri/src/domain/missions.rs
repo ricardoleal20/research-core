@@ -14,6 +14,56 @@ use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const MISSION_CREATED: &str = "mission.created";
 
+/// A mission's Night Shift schedule changed (Story 2.3, FR-4.1): the one way
+/// a schedule moves after creation — an event, cause-linked to the mission's
+/// creation, actor=user (a shell command). The fold takes the latest.
+pub const MISSION_SCHEDULED: &str = "mission.scheduled";
+
+/// The default Night Shift schedule every mission launches with (FR-4.1):
+/// a nightly literature scan at 03:00 local time.
+pub const DEFAULT_SCHEDULE: &str = "daily-03:00";
+
+/// A Night Shift schedule (FR-4.1): `off` (no scheduled runs) or a daily
+/// `daily-HH:MM` local-time tick. Parsed from the wire form stored on the
+/// mission; invalid schedules never become events (the typed constructors
+/// reject them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Schedule {
+    Off,
+    Daily { hour: u32, minute: u32 },
+}
+
+impl Schedule {
+    /// Parse the wire form: `off` | `daily-HH:MM` (00–23 / 00–59).
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("off") {
+            return Some(Self::Off);
+        }
+        let Some(rest) = s.strip_prefix("daily-") else {
+            return None;
+        };
+        let (h, m) = rest.split_once(':')?;
+        if h.len() != 2 || m.len() != 2 {
+            return None; // strict HH:MM — the wire form stays stable
+        }
+        let hour: u32 = h.parse().ok()?;
+        let minute: u32 = m.parse().ok()?;
+        if hour > 23 || minute > 59 {
+            return None;
+        }
+        Some(Self::Daily { hour, minute })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            _ => "daily",
+        }
+    }
+}
+
 /// The two agent role names a mission's runtime config knows (Story 2.1,
 /// AD-9): drafters advance the mission; critics evaluate the drafters' work.
 pub const ROLE_DRAFTER: &str = "drafter";
@@ -113,6 +163,15 @@ pub struct MissionCreatedPayload {
     /// roles resolve from the layer at step time).
     #[serde(default)]
     pub roles: Vec<RoleConfig>,
+    /// The mission's Night Shift schedule (Story 2.3, FR-4.1): `off` or
+    /// `daily-HH:MM`. Defaults to a nightly 03:00 literature scan; the
+    /// `serde` default keeps pre-2.3 events foldable.
+    #[serde(default = "default_schedule")]
+    pub schedule: String,
+}
+
+fn default_schedule() -> String {
+    DEFAULT_SCHEDULE.to_string()
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<(), EventError> {
@@ -170,18 +229,54 @@ impl NewEvent {
     /// Typed constructor (AD-15): the one way a `mission.created` event comes
     /// into being. Actor is always the user (shells append only
     /// human-attributed command events). Construction fails loudly when any of
-    /// question / stop_condition / success_criterion is empty or blank.
+    /// question / stop_condition / success_criterion is empty or blank. An
+    /// empty schedule launches on the default nightly scan (daily-03:00); a
+    /// non-empty schedule must parse (`off` | `daily-HH:MM`).
     pub fn mission_created(payload: MissionCreatedPayload) -> Result<Self, EventError> {
         require_non_empty("question", &payload.question)?;
         require_non_empty("stop_condition", &payload.stop_condition)?;
         require_non_empty("success_criterion", &payload.success_criterion)?;
         validate_roles(&payload.roles)?;
+        validate_schedule(&payload.schedule)?;
+        let mut payload = payload;
+        if payload.schedule.trim().is_empty() {
+            payload.schedule = DEFAULT_SCHEDULE.into(); // FR-4.1: nightly by default
+        }
         Self::new(
             MISSION_CREATED,
             Actor::User,
             serde_json::to_value(&payload)?,
         )
     }
+
+    /// Typed constructor (AD-15, Story 2.3): the one way a mission's Night
+    /// Shift schedule changes — a `mission.scheduled` event, actor=user,
+    /// cause-linked to the mission's creation. Rejects schedules that do not
+    /// parse (`off` | `daily-HH:MM`) at the domain edge.
+    pub fn mission_scheduled(schedule: &str, mission_id: Uuid) -> Result<Self, EventError> {
+        validate_schedule(schedule)?;
+        Self::new(
+            MISSION_SCHEDULED,
+            Actor::User,
+            serde_json::json!({ "schedule": schedule.trim() }),
+        )
+        .map(|e| e.with_causes(vec![mission_id]))
+    }
+}
+
+/// A schedule must parse (`off` | `daily-HH:MM`); an empty one is the default
+/// nightly scan (a mission never fails creation over an unset schedule).
+fn validate_schedule(schedule: &str) -> Result<(), EventError> {
+    let s = schedule.trim();
+    if s.is_empty() {
+        return Ok(());
+    }
+    if Schedule::parse(s).is_none() {
+        return Err(EventError::Invalid(format!(
+            "mission.schedule: `{s}` — expected `off` or `daily-HH:MM` (e.g. daily-03:00)"
+        )));
+    }
+    Ok(())
 }
 
 /// A mission's lifecycle status (Story 1.4). Derived by the fold: a mission
@@ -243,6 +338,9 @@ pub struct Mission {
     /// (Story 2.1); empty for pre-2.1 missions (roles resolve from the layer
     /// at step time).
     pub roles: Vec<RoleConfig>,
+    /// The mission's Night Shift schedule (Story 2.3): `off` | `daily-HH:MM`.
+    /// Default `daily-03:00`; the latest `mission.scheduled` event wins.
+    pub schedule: String,
     /// Derived: lifecycle status from events referencing this mission.
     pub status: MissionStatus,
     /// Derived: total `spend.recorded` cost against the ceiling, in cents.
@@ -319,6 +417,13 @@ impl MissionsProjection {
                 MISSION_COMPLETED => mission.status = MissionStatus::Completed,
                 MISSION_STOPPED => mission.status = MissionStatus::Stopped,
                 MISSION_FAILED => mission.status = MissionStatus::Failed,
+                MISSION_SCHEDULED => {
+                    // The latest schedule event wins (schedules are edited by
+                    // appending, like every mutation — AD-1).
+                    if let Some(schedule) = event.payload.get("schedule").and_then(serde_json::Value::as_str) {
+                        mission.schedule = schedule.to_string();
+                    }
+                }
                 SPEND_RECORDED => {
                     mission.spend_cents += event
                         .payload
@@ -390,6 +495,7 @@ impl MissionsProjection {
             autonomy: payload.autonomy,
             spend_ceiling_cents: payload.spend_ceiling_cents,
             roles: payload.roles,
+            schedule: payload.schedule,
             status: MissionStatus::Active,
             spend_cents: 0,
             spend_state: SpendState::Ok,
@@ -415,6 +521,7 @@ mod tests {
                 RoleConfig::drafter("openai", "gpt-4o"),
                 RoleConfig::critic("anthropic", "claude-sonnet-4-5"),
             ],
+            schedule: "daily-03:00".into(),
         }
     }
 
@@ -460,6 +567,7 @@ mod tests {
                     { "name": "drafter", "provider": "openai", "model": "gpt-4o" },
                     { "name": "critic", "provider": "anthropic", "model": "claude-sonnet-4-5" },
                 ],
+                "schedule": "daily-03:00",
             })
         );
     }
@@ -571,6 +679,93 @@ mod tests {
     }
 
     #[test]
+    fn schedule_parses_off_and_daily_times_only() {
+        assert_eq!(Schedule::parse("off"), Some(Schedule::Off));
+        assert_eq!(Schedule::parse("OFF"), Some(Schedule::Off));
+        assert_eq!(
+            Schedule::parse("daily-03:00"),
+            Some(Schedule::Daily { hour: 3, minute: 0 })
+        );
+        assert_eq!(
+            Schedule::parse("daily-23:59"),
+            Some(Schedule::Daily { hour: 23, minute: 59 })
+        );
+        for bad in ["", "daily", "daily-3:00", "daily-24:00", "daily-03:60", "weekly-3", "daily-03", "03:00"] {
+            assert!(Schedule::parse(bad).is_none(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn creation_defaults_to_the_nightly_scan_and_rejects_bad_schedules() {
+        // an empty schedule launches on the default nightly scan (FR-4.1)
+        let mut p = payload();
+        p.schedule = "  ".into();
+        let ev = NewEvent::mission_created(p).unwrap();
+        assert_eq!(ev.payload["schedule"], json!("daily-03:00"));
+        // a valid explicit schedule passes through
+        let mut p = payload();
+        p.schedule = "daily-05:30".into();
+        let ev = NewEvent::mission_created(p).unwrap();
+        assert_eq!(ev.payload["schedule"], json!("daily-05:30"));
+        // `off` disables the night shift
+        let mut p = payload();
+        p.schedule = "off".into();
+        assert!(NewEvent::mission_created(p).is_ok());
+        // an unparseable schedule fails construction before any event exists
+        let mut p = payload();
+        p.schedule = "nightly-ish".into();
+        let err = NewEvent::mission_created(p).expect_err("bad schedules must fail");
+        assert!(err.to_string().contains("daily-HH:MM"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn mission_scheduled_updates_the_fold_latest_wins() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let created = store.append(NewEvent::mission_created(payload()).unwrap()).unwrap();
+        // the creation carries the default nightly scan
+        let missions = MissionsProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(missions[0].schedule, "daily-03:00");
+        // a schedule change is an event — cause-linked, actor=user
+        let scheduled = store
+            .append(NewEvent::mission_scheduled("daily-05:30", created.id).unwrap())
+            .unwrap();
+        assert_eq!(scheduled.kind, MISSION_SCHEDULED);
+        assert_eq!(scheduled.actor, Actor::User);
+        assert_eq!(scheduled.causes, vec![created.id]);
+        let missions = MissionsProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(missions[0].schedule, "daily-05:30");
+        // the latest schedule event wins
+        store
+            .append(NewEvent::mission_scheduled("off", created.id).unwrap())
+            .unwrap();
+        let missions = MissionsProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(missions[0].schedule, "off");
+        // an invalid schedule never becomes an event
+        assert!(NewEvent::mission_scheduled("whenever", created.id).is_err());
+        // a pre-2.3 creation event (no schedule field) folds on the default
+        let legacy = store
+            .append(
+                NewEvent::new(
+                    MISSION_CREATED,
+                    Actor::User,
+                    json!({
+                        "question": "Legacy?",
+                        "stop_condition": "Stop after $5.",
+                        "success_criterion": "A rater agrees.",
+                        "autonomy": "watch",
+                        "spend_ceiling_cents": 500
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let missions = MissionsProjection::fold(&store.events_all().unwrap()).unwrap();
+        let legacy_m = missions.iter().find(|m| m.id == legacy.id).unwrap();
+        assert_eq!(legacy_m.schedule, "daily-03:00");
+    }
+
+    #[test]
     fn fold_reads_missions_from_the_log_in_seq_order() {
         let conn = mem_conn();
         let store = EventStore::new(&conn);
@@ -595,6 +790,7 @@ mod tests {
                 autonomy: Autonomy::Suggest,
                 spend_ceiling_cents: 500,
                 roles: payload().roles.clone(),
+                schedule: "daily-03:00".into(),
                 status: MissionStatus::Active,
                 spend_cents: 0,
                 spend_state: SpendState::Ok,

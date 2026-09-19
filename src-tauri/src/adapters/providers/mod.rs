@@ -702,6 +702,7 @@ mod tests {
                     success_criterion: "c".into(),
                     autonomy: Autonomy::Suggest,
                     spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
                 roles: vec![],
                 }).unwrap())
                 .unwrap()

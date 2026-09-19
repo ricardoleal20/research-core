@@ -329,6 +329,7 @@ mod tests {
                     success_criterion: "A blind rater agrees.".into(),
                     autonomy: crate::domain::missions::Autonomy::Suggest,
                     spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
                 roles: vec![],
                 },
             )

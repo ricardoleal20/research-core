@@ -769,6 +769,7 @@ mod tests {
             success_criterion: "A blind rater finds zero fabricated citations.".into(),
             autonomy: Autonomy::Suggest,
             spend_ceiling_cents: 500,
+            schedule: "daily-03:00".into(),
             roles: vec![],
         }
     }

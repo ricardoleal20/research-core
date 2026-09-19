@@ -54,6 +54,10 @@ pub async fn create_mission(
         autonomy,
         spend_ceiling_cents,
         roles,
+        // Story 2.3: creation always launches on the default nightly scan
+        // (daily-03:00) — `set_mission_schedule` moves it later; the typed
+        // constructor normalizes the empty value to the default.
+        schedule: String::new(),
     })
     .map_err(err)?;
     let c = db.0.lock().await;
