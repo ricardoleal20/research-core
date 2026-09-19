@@ -6,10 +6,11 @@
 
 use crate::db::Db;
 use crate::domain::missions::{
-    Autonomy, Mission, MissionCreatedPayload, MissionsProjection,
+    Autonomy, Mission, MissionCreatedPayload, MissionRun, MissionsProjection,
 };
 use crate::eventstore::{EventStore, NewEvent};
 use tauri::State;
+use uuid::Uuid;
 
 fn err(e: impl ToString) -> String {
     e.to_string()
@@ -50,4 +51,20 @@ pub async fn list_missions(db: State<'_, Db>) -> Result<Vec<Mission>, String> {
     let c = db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(err)?;
     MissionsProjection::fold(&events).map_err(err)
+}
+
+/// The run list of one mission (FR-1.3): every log event referencing it, in
+/// `seq` order — the basic drill-down the missions home renders. The full
+/// receipts timeline is a later story.
+#[tauri::command]
+pub async fn get_mission_runs(
+    db: State<'_, Db>,
+    mission_id: String,
+) -> Result<Vec<MissionRun>, String> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|e| format!("invalid mission id `{mission_id}`: {e}"))?;
+    let c = db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(err)?;
+    Ok(MissionsProjection::runs_for(&events, mission_id))
 }
