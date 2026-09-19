@@ -65,6 +65,7 @@ pub enum RunOutcome {
 /// plus the typed action the row renders. The `kind` tag discriminates the
 /// wire form the UI composes its bilingual one-liners from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReceiptRow {
     pub seq: i64,
     pub ts: DateTime<Utc>,
@@ -77,7 +78,7 @@ pub struct ReceiptRow {
 /// the human's decision on one, the honest ceiling refusal, a released
 /// reservation, and the run's end.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum ReceiptAction {
     RunStart {
         /// The step the run opened (`literature-scan` in v1).
@@ -166,6 +167,7 @@ impl ReceiptAction {
 /// spend vs ceiling, the models it called — plus the ordered ledger. A pure
 /// projection: two folds of the same log yield the identical receipt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunReceipt {
     pub run_id: String,
     pub mission_id: Uuid,
@@ -861,6 +863,18 @@ mod tests {
             serde_json::to_string(&first).unwrap(),
             serde_json::to_string(&second).unwrap()
         );
+        // the wire form is camelCase (Tauri 2 convention) with the kind tag
+        let wire: serde_json::Value = serde_json::to_value(&first).unwrap();
+        assert_eq!(wire["runId"], "ns-42");
+        assert_eq!(wire["durationSecs"], wire["durationSecs"]);
+        let call = &wire["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["kind"] == "call")
+            .unwrap();
+        assert_eq!(call["inputTokens"], 3_812);
+        assert_eq!(call["costCents"], 9);
         // unrelated later events never mutate a closed run's receipt
         let other = seed_mission(&store);
         seed_full_run(&store, other.id, "ns-43");
