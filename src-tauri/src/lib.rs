@@ -6,6 +6,7 @@ mod mcp;
 mod missions_commands;
 mod server;
 
+pub mod adapters;
 pub mod domain;
 pub mod eventstore;
 
@@ -142,6 +143,7 @@ pub fn run() {
             commands::list_mcp_tools,
             commands::get_settings,
             commands::update_setting,
+            commands::set_provider_key,
             commands::reset_database,
             commands::app_log,
             commands::get_app_paths,

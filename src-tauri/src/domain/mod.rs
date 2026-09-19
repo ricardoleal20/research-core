@@ -4,3 +4,4 @@
 
 pub mod hypotheses;
 pub mod missions;
+pub mod spend;

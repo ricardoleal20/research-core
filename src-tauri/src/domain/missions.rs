@@ -23,8 +23,9 @@ pub const MISSION_STOPPED: &str = "mission.stopped";
 pub const MISSION_FAILED: &str = "mission.failed";
 
 /// Spend is folded from `spend.recorded` events referencing the mission
-/// (Story 1.6 appends them; the fold already understands them).
-pub const SPEND_RECORDED: &str = "spend.recorded";
+/// (the provider layer appends them via `domain::spend`'s typed constructor;
+/// the fold already understands them).
+pub use super::spend::SPEND_RECORDED;
 
 /// The autonomy dial's three named stops (FR-5.1). Three contracts, not a
 /// percentage; governs dispatch permissions only (AD-15d).

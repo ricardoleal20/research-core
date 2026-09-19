@@ -402,6 +402,33 @@ pub async fn update_setting(db: State<'_, Db>, key: String, value: String) -> Re
     db::set_setting(&c, &key, &value).map_err(err)
 }
 
+/// Store the provider API key in the OS keychain (AD-16 / Story 1.6:
+/// keychain-only credentials) under the currently configured provider's
+/// account, and clear the legacy `settings.api_key` row so the value never
+/// (re-)enters the database. An empty key clears the stored credential
+/// (the wizard's simulate/cli modes).
+#[tauri::command]
+pub async fn set_provider_key(db: State<'_, Db>, key: String) -> Result<(), String> {
+    let c = db.0.lock().await;
+    let provider = db::get_setting(&c, "provider");
+    let account = crate::eventstore::migration::keychain_account(&provider);
+    let entry = keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
+        .map_err(err)?;
+    let key = key.trim();
+    if key.is_empty() {
+        // Clearing: best effort — a keychain we cannot delete from is the
+        // same keychain we cannot read from, so the key stays unusable.
+        let _ = entry.delete_credential();
+    } else {
+        entry.set_password(key).map_err(err)?;
+    }
+    // Move semantics: the key never (re-)enters the database.
+    if !db::get_setting(&c, "api_key").trim().is_empty() {
+        db::set_setting(&c, "api_key", "").map_err(err)?;
+    }
+    Ok(())
+}
+
 /// Danger zone: drop every table and rebuild the schema + seed defaults.
 /// Wipes projects, refs, reviews, actions, chats AND settings (onboarding,
 /// lock hash, LLM config) so the app re-runs the first-run setup wizard.
