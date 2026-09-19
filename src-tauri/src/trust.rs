@@ -204,6 +204,7 @@ pub async fn settle_recorded(
         cost_cents,
         run_id: Some(plan.run_id.clone()),
         mission_id: plan.mission_id,
+        job_id: None,
     })?)?;
     store.append(NewEvent::spend_released(SpendReleasedPayload {
         run_id: plan.run_id.clone(),
@@ -748,6 +749,7 @@ mod tests {
                         cost_cents: 82,
                         run_id: Some("run-82".into()),
                         mission_id: Some(mission.id),
+                        job_id: None,
                     })
                     .unwrap(),
                 )

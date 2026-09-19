@@ -8,6 +8,7 @@ pub mod evidence;
 pub mod export;
 pub mod nightshift;
 pub mod hypotheses;
+pub mod jobs;
 pub mod missions;
 pub mod onboarding;
 pub mod proposals;

@@ -131,6 +131,11 @@ impl NightShift {
         }
         self.probe_connections().await?;
         self.reap_dead_runs(now.with_timezone(&Utc)).await?;
+        // The compute-job monitor loop (Story 3.2, FR-11.4): every live job
+        // gets one observation per tick — `job.running` on first sight,
+        // reasoned terminals when jobs end (per command too, via
+        // `poll_jobs`).
+        crate::jobs_commands::poll_live_jobs(&self.db, None).await?;
         let missions = self.fold_missions().await?;
         let mut records = Vec::new();
         for mission in &missions {

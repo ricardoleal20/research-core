@@ -1,0 +1,432 @@
+// Compute target adapters (AD-6, Story 3.2): the boundary between the core
+// and the machines jobs run on. Every job flows through the
+// `ComputeTarget` trait — `submit(spec)`, `monitor(handle)`,
+// `fetch(handle)` — resolved from a registry by adapter KIND. v1
+// registers `Local` (argv-direct process execution; never `sh -c`);
+// Story 3.3 registers the bare-SSH adapter behind the same trait, so
+// nothing here may assume local execution.
+//
+// The spec is validated at TWO boundaries before any process exists:
+// `JobSpec::validate` at the `job.submitted` constructor (the event never
+// lands otherwise) and again inside `submit` — the adapter is the last
+// line of defense for the never-freeform-shell guarantee (AD-6), because
+// the SSH adapter's remote side will build a command line from these
+// fields too.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::domain::jobs::{JobResources, JobSpec, SpecError};
+
+/// The target adapter's id for one submitted job — opaque to the core,
+/// addressed by monitor and fetch. For `Local` it is the in-memory key of
+/// the spawned child.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobHandle {
+    pub id: String,
+}
+
+impl JobHandle {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self { id: id.into() }
+    }
+}
+
+/// What the adapter observes about a job right now. `Finished` is exit 0;
+/// everything else that stops is `Failed` with a reason (spawn error,
+/// nonzero exit, signal) — and the code when there was one. This is the
+/// adapter-side observation; the evented lifecycle (`job.running` /
+/// `job.finished` / `job.failed`) is the runtime's projection of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetJobStatus {
+    Running,
+    Finished { code: i32 },
+    Failed { reason: String, code: Option<i32> },
+}
+
+/// A finished job's artifacts (FR-11.5's fetch): captured stdout/stderr
+/// and the exit code when there was one. Story 3.4 turns these into
+/// quarantined evidence proposals; here they surface on the job row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobResult {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Everything a target adapter can fail with — typed, never a bare io
+/// string. Error codes lead the message (bilingual-safe, EXPERIENCE.md).
+#[derive(Debug, thiserror::Error)]
+pub enum TargetError {
+    #[error("unknown_target: `{0}` — no compute target with that name")]
+    UnknownTarget(String),
+    #[error("unknown_kind: `{0}` — no adapter of that kind is registered (v1: local)")]
+    UnknownKind(String),
+    #[error("unknown_job: `{0}` — the target has no process for that handle")]
+    UnknownJob(String),
+    #[error("job_not_terminal: `{0}` — fetch waits for the job to finish")]
+    NotTerminal(String),
+    #[error("{0}")]
+    InvalidSpec(#[from] SpecError),
+    #[error("spawn_error: {0}")]
+    Spawn(String),
+}
+
+// ---------------------------------------------------------------------------
+// The trait + registry (AD-6)
+// ---------------------------------------------------------------------------
+
+/// One compute target adapter (AD-6). Methods are synchronous on purpose:
+/// `submit` starts execution (or records why it could not) without
+/// waiting; `monitor` is a non-blocking observation; `fetch` returns what
+/// a finished job produced. Implementations must not assume local
+/// execution — the SSH adapter (Story 3.3) implements the same seam over
+/// a remote process.
+pub trait ComputeTarget: Send + Sync {
+    /// The adapter kind: the `kind` a `target.declared` event names.
+    /// `local` in v1; `ssh` registers in Story 3.3.
+    fn kind(&self) -> &'static str;
+    /// Submit a validated spec for execution. Re-validates the spec at the
+    /// adapter boundary (AD-6); returns the handle monitor/fetch address.
+    /// A process that fails to spawn is a job state, not a submit error —
+    /// the handle comes back with the failure observable via `monitor`,
+    /// so the lifecycle events always tell the story.
+    fn submit(&self, spec: &JobSpec) -> Result<JobHandle, TargetError>;
+    /// Observe the job now: running, or terminal with code/reason.
+    fn monitor(&self, handle: &JobHandle) -> Result<TargetJobStatus, TargetError>;
+    /// Fetch a TERMINAL job's captured output. Typed error while running.
+    fn fetch(&self, handle: &JobHandle) -> Result<JobResult, TargetError>;
+}
+
+/// The adapter registry (AD-6): kind → adapter. v1 registers `Local`; the
+/// registration seam for the SSH adapter (Story 3.3) is `register` — the
+/// trait and registry never change shape when it arrives. Named targets
+/// (`target.declared` events) resolve to their kind's adapter here.
+pub struct TargetRegistry {
+    adapters: HashMap<&'static str, Arc<dyn ComputeTarget>>,
+}
+
+impl TargetRegistry {
+    /// The v1 registry: `local` registered; the SSH seam open.
+    pub fn v1() -> Self {
+        let mut registry = Self::empty();
+        registry.register(Arc::new(Local));
+        registry
+    }
+
+    /// The registration seam (AD-6): community and next-story adapters
+    /// (bare-SSH) plug in here — one kind, one adapter.
+    pub fn register(&mut self, adapter: Arc<dyn ComputeTarget>) {
+        self.adapters.insert(adapter.kind(), adapter);
+    }
+
+    /// Resolve an adapter by kind — typed error for unknown kinds.
+    pub fn adapter(&self, kind: &str) -> Result<Arc<dyn ComputeTarget>, TargetError> {
+        self.adapters
+            .get(kind)
+            .cloned()
+            .ok_or_else(|| TargetError::UnknownKind(kind.to_string()))
+    }
+
+    /// The registered kinds (v1: `local`) — what `target.declared` may name.
+    pub fn kinds(&self) -> Vec<&'static str> {
+        let mut kinds: Vec<&'static str> = self.adapters.keys().copied().collect();
+        kinds.sort_unstable();
+        kinds
+    }
+
+    fn empty() -> Self {
+        Self { adapters: HashMap::new() }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Local adapter (Story 3.2)
+// ---------------------------------------------------------------------------
+
+/// The local-machine adapter: spawns the spec's `cmd` with `args` as
+/// ARGV DIRECTLY (`tokio::process::Command` — never `sh -c`, never a
+/// constructed shell string; AD-6). The child's captured output lands in
+/// an in-memory slot a reaper task fills at exit, so `monitor` is a
+/// non-blocking observation and `fetch` reads what was captured.
+pub struct Local;
+
+/// What the reaper task records when the child is done. `spawn_error` is
+/// set when the process never came up (the handle still exists — the
+/// lifecycle events carry the reason).
+struct LocalExit {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    spawn_error: Option<String>,
+}
+
+/// One live local job: the slot its reaper task fills at exit.
+type LocalJobSlot = Arc<Mutex<Option<LocalExit>>>;
+
+/// The Local adapter's live processes, keyed by handle id. Process-global
+/// by design: children outlive any single command call; a restart loses
+/// them (the log's read model keeps its last observed state honestly).
+fn local_jobs() -> &'static Mutex<HashMap<String, LocalJobSlot>> {
+    static JOBS: OnceLock<Mutex<HashMap<String, LocalJobSlot>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+impl ComputeTarget for Local {
+    fn kind(&self) -> &'static str {
+        "local"
+    }
+
+    fn submit(&self, spec: &JobSpec) -> Result<JobHandle, TargetError> {
+        // The adapter boundary validates again (AD-6): nothing executes
+        // that did not pass the never-freeform-shell gate.
+        spec.validate()?;
+        let mut command = tokio::process::Command::new(&spec.cmd);
+        command
+            .args(&spec.args)
+            .envs(&spec.env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(dir) = spec.workdir.as_deref() {
+            command.current_dir(dir);
+        }
+        // `resources` ride in the spec (the SSH adapter forwards them);
+        // Local records but cannot enforce them (no cgroups on a laptop).
+        let _ = spec.resources.unwrap_or(JobResources { cpus: None, memory_mb: None });
+
+        let handle = JobHandle::new(Uuid::new_v4().to_string());
+        let slot: Arc<Mutex<Option<LocalExit>>> = Arc::new(Mutex::new(None));
+        match command.spawn() {
+            Ok(child) => {
+                let exit_slot = Arc::clone(&slot);
+                // The reaper: capture the output, record the exit. Monitor
+                // reads `None` as "still running" until this lands.
+                tokio::spawn(async move {
+                    let exit = match child.wait_with_output().await {
+                        Ok(out) => LocalExit {
+                            code: out.status.code(),
+                            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                            spawn_error: None,
+                        },
+                        Err(e) => LocalExit {
+                            code: None,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            spawn_error: Some(e.to_string()),
+                        },
+                    };
+                    *exit_slot.lock().expect("local job exit slot poisoned") = Some(exit);
+                });
+            }
+            // A spawn failure is the job's first (and terminal) state —
+            // submit still succeeds, the failure surfaces through monitor
+            // and lands as a reasoned `job.failed` (no silent ends).
+            Err(e) => {
+                *slot.lock().expect("local job exit slot poisoned") = Some(LocalExit {
+                    code: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    spawn_error: Some(e.to_string()),
+                });
+            }
+        }
+        local_jobs()
+            .lock()
+            .expect("local job table poisoned")
+            .insert(handle.id.clone(), slot);
+        Ok(handle)
+    }
+
+    fn monitor(&self, handle: &JobHandle) -> Result<TargetJobStatus, TargetError> {
+        let slot = lookup(handle)?;
+        let guard = slot.lock().expect("local job exit slot poisoned");
+        match guard.as_ref() {
+            None => Ok(TargetJobStatus::Running),
+            Some(exit) => Ok(observe(exit)),
+        }
+    }
+
+    fn fetch(&self, handle: &JobHandle) -> Result<JobResult, TargetError> {
+        let slot = lookup(handle)?;
+        let guard = slot.lock().expect("local job exit slot poisoned");
+        let exit = guard
+            .as_ref()
+            .ok_or_else(|| TargetError::NotTerminal(handle.id.clone()))?;
+        Ok(JobResult {
+            code: exit.code,
+            stdout: exit.stdout.clone(),
+            stderr: if exit.spawn_error.is_some() {
+                exit.spawn_error.clone().unwrap_or_default()
+            } else {
+                exit.stderr.clone()
+            },
+        })
+    }
+}
+
+fn lookup(handle: &JobHandle) -> Result<Arc<Mutex<Option<LocalExit>>>, TargetError> {
+    local_jobs()
+        .lock()
+        .expect("local job table poisoned")
+        .get(&handle.id)
+        .cloned()
+        .ok_or_else(|| TargetError::UnknownJob(handle.id.clone()))
+}
+
+/// Classify a recorded exit: 0 is finished; nonzero exit, signal (no
+/// code), and spawn errors are failures that always name their reason.
+fn observe(exit: &LocalExit) -> TargetJobStatus {
+    if let Some(err) = &exit.spawn_error {
+        return TargetJobStatus::Failed { reason: format!("spawn_error: {err}"), code: None };
+    }
+    match exit.code {
+        Some(0) => TargetJobStatus::Finished { code: 0 },
+        Some(code) => TargetJobStatus::Failed {
+            reason: format!("exit_code_{code}"),
+            code: Some(code),
+        },
+        None => TargetJobStatus::Failed { reason: "signal".into(), code: None },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::jobs::SHELL_METACHARS;
+    use std::collections::BTreeMap;
+
+    fn spec(cmd: &str, args: &[&str]) -> JobSpec {
+        JobSpec {
+            cmd: cmd.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: BTreeMap::new(),
+            resources: None,
+            workdir: None,
+        }
+    }
+
+    // ---- the registry ----
+
+    #[test]
+    fn the_registry_resolves_by_kind_with_a_typed_unknown() {
+        let registry = TargetRegistry::v1();
+        assert_eq!(registry.kinds(), vec!["local"]);
+        assert_eq!(registry.adapter("local").unwrap().kind(), "local");
+        let err = match registry.adapter("ssh") {
+            Err(e) => e,
+            Ok(_) => panic!("`ssh` must not resolve in the v1 registry"),
+        };
+        assert!(err.to_string().starts_with("unknown_kind:"), "unexpected: {err}");
+    }
+
+    // ---- Local: never freeform shell (AD-6) ----
+
+    #[tokio::test]
+    async fn the_storys_freeform_spec_never_spawns_anything() {
+        let local = Local;
+        // the exact freeform construction from the story — rejected at the
+        // adapter boundary, no handle, no process
+        let err = local.submit(&spec("ls | rm -rf .", &[])).unwrap_err();
+        assert!(err.to_string().starts_with("freeform_shell:"), "unexpected: {err}");
+        // and the full metachar set, at the constructor level too
+        for ch in SHELL_METACHARS {
+            let cmd = format!("echo a{ch}b");
+            assert!(
+                spec(&cmd, &[]).validate().is_err(),
+                "`{ch}` in cmd must fail validation"
+            );
+        }
+    }
+
+    // ---- Local: the monitored lifecycle ----
+
+    #[tokio::test]
+    async fn a_long_running_job_is_observed_running_then_terminal() {
+        let local = Local;
+        // a fake long-running process: sleep 1 (argv-direct, no shell)
+        let handle = local.submit(&spec("sleep", &["1"])).unwrap();
+        assert_eq!(local.monitor(&handle).unwrap(), TargetJobStatus::Running);
+        // fetch refuses while running — typed, never a partial read
+        let err = local.fetch(&handle).unwrap_err();
+        assert!(err.to_string().starts_with("job_not_terminal:"), "unexpected: {err}");
+        // wait past the child's lifetime, then the terminal observation
+        tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+        assert_eq!(local.monitor(&handle).unwrap(), TargetJobStatus::Finished { code: 0 });
+        let result = local.fetch(&handle).unwrap();
+        assert_eq!(result.code, Some(0));
+        assert!(result.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_job_captures_stdout_and_stderr() {
+        let local = Local;
+        // echo writes stdout; argv data with shell-looking characters is
+        // still data — never interpreted
+        let handle = local
+            .submit(&spec("echo", &["pipeline | data ; $(not-a-command)"]))
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(local.monitor(&handle).unwrap(), TargetJobStatus::Finished { code: 0 });
+        let result = local.fetch(&handle).unwrap();
+        assert_eq!(result.stdout.trim(), "pipeline | data ; $(not-a-command)");
+    }
+
+    #[tokio::test]
+    async fn a_nonzero_exit_is_a_reasoned_failure() {
+        let local = Local;
+        let handle = local.submit(&spec("sh", &["-c", "echo boom >&2; exit 3"])).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            local.monitor(&handle).unwrap(),
+            TargetJobStatus::Failed { reason: "exit_code_3".into(), code: Some(3) }
+        );
+        let result = local.fetch(&handle).unwrap();
+        assert_eq!(result.code, Some(3));
+        assert_eq!(result.stderr.trim(), "boom");
+    }
+
+    #[tokio::test]
+    async fn a_spawn_failure_is_a_handled_job_state_not_a_submit_error() {
+        let local = Local;
+        let handle = local.submit(&spec("definitely-not-a-binary-xyz", &[])).unwrap();
+        let status = local.monitor(&handle).unwrap();
+        match status {
+            TargetJobStatus::Failed { reason, code } => {
+                assert!(reason.starts_with("spawn_error:"), "unexpected: {reason}");
+                assert_eq!(code, None);
+            }
+            other => panic!("a spawn failure must be an observed failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_handles_are_a_typed_error() {
+        let local = Local;
+        let err = local.monitor(&JobHandle::new("never-submitted")).unwrap_err();
+        assert!(err.to_string().starts_with("unknown_job:"), "unexpected: {err}");
+        let err = local.fetch(&JobHandle::new("never-submitted")).unwrap_err();
+        assert!(err.to_string().starts_with("unknown_job:"), "unexpected: {err}");
+    }
+
+    // ---- Local: env + workdir flow into the process ----
+
+    #[tokio::test]
+    async fn env_and_workdir_apply_to_the_spawned_process() {
+        let local = Local;
+        let mut s = spec("pwd", &[]);
+        s.env.insert("RC_TEST_VAR".into(), "applied".into());
+        s.workdir = Some("/tmp".into());
+        let handle = local.submit(&s).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let result = local.fetch(&handle).unwrap();
+        assert_eq!(result.code, Some(0));
+        assert_eq!(result.stdout.trim(), "/private/tmp", "workdir applied (macOS /tmp)");
+    }
+}

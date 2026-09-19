@@ -145,6 +145,11 @@ pub struct TargetSpendRecordedPayload {
     pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mission_id: Option<Uuid>,
+    /// The compute job the usage is attributed to (Story 3.2): the
+    /// `job.submitted` event id — present on job-driven usage, so the
+    /// mission card's job rows and the per-target ledger agree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<Uuid>,
 }
 
 /// The `autonomy.configured` payload: one dial setting at one scope. The
@@ -975,6 +980,7 @@ mod tests {
                 cost_cents: 82,
                 run_id: Some("run-a".into()),
                 mission_id: Some(mission),
+                job_id: None,
             })
             .unwrap())
             .unwrap();

@@ -53,6 +53,8 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             "/api/missions/{mission_id}/proposals",
             get(mission_proposals),
         )
+        .route("/api/missions/{mission_id}/jobs", get(mission_jobs))
+        .route("/api/targets", get(compute_targets))
         .with_state(ServerState { db })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
@@ -180,6 +182,35 @@ async fn mission_proposals(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let c = state.db.0.lock().await;
     list_proposals_inner(&c, Some(mission_id))
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The compute jobs of one mission (Story 3.2, FR-11.4 — read-only per
+/// AD-14: submitting and polling stay on the Tauri command path). The
+/// served browser replays the last observed lifecycle state.
+async fn mission_jobs(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<Vec<crate::domain::jobs::Job>>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    crate::domain::jobs::JobsProjection::fold_for(&events, mission_id)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The compute target list (Story 3.2, FR-11.1 — read-only per AD-14):
+/// declared targets plus the built-in `local`.
+async fn compute_targets(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<crate::jobs_commands::ComputeTargetView>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    crate::jobs_commands::list_targets_inner(&events)
         .map(Json)
         .map_err(|_| internal())
 }

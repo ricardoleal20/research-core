@@ -5,6 +5,7 @@ mod db;
 mod evidence_commands;
 mod export_commands;
 mod hypotheses_commands;
+mod jobs_commands;
 mod mcp;
 mod missions_commands;
 mod nightshift_commands;
@@ -172,6 +173,11 @@ pub fn run() {
             missions_commands::get_mission_runs,
             missions_commands::get_run_receipt,
             missions_commands::run_agent_step,
+            jobs_commands::declare_compute_target,
+            jobs_commands::list_compute_targets,
+            jobs_commands::submit_job,
+            jobs_commands::poll_jobs,
+            jobs_commands::fetch_job,
             nightshift_commands::get_morning_digest,
             nightshift_commands::run_night_shift_now,
             nightshift_commands::set_mission_schedule,
