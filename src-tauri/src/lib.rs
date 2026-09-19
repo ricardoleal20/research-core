@@ -5,8 +5,10 @@ mod evidence_commands;
 mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
+mod nightshift_commands;
 mod onboarding_commands;
 mod proposals_commands;
+mod nightshift;
 mod runtime;
 mod server;
 
@@ -45,7 +47,11 @@ pub fn run() {
             app.manage(McpRegistry::new());
             // In-process server shell (AD-7): the same app in the browser —
             // same core instance, one writer (AD-14), read-only API.
-            server::spawn(db);
+            server::spawn(db.clone());
+            // Night Shift scheduler (FR-4.1): one tick per minute — due
+            // missions run their nightly literature scan, dead runs are
+            // reaped honestly, and terminators evaluate (AD-12).
+            nightshift::spawn(db);
 
             // native macOS menu
             #[cfg(target_os = "macos")]
@@ -161,6 +167,9 @@ pub fn run() {
             missions_commands::list_missions,
             missions_commands::get_mission_runs,
             missions_commands::run_agent_step,
+            nightshift_commands::get_morning_digest,
+            nightshift_commands::run_night_shift_now,
+            nightshift_commands::set_mission_schedule,
             hypotheses_commands::create_hypothesis,
             hypotheses_commands::list_hypotheses,
             hypotheses_commands::transition_hypothesis,

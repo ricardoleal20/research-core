@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 /// Resolves a role's adapter through the provider layer; tests inject a fake
 /// remote so real-call paths (spend, receipts) run without network.
-type RoleResolver =
+pub(crate) type RoleResolver =
     fn(&Db, &rusqlite::Connection, &RoleConfig) -> Result<ProviderLayer, ProviderError>;
 
 /// The seeded agent runtime (Story 2.1): runs ONE agent step for a role of a
@@ -76,6 +76,13 @@ pub enum RuntimeError {
 impl AgentRuntime {
     pub fn new(db: Db) -> Self {
         Self { db, resolver: ProviderLayer::for_role }
+    }
+
+    /// Test seam (test builds only — no dead code in release): a runtime whose adapters resolve through the injected
+    /// resolver (the Night Shift scheduler's tests share this seam).
+    #[cfg(test)]
+    pub(crate) fn with_resolver(db: Db, resolver: RoleResolver) -> Self {
+        Self { db, resolver }
     }
 
     /// Run ONE agent step for a role: resolve the role's (provider, model)
@@ -134,6 +141,14 @@ impl AgentRuntime {
                     .with_role(&config.name),
             )
             .await?;
+        // AD-12 (Story 2.3): the step's events (its role-tagged spend may
+        // have reached the ceiling) are mission-scoped — evaluate the
+        // terminators right after; a decided mission never rests active.
+        {
+            let conn = self.db.0.lock().await;
+            let store = EventStore::new(&conn);
+            crate::domain::nightshift::evaluate_terminals(&store)?;
+        }
         Ok(AgentStepResult {
             mission_id,
             role: config.name.clone(),
@@ -185,13 +200,17 @@ impl AgentRuntime {
                 mission_id,
             });
         }
-        Ok(proposals::propose_transition(
+        let proposal = proposals::propose_transition(
             &store,
             run_id,
             hypothesis_id,
             to,
             basis_note,
-        )?)
+        )?;
+        // AD-12 (Story 2.3): a proposal is a mission-scoped event — evaluate
+        // the terminators right after it lands.
+        crate::domain::nightshift::evaluate_terminals(&store)?;
+        Ok(proposal)
     }
 }
 

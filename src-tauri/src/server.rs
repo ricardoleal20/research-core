@@ -11,8 +11,10 @@ use crate::domain::evidence::Claim;
 use crate::domain::hypotheses::{Hypothesis, HypothesesProjection};
 use crate::domain::missions::{Mission, MissionRun, MissionsProjection};
 use crate::domain::proposals::Proposal;
+use crate::domain::digest::MorningDigest;
 use crate::evidence_commands::list_evidence_inner;
 use crate::eventstore::EventStore;
+use crate::nightshift::morning_digest;
 use crate::proposals_commands::list_proposals_inner;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -41,6 +43,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             "/api/hypotheses/{hypothesis_id}/evidence",
             get(hypothesis_evidence),
         )
+        .route("/api/digest", get(digest))
         .route("/api/proposals", get(all_proposals))
         .route(
             "/api/missions/{mission_id}/proposals",
@@ -99,6 +102,14 @@ async fn hypothesis_evidence(
     list_evidence_inner(&c, hypothesis_id)
         .map(Json)
         .map_err(|_| internal())
+}
+
+/// The morning digest (Story 2.3, FR-4.4 — read-only per AD-14; the manual
+/// Night Shift trigger and schedule changes stay on the Tauri command path).
+/// Delivered even when runs failed (FR-4.3) — the projection never depends
+/// on run success.
+async fn digest(State(state): State<ServerState>) -> Result<Json<MorningDigest>, StatusCode> {
+    morning_digest(&state.db).await.map(Json).map_err(|_| internal())
 }
 
 /// The quarantine read model, all missions (Story 2.2, read-only per AD-14
@@ -452,6 +463,63 @@ mod tests {
         // single writer (AD-14): merging stays on the Tauri command path
         let res = app(db)
             .oneshot(Request::post("/api/proposals").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn get_api_digest_renders_the_night_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold up?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A blind rater agrees.".into(),
+                        autonomy: Autonomy::Watch,
+                        spend_ceiling_cents: 500,
+                        roles: vec![],
+                        schedule: "daily-03:00".into(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            // a finished night run — the digest renders its row
+            store
+                .append(
+                    NewEvent::run_started("ns-1", mission.id, "daily-03:00", "literature-scan")
+                        .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(NewEvent::run_finished("ns-1", mission.id, "1 scan done", 0).unwrap())
+                .unwrap();
+        }
+        let res = app(db)
+            .oneshot(Request::get("/api/digest").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let digest: crate::domain::digest::MorningDigest = body_json(res.into_body()).await;
+        assert_eq!(digest.outcome, crate::domain::digest::DigestOutcome::AllFinished);
+        assert_eq!(digest.rows.len(), 1);
+        assert_eq!(digest.rows[0].runs, 1);
+        // an empty core renders an honest no-runs digest, not an error
+        let res = app(test_db())
+            .oneshot(Request::get("/api/digest").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let digest: crate::domain::digest::MorningDigest = body_json(res.into_body()).await;
+        assert_eq!(digest.outcome, crate::domain::digest::DigestOutcome::NoRuns);
+        // single writer (AD-14): triggering the night shift is a mutation —
+        // it stays on the Tauri command path
+        let res = app(test_db())
+            .oneshot(Request::post("/api/digest").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
