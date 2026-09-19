@@ -1,0 +1,694 @@
+// Evidence pin domain (FR-3, Story 1.7): an AI-generated claim is a
+// first-class log object (`claim.registered`, cause-linked to its
+// hypothesis) that can carry an evidence pin. A citation pin
+// (`evidence.pinned`) references a library ref, quotes the specific
+// excerpt it rests on, and carries a sha-256 digest of that excerpt
+// computed at construction (AD-5) — callers never supply a digest, so a
+// pin can never claim to anchor text it does not quote. Confidence is
+// agent-assessed and attributed: the pin stores the assessing model
+// (FR-3.6) — a pin is never "verified", it is pinned with a stated
+// confidence by a named model. Claims without a pin read as UNPINNED so
+// the UI can flag them (FR-3.4).
+//
+// Claim model choice: claims are registered as their own events rather
+// than inferred from assistant message fragments — inference would need a
+// message-parsing projection the board does not have, while a
+// `claim.registered` event makes every claim (pinned or not) a durable,
+// flaggable object in the log with a stable id pins can reference.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use std::collections::HashMap;
+use uuid::Uuid;
+
+use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
+
+pub const CLAIM_REGISTERED: &str = "claim.registered";
+pub const EVIDENCE_PINNED: &str = "evidence.pinned";
+
+/// The pin vocabulary (AD-5): `citation` pins quote a library ref; the
+/// `numerical` kind (data/results figures) arrives with its own story —
+/// the enum is closed, unknown kinds fail the fold loudly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PinKind {
+    Citation,
+    Numerical,
+}
+
+impl PinKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "citation" => Some(Self::Citation),
+            "numerical" => Some(Self::Numerical),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Citation => "citation",
+            Self::Numerical => "numerical",
+        }
+    }
+}
+
+/// The sha-256 hex digest of a pinned excerpt (AD-5). The single digest
+/// implementation: the typed constructor uses it to compute, the fold uses
+/// it to verify — a tampered excerpt (payload digest ≠ its own excerpt)
+/// fails the fold loudly.
+pub fn excerpt_digest(excerpt: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(excerpt.as_bytes());
+    let bytes = hasher.finalize();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    hex
+}
+
+/// The `claim.registered` payload — an AI-generated claim attached to a
+/// hypothesis. `source_message_id` is optional provenance (the assistant
+/// message the fragment came from, when known).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClaimRegisteredPayload {
+    pub hypothesis_id: Uuid,
+    pub text: String,
+    pub source_message_id: Option<String>,
+}
+
+/// The `evidence.pinned` payload (AD-5 shape): the pinned claim, the pin
+/// kind, the library ref it cites, the excerpt span, its sha-256 digest,
+/// and the agent-assessed confidence attributed to the assessing model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvidencePinnedPayload {
+    pub claim_id: Uuid,
+    pub hypothesis_id: Uuid,
+    pub kind: PinKind,
+    /// The library ref this pin cites — must exist in the refs table
+    /// (enforced by the shell; the domain validates non-emptiness).
+    pub ref_id: String,
+    /// The specific passage the claim rests on — non-empty, quoted verbatim.
+    pub excerpt: String,
+    /// sha-256 of the excerpt — computed at construction, never trusted
+    /// from callers (AD-5).
+    pub digest: String,
+    /// Agent-assessed confidence in [0.0, 1.0] (FR-3.6).
+    pub confidence: f64,
+    /// The model that assessed the confidence — attribution, never "verified".
+    pub assessing_model: String,
+}
+
+impl NewEvent {
+    /// Typed constructor (AD-15): the one way a `claim.registered` event
+    /// comes into being. The event is cause-linked to the hypothesis
+    /// (AD-2). Actor is the user — the shell registers the claim on the
+    /// board; agent-originated claims arrive through their own path (AD-3).
+    pub fn claim_registered(
+        text: impl Into<String>,
+        hypothesis_id: Uuid,
+        source_message_id: Option<String>,
+    ) -> Result<Self, EventError> {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Err(EventError::Invalid(
+                "claim.text must not be empty — a claim says something".into(),
+            ));
+        }
+        let payload = ClaimRegisteredPayload {
+            hypothesis_id,
+            text,
+            source_message_id,
+        };
+        Ok(Self::new(
+            CLAIM_REGISTERED,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )?
+        .with_causes(vec![hypothesis_id]))
+    }
+
+    /// Typed constructor (AD-15, AD-5): the one way an `evidence.pinned`
+    /// event comes into being. The digest is COMPUTED here from the
+    /// excerpt — it is not a parameter, so no caller can pin an excerpt
+    /// with a digest of different text. Validates: ref_id non-empty
+    /// (existence in the library is the shell's check), excerpt non-empty,
+    /// confidence in [0, 1], assessing_model non-empty. The event is
+    /// cause-linked to the claim and the hypothesis (AD-2).
+    pub fn evidence_pinned(
+        claim_id: Uuid,
+        hypothesis_id: Uuid,
+        ref_id: impl AsRef<str>,
+        excerpt: impl AsRef<str>,
+        confidence: f64,
+        assessing_model: impl AsRef<str>,
+    ) -> Result<Self, EventError> {
+        let ref_id = ref_id.as_ref().trim();
+        if ref_id.is_empty() {
+            return Err(EventError::Invalid(
+                "evidence.ref_id must not be empty — a citation pin names its library ref".into(),
+            ));
+        }
+        let excerpt = excerpt.as_ref();
+        if excerpt.trim().is_empty() {
+            return Err(EventError::Invalid(
+                "evidence.excerpt must not be empty — a pin quotes the passage it rests on".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&confidence) || confidence.is_nan() {
+            return Err(EventError::Invalid(format!(
+                "invalid confidence `{confidence}` — agent-assessed confidence is a number in \
+                 [0.0, 1.0] (FR-3.6)"
+            )));
+        }
+        let assessing_model = assessing_model.as_ref().trim();
+        if assessing_model.is_empty() {
+            return Err(EventError::Invalid(
+                "evidence.assessing_model must not be empty — confidence is attributed to the \
+                 assessing model, never anonymous (FR-3.6)"
+                .into(),
+            ));
+        }
+        let payload = EvidencePinnedPayload {
+            claim_id,
+            hypothesis_id,
+            kind: PinKind::Citation,
+            ref_id: ref_id.to_string(),
+            excerpt: excerpt.to_string(),
+            digest: excerpt_digest(excerpt),
+            confidence,
+            assessing_model: assessing_model.to_string(),
+        };
+        Ok(Self::new(
+            EVIDENCE_PINNED,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )?
+        .with_causes(vec![claim_id, hypothesis_id]))
+    }
+}
+
+/// One evidence pin as read from the log (AD-5 shape, AD-8 read model).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidencePin {
+    /// The `seq` of the pin event (latest per claim wins — re-pinning appends).
+    pub seq: i64,
+    pub ts: DateTime<Utc>,
+    pub claim_id: Uuid,
+    pub hypothesis_id: Uuid,
+    pub kind: PinKind,
+    pub ref_id: String,
+    pub excerpt: String,
+    pub digest: String,
+    pub confidence: f64,
+    pub assessing_model: String,
+    /// Author-year label enriched by the shell from the refs table
+    /// (e.g. "Vaswani et al. 2017") — the fold leaves it None; refs live
+    /// in SQL, not in the log.
+    pub ref_label: Option<String>,
+}
+
+/// A claim as read from the log — the read model the board renders.
+/// `pinned` is the FR-3.4 flag: claims without an `evidence.pinned` event
+/// read as unpinned so the UI can flag them; the flag flips the moment a
+/// pin event lands in the log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Claim {
+    /// The `claim.registered` event's id — the claim's identity.
+    pub id: Uuid,
+    pub seq: i64,
+    pub ts: DateTime<Utc>,
+    pub hypothesis_id: Uuid,
+    pub text: String,
+    pub source_message_id: Option<String>,
+    /// Derived (FR-3.4): true iff an `evidence.pinned` event references
+    /// this claim — the unpinned amber chip renders when false.
+    pub pinned: bool,
+    /// Derived: the latest pin on this claim, if any.
+    pub pin: Option<EvidencePin>,
+}
+
+/// Pure fold of the log into claim read models (AD-1). Events fold in
+/// `seq` order; corrupt payloads fail loudly. Pin events verify their own
+/// digest against their own excerpt (AD-5): a tampered excerpt — payload
+/// digest ≠ sha-256(payload excerpt) — is corrupt and fails the fold, and
+/// so is a pin missing its attribution or carrying an out-of-range
+/// confidence (the constructor's guarantees, re-checked on read).
+pub struct EvidenceProjection;
+
+impl EvidenceProjection {
+    pub fn fold(events: &[StoredEvent]) -> Result<Vec<Claim>, EventError> {
+        let mut claims: Vec<Claim> = Vec::new();
+        let mut index: HashMap<Uuid, usize> = HashMap::new();
+        for event in events {
+            match event.kind.as_str() {
+                CLAIM_REGISTERED => {
+                    let payload: ClaimRegisteredPayload = serde_json::from_value(
+                        event.payload.clone(),
+                    )
+                    .map_err(|e| {
+                        EventError::Invalid(format!(
+                            "corrupt {CLAIM_REGISTERED} payload at seq {}: {e}",
+                            event.seq
+                        ))
+                    })?;
+                    index.insert(event.id, claims.len());
+                    claims.push(Claim {
+                        id: event.id,
+                        seq: event.seq,
+                        ts: event.ts,
+                        hypothesis_id: payload.hypothesis_id,
+                        text: payload.text,
+                        source_message_id: payload.source_message_id,
+                        pinned: false,
+                        pin: None,
+                    });
+                }
+                EVIDENCE_PINNED => {
+                    let payload: EvidencePinnedPayload = serde_json::from_value(
+                        event.payload.clone(),
+                    )
+                    .map_err(|e| {
+                        EventError::Invalid(format!(
+                            "corrupt {EVIDENCE_PINNED} payload at seq {}: {e}",
+                            event.seq
+                        ))
+                    })?;
+                    // AD-5 on read: the digest must be the sha-256 of the
+                    // excerpt the pin itself quotes — a tampered excerpt
+                    // (or a pasted-in digest of other text) is corrupt.
+                    if payload.digest != excerpt_digest(&payload.excerpt) {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {EVIDENCE_PINNED} event at seq {}: digest does not match \
+                             its own excerpt — the pin was tampered with",
+                            event.seq
+                        )));
+                    }
+                    // FR-3.6 on read: attribution and bounds are structural
+                    // — every pin names its assessing model, and confidence
+                    // stays in [0, 1].
+                    if payload.assessing_model.trim().is_empty() {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {EVIDENCE_PINNED} event at seq {}: assessing_model is empty \
+                             — confidence is never anonymous (FR-3.6)",
+                            event.seq
+                        )));
+                    }
+                    if !(0.0..=1.0).contains(&payload.confidence) || payload.confidence.is_nan() {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {EVIDENCE_PINNED} event at seq {}: confidence {} is outside \
+                             [0.0, 1.0]",
+                            event.seq, payload.confidence
+                        )));
+                    }
+                    let Some(&i) = index.get(&payload.claim_id) else {
+                        continue; // references no known claim — skipped
+                    };
+                    let claim = &mut claims[i];
+                    claim.pinned = true;
+                    claim.pin = Some(EvidencePin {
+                        seq: event.seq,
+                        ts: event.ts,
+                        claim_id: payload.claim_id,
+                        hypothesis_id: payload.hypothesis_id,
+                        kind: payload.kind,
+                        ref_id: payload.ref_id,
+                        excerpt: payload.excerpt,
+                        digest: payload.digest,
+                        confidence: payload.confidence,
+                        assessing_model: payload.assessing_model,
+                        ref_label: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(claims)
+    }
+
+    /// The claims of one hypothesis, in registration `seq` order.
+    pub fn fold_for(
+        events: &[StoredEvent],
+        hypothesis_id: Uuid,
+    ) -> Result<Vec<Claim>, EventError> {
+        Ok(Self::fold(events)?
+            .into_iter()
+            .filter(|c| c.hypothesis_id == hypothesis_id)
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::hypotheses::HypothesesProjection;
+    use crate::eventstore::EventStore;
+    use rusqlite::Connection;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn mem_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        EventStore::init(&conn).unwrap();
+        conn
+    }
+
+    /// A store holding one mission + one hypothesis; returns the
+    /// hypothesis's creation event id.
+    fn seed_hypothesis(store: &EventStore) -> Uuid {
+        let mission = store
+            .append(
+                NewEvent::mission_created(crate::domain::missions::MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: crate::domain::missions::Autonomy::Suggest,
+                    spend_ceiling_cents: 500,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(NewEvent::hypothesis_created("X holds under stiff systems.", mission.id).unwrap())
+            .unwrap()
+            .id
+    }
+
+    // ---------- constructors ----------
+
+    #[test]
+    fn claim_constructor_rejects_a_blank_text_and_links_the_hypothesis() {
+        let h = Uuid::new_v4();
+        let err = NewEvent::claim_registered("   ", h, None)
+            .expect_err("a blank claim must fail construction");
+        assert!(err.to_string().contains("claim.text"), "unexpected: {err}");
+
+        let ev = NewEvent::claim_registered("Self-attention replaces recurrence.", h, None).unwrap();
+        assert_eq!(ev.kind, "claim.registered");
+        assert_eq!(ev.actor, Actor::User);
+        assert_eq!(ev.causes, vec![h]);
+        assert_eq!(
+            ev.payload,
+            json!({
+                "hypothesis_id": h.to_string(),
+                "text": "Self-attention replaces recurrence.",
+                "source_message_id": null,
+            })
+        );
+    }
+
+    #[test]
+    fn claim_constructor_keeps_the_optional_message_provenance() {
+        let h = Uuid::new_v4();
+        let ev = NewEvent::claim_registered(
+            "Claim.",
+            h,
+            Some("msg-42".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            ev.payload,
+            json!({
+                "hypothesis_id": h.to_string(),
+                "text": "Claim.",
+                "source_message_id": "msg-42",
+            })
+        );
+    }
+
+    #[test]
+    fn pin_constructor_computes_the_digest_and_never_trusts_one() {
+        let (claim, h) = (Uuid::new_v4(), Uuid::new_v4());
+        let excerpt = "Attention mechanisms, as introduced by Vaswani et al., dispense with recurrence entirely.";
+        let ev =
+            NewEvent::evidence_pinned(claim, h, "ref-1", excerpt, 0.82, "GLM-5.3").unwrap();
+        assert_eq!(ev.kind, "evidence.pinned");
+        assert_eq!(ev.actor, Actor::User);
+        assert_eq!(ev.causes, vec![claim, h]);
+        let payload: EvidencePinnedPayload = serde_json::from_value(ev.payload.clone()).unwrap();
+        // The digest is the sha-256 of the excerpt — computed at
+        // construction, and there is no parameter through which a caller
+        // could have supplied it.
+        assert_eq!(payload.digest, excerpt_digest(excerpt));
+        assert_eq!(payload.digest.len(), 64);
+        assert_eq!(payload.kind, PinKind::Citation);
+        assert_eq!(payload.confidence, 0.82);
+        assert_eq!(payload.assessing_model, "GLM-5.3");
+        // A different excerpt yields a different digest — the digest binds
+        // the pin to exactly the text it quotes.
+        let other =
+            NewEvent::evidence_pinned(claim, h, "ref-1", "A different passage.", 0.82, "GLM-5.3")
+                .unwrap();
+        let other_payload: EvidencePinnedPayload =
+            serde_json::from_value(other.payload.clone()).unwrap();
+        assert_ne!(other_payload.digest, payload.digest);
+    }
+
+    #[test]
+    fn pin_constructor_rejects_invalid_ref_excerpt_confidence_and_model() {
+        let (claim, h) = (Uuid::new_v4(), Uuid::new_v4());
+        // empty ref_id
+        let err = NewEvent::evidence_pinned(claim, h, "  ", "excerpt", 0.5, "GLM-5.3")
+            .expect_err("an empty ref_id must fail construction");
+        assert!(err.to_string().contains("ref_id"), "unexpected: {err}");
+        // empty excerpt
+        let err = NewEvent::evidence_pinned(claim, h, "ref-1", "   ", 0.5, "GLM-5.3")
+            .expect_err("an empty excerpt must fail construction");
+        assert!(err.to_string().contains("excerpt"), "unexpected: {err}");
+        // confidence bounds: below 0, above 1, and NaN are all rejected
+        for bad in [-0.01, 1.01, f64::NAN] {
+            let err = NewEvent::evidence_pinned(claim, h, "ref-1", "excerpt", bad, "GLM-5.3")
+                .expect_err("out-of-range confidence must fail construction");
+            assert!(err.to_string().contains("confidence"), "unexpected: {err}");
+        }
+        // the bounds themselves are inclusive — 0.0 and 1.0 construct fine
+        for ok in [0.0, 1.0] {
+            NewEvent::evidence_pinned(claim, h, "ref-1", "excerpt", ok, "GLM-5.3")
+                .expect("inclusive bounds must construct");
+        }
+        // empty assessing model — confidence is never anonymous
+        let err = NewEvent::evidence_pinned(claim, h, "ref-1", "excerpt", 0.5, "  ")
+            .expect_err("an empty assessing model must fail construction");
+        assert!(err.to_string().contains("assessing_model"), "unexpected: {err}");
+    }
+
+    // ---------- fold ----------
+
+    #[test]
+    fn an_unpinned_claim_folds_as_unpinned_then_flips_when_pinned() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Self-attention replaces recurrence.", h, None).unwrap())
+            .unwrap();
+
+        // FR-3.4: with no pin event, the claim reads as UNPINNED.
+        let [unpinned] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(!unpinned.pinned, "a claim without a pin reads as unpinned");
+        assert_eq!(unpinned.pin, None);
+        assert_eq!(unpinned.hypothesis_id, h);
+
+        // Pin it; the same fold now reads pinned=true with the full AD-5
+        // pin shape — the exact flip the UI renders.
+        store
+            .append(
+                NewEvent::evidence_pinned(
+                    claim.id,
+                    h,
+                    "ref-1",
+                    "Attention dispenses with recurrence entirely.",
+                    0.82,
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [pinned] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(pinned.pinned);
+        let pin = pinned.pin.as_ref().expect("the pin is present");
+        assert_eq!(pin.claim_id, claim.id);
+        assert_eq!(pin.kind, PinKind::Citation);
+        assert_eq!(pin.ref_id, "ref-1");
+        assert_eq!(pin.digest, excerpt_digest("Attention dispenses with recurrence entirely."));
+        assert_eq!(pin.confidence, 0.82);
+        // FR-3.6: attribution is present on the pin — the assessing model,
+        // never a "verified" label.
+        assert_eq!(pin.assessing_model, "GLM-5.3");
+        assert_eq!(pin.ref_label, None, "the fold leaves enrichment to the shell");
+
+        // Hypothesis scoping: fold_for returns only that hypothesis's claims.
+        assert_eq!(
+            EvidenceProjection::fold_for(&store.events_all().unwrap(), h).unwrap().len(),
+            1
+        );
+        assert!(EvidenceProjection::fold_for(&store.events_all().unwrap(), Uuid::new_v4())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_tampered_excerpt_fails_the_fold_loudly() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        // A hand-built event whose digest matches DIFFERENT text than the
+        // excerpt it quotes — the AD-5 tamper case. The constructor cannot
+        // produce this; only a raw append can, and the fold catches it.
+        let digest_of_other_text = excerpt_digest("entirely different passage");
+        let payload = json!({
+            "claim_id": claim.id.to_string(),
+            "hypothesis_id": h.to_string(),
+            "kind": "citation",
+            "ref_id": "ref-1",
+            "excerpt": "The quoted excerpt.",
+            "digest": digest_of_other_text,
+            "confidence": 0.9,
+            "assessing_model": "GLM-5.3",
+        });
+        store
+            .append(
+                NewEvent::new(EVIDENCE_PINNED, Actor::User, payload)
+                    .unwrap()
+                    .with_causes(vec![claim.id, h]),
+            )
+            .unwrap();
+        let err = EvidenceProjection::fold(&store.events_all().unwrap())
+            .expect_err("a digest that does not match its own excerpt must fail the fold");
+        assert!(err.to_string().contains("tampered"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn a_pin_without_attribution_or_with_bad_confidence_fails_the_fold() {
+        for (confidence, model) in [(0.5, "  "), (1.5, "GLM-5.3")] {
+            let conn = mem_conn();
+            let store = EventStore::new(&conn);
+            let h = seed_hypothesis(&store);
+            let claim = store
+                .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+                .unwrap();
+            let payload = json!({
+                "claim_id": claim.id.to_string(),
+                "hypothesis_id": h.to_string(),
+                "kind": "citation",
+                "ref_id": "ref-1",
+                "excerpt": "The quoted excerpt.",
+                "digest": excerpt_digest("The quoted excerpt."),
+                "confidence": confidence,
+                "assessing_model": model,
+            });
+            store
+                .append(
+                    NewEvent::new(EVIDENCE_PINNED, Actor::User, payload)
+                        .unwrap()
+                        .with_causes(vec![claim.id, h]),
+                )
+                .unwrap();
+            let err = EvidenceProjection::fold(&store.events_all().unwrap())
+                .expect_err("a pin missing its guarantees must fail the fold");
+            assert!(
+                err.to_string().contains("assessing_model")
+                    || err.to_string().contains("confidence"),
+                "unexpected: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pin_referencing_an_unknown_claim_is_skipped_not_fatal() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        store
+            .append(
+                NewEvent::evidence_pinned(
+                    Uuid::new_v4(), // no such claim
+                    h,
+                    "ref-1",
+                    "Excerpt.",
+                    0.5,
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let claims = EvidenceProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert!(!claims[0].pinned, "a pin to a ghost claim pins nothing");
+    }
+
+    /// Re-pinning a claim appends: the latest `evidence.pinned` event for
+    /// the claim wins — editing a pin appends, never mutates.
+    #[test]
+    fn repinning_appends_and_the_latest_pin_wins() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        store
+            .append(NewEvent::evidence_pinned(claim.id, h, "ref-1", "First excerpt.", 0.5, "GLM-5.3").unwrap())
+            .unwrap();
+        let second = store
+            .append(NewEvent::evidence_pinned(claim.id, h, "ref-2", "Second excerpt.", 0.9, "GLM-5.3").unwrap())
+            .unwrap();
+        let [claim_read] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let pin = claim_read.pin.as_ref().unwrap();
+        assert_eq!(pin.seq, second.seq);
+        assert_eq!(pin.ref_id, "ref-2");
+        assert_eq!(pin.digest, excerpt_digest("Second excerpt."));
+    }
+
+    /// The evidence fold coexists with the hypothesis fold over one log —
+    /// pin events never disturb the board, and hypothesis events never
+    /// disturb the claims.
+    #[test]
+    fn the_evidence_and_hypothesis_folds_coexist_over_one_log() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        store
+            .append(NewEvent::evidence_pinned(claim.id, h, "ref-1", "Excerpt.", 0.82, "GLM-5.3").unwrap())
+            .unwrap();
+        let hyps = HypothesesProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(hyps.len(), 1);
+        assert_eq!(hyps[0].relations, vec![]);
+        let claims = EvidenceProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert!(claims[0].pinned);
+    }
+
+    #[test]
+    fn an_empty_log_folds_to_no_claims() {
+        let conn = mem_conn();
+        assert!(EvidenceProjection::fold(&EventStore::new(&conn).events_all().unwrap())
+            .unwrap()
+            .is_empty());
+    }
+}

@@ -1,6 +1,7 @@
 mod agent;
 mod commands;
 mod db;
+mod evidence_commands;
 mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
@@ -160,6 +161,9 @@ pub fn run() {
             hypotheses_commands::list_hypotheses,
             hypotheses_commands::transition_hypothesis,
             hypotheses_commands::add_relation,
+            evidence_commands::register_claim,
+            evidence_commands::pin_claim_to_citation,
+            evidence_commands::list_evidence,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

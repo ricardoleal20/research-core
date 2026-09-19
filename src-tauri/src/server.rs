@@ -7,8 +7,10 @@
 // are v0.2.0.
 
 use crate::db::Db;
+use crate::domain::evidence::Claim;
 use crate::domain::hypotheses::{Hypothesis, HypothesesProjection};
 use crate::domain::missions::{Mission, MissionRun, MissionsProjection};
+use crate::evidence_commands::list_evidence_inner;
 use crate::eventstore::EventStore;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -33,6 +35,10 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/missions", get(list_missions))
         .route("/api/missions/{mission_id}/runs", get(mission_runs))
         .route("/api/missions/{mission_id}/hypotheses", get(mission_hypotheses))
+        .route(
+            "/api/hypotheses/{hypothesis_id}/evidence",
+            get(hypothesis_evidence),
+        )
         .with_state(ServerState { db })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
@@ -71,6 +77,21 @@ async fn mission_hypotheses(
     let c = state.db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
     HypothesesProjection::fold_for(&events, mission_id).map_err(|_| internal()).map(Json)
+}
+
+/// The evidence pins (claims + pin state) of one hypothesis (Story 1.7,
+/// read-only per AD-14 — pinning stays on the Tauri command path).
+async fn hypothesis_evidence(
+    State(state): State<ServerState>,
+    Path(hypothesis_id): Path<String>,
+) -> Result<Json<Vec<Claim>>, StatusCode> {
+    let hypothesis_id: Uuid = hypothesis_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    list_evidence_inner(&c, hypothesis_id)
+        .map(Json)
+        .map_err(|_| internal())
 }
 
 /// Resolve the frontend dist dir: `RC_DIST_DIR` override, else the compile-time
@@ -265,8 +286,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_server_is_read_only_no_mutation_routes() {
-        // Single writer (AD-14): mutations exist only on the Tauri command
+    async fn get_api_hypothesis_evidence_lists_claims_with_pin_state() {
+        let db = test_db();
+        let hypothesis_id = {
+            let c = db.0.lock().await;
+            // A minimal refs table: the read path enriches pin labels from it.
+            c.execute_batch(
+                "CREATE TABLE refs (id TEXT PRIMARY KEY, title TEXT, authors TEXT, year INTEGER);",
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO refs(id,title,authors,year) VALUES('ref-1','Attention Is All You Need','Vaswani et al.',2017)",
+                [],
+            )
+            .unwrap();
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Watch,
+                    spend_ceiling_cents: 500,
+                })
+                .unwrap())
+                .unwrap();
+            let hyp = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            let claim = store
+                .append(NewEvent::claim_registered("A claim about X.", hyp.id, None).unwrap())
+                .unwrap();
+            store
+                .append(
+                    NewEvent::evidence_pinned(
+                        claim.id,
+                        hyp.id,
+                        "ref-1",
+                        "The quoted excerpt.",
+                        0.82,
+                        "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            hyp.id
+        };
+        let res = app(db)
+            .oneshot(
+                Request::get(format!("/api/hypotheses/{hypothesis_id}/evidence"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let claims: Vec<Claim> = body_json(res.into_body()).await;
+        assert_eq!(claims.len(), 1);
+        assert!(claims[0].pinned);
+        assert_eq!(claims[0].pin.as_ref().unwrap().assessing_model, "GLM-5.3");
+    }
+
+    #[tokio::test]
+    async fn the_server_is_read_only_no_mutation_routes() {        // Single writer (AD-14): mutations exist only on the Tauri command
         // path. A POST to the read route must not be accepted.
         let res = app(test_db())
             .oneshot(Request::post("/api/missions").body(Body::empty()).unwrap())
