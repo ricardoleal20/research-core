@@ -333,6 +333,46 @@ const DICT: Record<string, Record<Lang, string>> = {
   // its empty restore-points list state — presence and UI only.
   "cp.title": { es: "Puntos de control", en: "Checkpoints", pt: "Pontos de controlo", fr: "Points de contrôle" },
   "cp.empty": { es: "Aún no hay puntos de control.", en: "No checkpoints yet.", pt: "Ainda não há pontos de controlo.", fr: "Pas encore de points de contrôle." },
+
+  // onboarding — the sixty-second first value (Story 1.9, FR-8.1/8.2): the
+  // welcome's two quiet actions and the result moment. Zero jargon beyond
+  // the current layer: papers, candidates, one mission with its stop
+  // condition and criterion.
+  "onb.pasteTitle": { es: "Pega un enlace de arXiv", en: "Paste an arXiv URL", pt: "Cola um link do arXiv", fr: "Colle un lien arXiv" },
+  "onb.urlPh": { es: "https://arxiv.org/abs/1706.03762", en: "https://arxiv.org/abs/1706.03762", pt: "https://arxiv.org/abs/1706.03762", fr: "https://arxiv.org/abs/1706.03762" },
+  "onb.generate": { es: "Generar", en: "Generate", pt: "Gerar", fr: "Générer" },
+  "onb.generating": { es: "Generando…", en: "Generating…", pt: "A gerar…", fr: "Génération…" },
+  "onb.back": { es: "Volver", en: "Back", pt: "Voltar", fr: "Retour" },
+  "onb.zoteroTitle": { es: "Importa de tu biblioteca Zotero", en: "Import from your Zotero library", pt: "Importa da tua biblioteca Zotero", fr: "Importe depuis votre bibliothèque Zotero" },
+  "onb.zoteroHint": {
+    es: "Tu biblioteca ya migrada — elige una referencia para empezar.",
+    en: "Your already-migrated library — pick a reference to start from.",
+    pt: "A tua biblioteca já migrada — escolhe uma referência para começar.",
+    fr: "Votre bibliothèque déjà migrée — choisissez une référence pour commencer.",
+  },
+  "onb.zoteroEmpty": { es: "Aún no hay referencias en la biblioteca.", en: "No references in the library yet.", pt: "Ainda não há referências na biblioteca.", fr: "Pas encore de références dans la bibliothèque." },
+  "onb.error": { es: "No se pudo generar: ", en: "Could not generate: ", pt: "Não foi possível gerar: ", fr: "Impossible de générer : " },
+  "onb.resultKicker": { es: "De artículo a misión", en: "From paper to mission", pt: "Do artigo à missão", fr: "De l'article à la mission" },
+  "onb.resultTitle": { es: "Tu primera misión está lista", en: "Your first mission is ready", pt: "A tua primeira missão está pronta", fr: "Votre première mission est prête" },
+  "onb.genTitle": { es: "Generando candidatos de hipótesis", en: "Generating hypothesis candidates", pt: "A gerar candidatos de hipótese", fr: "Génération des candidats hypothèses" },
+  "onb.logFetch": { es: "obtener", en: "fetch", pt: "obter", fr: "récupérer" },
+  "onb.logClaims": { es: "extraer afirmaciones · {n} candidatos", en: "extract claims · {n} candidates", pt: "extrair afirmações · {n} candidatos", fr: "extraire les affirmations · {n} candidats" },
+  "onb.logScore": { es: "medir confianza · {model}", en: "score confidence · {model}", pt: "medir confiança · {model}", fr: "mesurer la confiance · {model}" },
+  "onb.candidatesTitle": { es: "Candidatos de hipótesis", en: "Hypothesis candidates", pt: "Candidatos de hipótese", fr: "Candidats hypothèses" },
+  "onb.proposed": { es: "propuesta", en: "proposed", pt: "proposta", fr: "proposée" },
+  "onb.missionLabel": { es: "Tu primera misión", en: "Your first mission", pt: "A tua primeira missão", fr: "Votre première mission" },
+  "onb.stop": { es: "Paro", en: "Stop", pt: "Paragem", fr: "Arrêt" },
+  "onb.criterion": { es: "Criterio", en: "Criterion", pt: "Critério", fr: "Critère" },
+  "onb.spend": { es: "Gasto", en: "Spend", pt: "Gasto", fr: "Dépense" },
+  "onb.ceiling": { es: "techo de {amount} por corrida", en: "{amount} per-run ceiling", pt: "teto de {amount} por corrida", fr: "plafond de {amount} par exécution" },
+  "onb.active": { es: "activa", en: "active", pt: "ativa", fr: "active" },
+  "onb.continue": { es: "Ir a tu misión", en: "Go to your mission", pt: "Ir para a tua missão", fr: "Aller à votre mission" },
+  "onb.simulatedNote": {
+    es: "proveedor simulado — sin clave configurada, coste $0.00",
+    en: "simulated provider — no key configured, cost $0.00",
+    pt: "provedor simulado — sem chave configurada, custo $0.00",
+    fr: "fournisseur simulé — aucune clé configurée, coût 0,00 $",
+  },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

@@ -4,6 +4,7 @@
   import type { Autonomy, Mission } from "../../types";
   import BoardGlance from "./BoardGlance.svelte";
   import MissionCard from "./MissionCard.svelte";
+  import Onboarding from "./Onboarding.svelte";
 
   // Read-model only (AD-8): `missions` holds exactly what commands returned;
   // every change flows through create_mission / list_missions.
@@ -87,46 +88,44 @@
 </script>
 
 <div class="missions">
-  <!-- Question box (DESIGN.md components.question-box): the day-one hero —
-       card anatomy with aurora backing at reduced opacity. -->
-  <section class="hero" aria-label={t("missions.title")}>
-    <div class="aurora" aria-hidden="true"></div>
-    <div class="hero-card">
-      <p class="kicker">{t("missions.title")}</p>
-      <h2 class="greeting">{t("missions.greeting")}</h2>
-      <div class="ask">
-        <input
-          class="ask-input"
-          type="text"
-          bind:value={question}
-          placeholder={t("missions.questionPh")}
-          aria-label={t("missions.greeting")}
-          onkeydown={(e) => { if (e.key === "Enter") openComposer(); }}
-        />
-        <button class="btn-primary" onclick={openComposer} disabled={questionMissing}>
-          {t("missions.turnIntoMission")}
-        </button>
-      </div>
-    </div>
-  </section>
-
   {#if loadError}
     <p class="error" role="alert">{loadError}</p>
   {/if}
 
-  <!-- Progressive disclosure (FR-1.4, EXPERIENCE.md ladder layer 0): on a
-       fresh workspace the view is the question box and its empty state —
-       nothing else. Mission cards, spend meters, and runs appear only when
-       the log actually holds missions; no layer reveals itself before the
-       user's research opens it. -->
+  <!-- First-run experience (Story 1.9, FR-8.1): when the log holds no
+       missions, the tab IS the onboarding — the quiet welcome with its two
+       actions (paste an arXiv URL / import Zotero) and the result moment.
+       Zero configuration, zero jargon beyond the current layer (FR-8.2); the
+       question box and the board take over once a mission exists. -->
   {#if loaded && missions.length === 0}
-    <section class="empty-state" aria-label={t("missions.empty")}>
-      <p class="empty-title">{t("missions.empty")}</p>
-      <p class="empty-hint">{t("missions.emptyHint")}</p>
+    <Onboarding ondone={load} />
+  {:else}
+    <!-- Progressive disclosure (FR-1.4, EXPERIENCE.md ladder layer 0): the
+         question box leads once research exists. Mission cards, spend
+         meters, and runs appear only when the log actually holds missions;
+         no layer reveals itself before the user's research opens it. -->
+    <section class="hero" aria-label={t("missions.title")}>
+      <div class="aurora" aria-hidden="true"></div>
+      <div class="hero-card">
+        <p class="kicker">{t("missions.title")}</p>
+        <h2 class="greeting">{t("missions.greeting")}</h2>
+        <div class="ask">
+          <input
+            class="ask-input"
+            type="text"
+            bind:value={question}
+            placeholder={t("missions.questionPh")}
+            aria-label={t("missions.greeting")}
+            onkeydown={(e) => { if (e.key === "Enter") openComposer(); }}
+          />
+          <button class="btn-primary" onclick={openComposer} disabled={questionMissing}>
+            {t("missions.turnIntoMission")}
+          </button>
+        </div>
+      </div>
     </section>
-  {/if}
 
-  {#if composing}
+    {#if composing}
     <!-- Mission composer: the UI never lets a mission exist that cannot end —
          launch is disabled without both terminator fields (FR-1.2, AD-12). -->
     <section class="composer" aria-label={t("missions.composer.title")}>
@@ -227,6 +226,7 @@
         <MissionCard {mission} />
       {/each}
     </section>
+  {/if}
   {/if}
 </div>
 
@@ -500,28 +500,6 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-  }
-
-  /* Day-one empty state (ladder layer 0): quiet, centered, mission
-     vocabulary only — no boards, targets, or publication layers. */
-  .empty-state {
-    text-align: center;
-    padding: 40px 16px 24px;
-  }
-  .empty-title {
-    font-family: "Instrument Serif", Georgia, serif;
-    font-style: italic;
-    font-weight: 400;
-    font-size: clamp(22px, 2.6vw, 30px);
-    line-height: 1.2;
-    margin: 0 0 10px;
-    color: var(--rc-ink);
-  }
-  .empty-hint {
-    margin: 0;
-    font-size: 14px;
-    line-height: 1.6;
-    color: var(--rc-ink-muted);
   }
 
   .error {

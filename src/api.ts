@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -125,6 +125,26 @@ const browserApi = {
       );
     }
     return mockApi.pinClaimToNumerical(claimId, hypothesisId, artifactRef, content, confidence, assessingModel);
+  },
+  // Onboarding (Story 1.9, FR-8.1): the first-value flow is a mutation —
+  // the served browser view refuses it like every other write.
+  runFirstValue: async (url: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run the first value from the desktop app / " +
+          "Vista de solo lectura — genera el primer valor desde la app de escritorio"
+      );
+    }
+    return mockApi.runFirstValue(url);
+  },
+  runFirstValueFromRef: async (refId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run the first value from the desktop app / " +
+          "Vista de solo lectura — genera el primer valor desde la app de escritorio"
+      );
+    }
+    return mockApi.runFirstValueFromRef(refId);
   },
 };
 
@@ -257,6 +277,13 @@ export const api = mockActive ? browserApi : {
     }),
   listEvidence: (hypothesisId: string) =>
     invoke<Claim[]>("list_evidence", { hypothesisId }),
+
+  // onboarding — the sixty-second first value (Story 1.9, FR-8.1): one
+  // arXiv paste (or one library ref via the Zotero connector stub) becomes a
+  // starter mission + hypothesis candidates through the provider layer
+  runFirstValue: (url: string) => invoke<FirstValueResult>("run_first_value", { url }),
+  runFirstValueFromRef: (refId: string) =>
+    invoke<FirstValueResult>("run_first_value_from_ref", { refId }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

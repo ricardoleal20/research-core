@@ -236,3 +236,49 @@ export interface Claim {
   pinned: boolean; // FR-3.4: false until an evidence.pinned event lands
   pin: EvidencePin | null;
 }
+
+// Onboarding — the sixty-second first value (Story 1.9, FR-8.1): one pasted
+// arXiv URL (or one library ref through the Zotero connector stub) becomes a
+// starter mission plus three hypothesis candidates, through the provider
+// layer (the simulated fallback fires when no key is configured).
+
+// The generation receipt (mono, honesty): who generated, with which model,
+// and what it cost. Simulated generation says so and costs nothing.
+export interface GenerationReceipt {
+  provider: string; // spend-attribution name, e.g. "openrouter" | "simulated"
+  model: string; // the assessing model the candidates' confidence is attributed to
+  simulated: boolean; // true when the simulated fallback answered (no key)
+  costCents: number; // 0 for simulated/CLI
+}
+
+// The paper the flow worked from — the library ref id above all (the paste
+// upserted it; the Zotero path matched it).
+export interface PaperInfo {
+  refId: string;
+  arxivId: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  url: string;
+}
+
+// One hypothesis candidate: the created hypothesis (its board identity —
+// candidates ARE proposed hypotheses) plus the generation-time confidence,
+// attributed to the assessing model (Story 1.7 conventions).
+export interface HypothesisCandidate {
+  hypothesisId: string;
+  seq: number; // creation event seq — the H-n label derives from it
+  statement: string;
+  status: HypothesisStatus; // always "proposed" at generation time
+  confidence: number; // 0.0–1.0, the generator's self-assessed score
+  assessingModel: string;
+}
+
+// Everything the result moment renders: the receipt, the paper, the starter
+// mission, and the candidates.
+export interface FirstValueResult {
+  receipt: GenerationReceipt;
+  paper: PaperInfo;
+  mission: Mission;
+  candidates: HypothesisCandidate[];
+}

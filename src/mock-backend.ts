@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -139,6 +139,157 @@ const agents: Agent[] = [
 ];
 
 const delay = (ms = 60) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ---------- onboarding (Story 1.9) ----------
+// Mirrors the typed core: the same arXiv URL shapes parse to the bare id
+// (anything else fails with the same coded `invalid_url:` error before
+// anything happens), the paste upserts the paper into the library (matched
+// by url, never duplicated), and the simulated provider generates the
+// candidates (attributed to "simulated", cost 0 — the mock has no key).
+
+function parseMockArxivUrl(input: string): string {
+  const s = input.trim();
+  const bad = () => { throw new Error(`invalid_url: \`${s}\` — paste a valid arXiv URL (https://arxiv.org/abs/1706.03762)`); };
+  let rest = s;
+  if (s.includes("://")) {
+    const [scheme, after] = s.split("://", 2) as [string, string];
+    if (scheme.toLowerCase() !== "http" && scheme.toLowerCase() !== "https") bad();
+    rest = after;
+  }
+  const lower = rest.toLowerCase();
+  if (lower.startsWith("arxiv.org/") || lower.startsWith("www.arxiv.org/") || lower.startsWith("export.arxiv.org/")) {
+    // drop the host, keep the path segments: abs/<id> | pdf/<id>(.pdf)
+    const [, ...segments] = rest.split("/");
+    const [kind, ...idParts] = segments.filter((p) => p !== "");
+    if ((kind === "abs" || kind === "pdf") && idParts.length > 0) {
+      return idParts.join("/").replace(/\.pdf$/, "");
+    }
+    bad();
+  }
+  // bare id: 1706.03762 | 1706.03762v2 | cs/0601011
+  if (/^\d{4}\.\d{4,5}(v\d+)?$/.test(rest) || /^[a-z-]+(\.[A-Z]{2})?\/\d{7}$/i.test(rest)) {
+    return rest;
+  }
+  bad();
+  return ""; // unreachable
+}
+
+// The seeded paper for the design's example paste; any other valid id gets a
+// generic-but-honest paper so the whole flow works in the dev browser.
+const seedPaper = (arxivId: string) =>
+  arxivId === "1706.03762"
+    ? {
+        title: "Attention Is All You Need",
+        authors: "Vaswani et al.",
+        year: 2017,
+        abstract:
+          "The dominant sequence transduction models are based on recurrent or convolutional networks. We propose the Transformer, based solely on attention mechanisms.",
+      }
+    : {
+        title: `arXiv:${arxivId}`,
+        authors: "Unknown Author",
+        year: 2024,
+        abstract: null as string | null,
+      };
+
+// The simulated provider's candidates (mirrors the Rust simulator): sensible,
+// falsifiable, derived from the paper title in the interface language.
+function mockCandidates(title: string, lang: string): { statement: string; confidence: number }[] {
+  return lang === "en"
+    ? [
+        { statement: `The central result of «${title}» replicates under independent evaluation`, confidence: 0.78 },
+        { statement: `The method of «${title}» outperforms the baselines it is compared against`, confidence: 0.71 },
+        { statement: `The claims of «${title}» hold only within the regimes its authors evaluate`, confidence: 0.65 },
+      ]
+    : [
+        { statement: `El resultado central de «${title}» se replica bajo una evaluación independiente`, confidence: 0.78 },
+        { statement: `El método de «${title}» supera a los baselines con los que se compara`, confidence: 0.71 },
+        { statement: `Las afirmaciones de «${title}» solo se sostienen dentro de los regímenes que sus autores evalúan`, confidence: 0.65 },
+      ];
+}
+
+/** The shared first-value flow behind both mock doors (arXiv paste and the
+ *  Zotero library stub): upsert the ref, generate the candidates, create the
+ *  starter mission, and append the candidates as proposed hypotheses. */
+async function mockFirstValue(paper: {
+  refId?: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  url: string;
+  arxivId: string;
+}): Promise<FirstValueResult> {
+  await delay(450);
+  // library upsert — match by url, never duplicate
+  let refId = paper.refId;
+  if (!refId) {
+    const existing = mockRefs.find((r) => r.url === paper.url);
+    refId = existing ? existing.id : "r" + (mockRefs.length + 1) + "-" + Date.now();
+    if (!existing) {
+      mockRefs.push({
+        id: refId,
+        project_id: "p1",
+        collection_id: null,
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year ?? new Date().getFullYear(),
+        venue: "arXiv",
+        doi: `10.48550/arXiv.${paper.arxivId}`,
+        url: paper.url,
+        isbn: "",
+        attachment: null,
+        status: "unread",
+        tags: "arXiv,onboarding",
+        used: 0,
+        citation_count: 0,
+        created_at: nowISO(),
+      });
+    }
+  }
+  const lang = settings.lang || "es";
+  const drafts = mockCandidates(paper.title, lang);
+  const mission = await mockApi.createMission({
+    question:
+      lang === "en"
+        ? `Check the claims in “${paper.title}”`
+        : `Comprueba las afirmaciones de «${paper.title}»`,
+    stopCondition:
+      lang === "en"
+        ? "Stop after 3 runs or 20 sources reviewed, whichever comes first."
+        : "Detente tras 3 corridas o 20 fuentes revisadas, lo que ocurra primero.",
+    successCriterion:
+      lang === "en"
+        ? "Every surviving candidate has at least 3 pinned sources agreeing at 70%+ confidence, or it is refuted."
+        : "Cada candidato que sobreviva tiene al menos 3 anclas de evidencia citadas que coinciden con ≥70 % de confianza, o queda refutado.",
+    autonomy: "suggest",
+    spendCeilingCents: 100,
+  });
+  const candidates: HypothesisCandidate[] = [];
+  for (const draft of drafts) {
+    const h = await mockApi.createHypothesis(draft.statement, mission.id);
+    candidates.push({
+      hypothesisId: h.id,
+      seq: h.seq,
+      statement: h.statement,
+      status: "proposed",
+      confidence: draft.confidence,
+      assessingModel: "simulated",
+    });
+  }
+  return {
+    receipt: { provider: "simulated", model: "simulated", simulated: true, costCents: 0 },
+    paper: {
+      refId,
+      arxivId: paper.arxivId,
+      title: paper.title,
+      authors: paper.authors,
+      year: paper.year,
+      url: paper.url,
+    },
+    mission,
+    candidates,
+  };
+}
 
 export const mockApi = {
   // projects
@@ -458,6 +609,34 @@ export const mockApi = {
     return claims
       .filter((c) => c.hypothesisId === hypothesisId)
       .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
+  },
+
+  // onboarding (Story 1.9) — the arXiv paste door and the Zotero library
+  // door, mirroring the typed core end to end.
+  runFirstValue: async (url: string) => {
+    const arxivId = parseMockArxivUrl(url);
+    const seed = seedPaper(arxivId);
+    return mockFirstValue({
+      title: seed.title,
+      authors: seed.authors,
+      year: seed.year,
+      url: `https://arxiv.org/abs/${arxivId}`,
+      arxivId,
+    });
+  },
+  runFirstValueFromRef: async (refId: string) => {
+    const ref = mockRefs.find((r) => r.id === refId);
+    if (!ref) {
+      throw new Error(`not_found: no ref with id \`${refId}\` in the library`);
+    }
+    return mockFirstValue({
+      refId: ref.id,
+      title: ref.title,
+      authors: ref.authors ?? "",
+      year: ref.year ?? null,
+      url: ref.url ?? "",
+      arxivId: (ref.doi ?? "").replace("10.48550/arXiv.", ""),
+    });
   },
 
   // danger zone
