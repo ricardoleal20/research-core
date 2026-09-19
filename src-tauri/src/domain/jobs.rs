@@ -17,9 +17,15 @@
 //   code; `job.failed` carries a reason (spawn error, nonzero exit,
 //   signal) and the code when there was one.
 // - `target.declared` — a named compute target declared by the user
-//   (actor=user): `{ name, kind }`. The kind names the adapter that runs
-//   its jobs (v1: `local`; the SSH adapter registers its kind in Story
-//   3.3). The built-in target `local` needs no declaration.
+//   (actor=user): `{ name, kind, host? }`. The kind names the adapter that
+//   runs its jobs (v1: `local`, `ssh`); an `ssh` target carries the host it
+//   connects to (a single token — it becomes one argv element of the ssh
+//   binary, so it is validated like one). The built-in target `local` needs
+//   no declaration.
+// - `host_allowlist.edited` — the workspace host allowlist (Story 3.3,
+//   actor=user): the full list of hosts SSH targets may connect to, latest
+//   event wins. Hosts outside it are refused before any connection is
+//   attempted (typed `host_not_allowed:` error).
 
 use std::collections::BTreeMap;
 
@@ -34,6 +40,7 @@ pub const JOB_RUNNING: &str = "job.running";
 pub const JOB_FINISHED: &str = "job.finished";
 pub const JOB_FAILED: &str = "job.failed";
 pub const TARGET_DECLARED: &str = "target.declared";
+pub const HOST_ALLOWLIST_EDITED: &str = "host_allowlist.edited";
 
 /// The built-in compute target every workspace has (FR-11.1: v1 ships
 /// local): name `local`, adapter kind `local`. Declared targets may reuse
@@ -125,6 +132,8 @@ pub enum SpecError {
     FreeformShell { cmd: String, ch: char },
     #[error("invalid_spec: env key `{0}` — keys are names: never empty, never `=`")]
     InvalidEnvKey(String),
+    #[error("invalid_host: {0}")]
+    InvalidHost(String),
     #[error("invalid_spec: resources must be positive — cpus and memoryMb are 1 or more")]
     InvalidResources,
     #[error("invalid_spec: workdir must not be blank when present")]
@@ -226,9 +235,10 @@ impl NewEvent {
     }
 
     /// Typed constructor (AD-15): the one way a named compute target is
-    /// declared — `{ name, kind }`, actor=user. The kind must name a
+    /// declared — `{ name, kind, host? }`, actor=user. The kind must name a
     /// registered adapter (checked by the shell command against the
-    /// registry before this runs).
+    /// registry before this runs); an `ssh` target requires its host, and
+    /// the host is validated as the single argv token it becomes.
     pub fn target_declared(payload: TargetDeclaredPayload) -> Result<Self, EventError> {
         if !valid_target_name(&payload.name) {
             return Err(EventError::Invalid(
@@ -238,12 +248,65 @@ impl NewEvent {
         }
         if payload.kind.trim().is_empty() {
             return Err(EventError::Invalid(
-                "target.declared requires a kind — the adapter that runs its jobs (v1: local)"
+                "target.declared requires a kind — the adapter that runs its jobs (v1: local | ssh)"
+                    .into(),
+            ));
+        }
+        if let Some(host) = payload.host.as_deref() {
+            if let Err(reason) = validate_host(host) {
+                return Err(EventError::Invalid(format!(
+                    "invalid_host: {reason} — a host is one token (it becomes one argv element of ssh): `gpu-01.lab`, `user@10.0.0.4`"
+                )));
+            }
+        }
+        if payload.kind == "ssh" && payload.host.is_none() {
+            return Err(EventError::Invalid(
+                "target.declared requires a host for kind `ssh` — the target names the machine it connects to"
                     .into(),
             ));
         }
         Self::new(TARGET_DECLARED, Actor::User, serde_json::to_value(&payload)?)
     }
+
+    /// Typed constructor (AD-15): the one way the host allowlist changes —
+    /// the FULL list, latest event wins (Story 3.3). Every entry is one
+    /// token (hosts become argv elements of ssh); blank or malformed
+    /// entries never enter the log.
+    pub fn host_allowlist_edited(payload: HostAllowlistEditedPayload) -> Result<Self, EventError> {
+        for host in &payload.hosts {
+            if let Err(reason) = validate_host(host) {
+                return Err(EventError::Invalid(format!(
+                    "invalid_host: `{host}` — {reason}; the allowlist holds one-token hosts (e.g. `gpu-01.lab`, `user@10.0.0.4`)"
+                )));
+            }
+        }
+        Self::new(
+            HOST_ALLOWLIST_EDITED,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )
+    }
+}
+
+/// A host is one token: never blank, never whitespace inside, never shell
+/// syntax, never option-leading — it is passed to ssh as a single argv
+/// element and must stay one remotely too. Shared with the SSH adapter,
+/// which re-runs it at its boundary (defense in depth).
+pub(crate) fn validate_host(host: &str) -> Result<(), String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("the host is blank".into());
+    }
+    if host.chars().any(char::is_whitespace) {
+        return Err("the host carries whitespace".into());
+    }
+    if host.starts_with('-') {
+        return Err("the host starts with a dash (it would read as an ssh option)".into());
+    }
+    if let Some(ch) = host.chars().find(|c| SHELL_METACHARS.contains(c)) {
+        return Err(format!("the host carries shell syntax (`{ch}`)"));
+    }
+    Ok(())
 }
 
 /// A `job.running` / `job.finished` / `job.failed` payload: the job (its
@@ -264,11 +327,22 @@ pub struct JobLifecyclePayload {
 }
 
 /// The `target.declared` payload: a named compute target of an adapter
-/// kind (v1: `local`; `ssh` arrives in Story 3.3).
+/// kind (`local` | `ssh`), with the host an `ssh` target connects to (a
+/// single token — validated like the argv element it becomes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TargetDeclaredPayload {
     pub name: String,
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// The `host_allowlist.edited` payload (Story 3.3): the FULL allowlist —
+/// every host an SSH target may connect to. Latest event wins; hosts not
+/// on it are refused before any connection is attempted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostAllowlistEditedPayload {
+    pub hosts: Vec<String>,
 }
 
 /// Target names are slugs: lowercase letters, digits, interior dashes —
@@ -326,6 +400,9 @@ pub struct Job {
 pub struct DeclaredTarget {
     pub name: String,
     pub kind: String,
+    /// The host an `ssh` target connects to (`None` for `local`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     pub seq: i64,
     pub ts: DateTime<Utc>,
 }
@@ -424,12 +501,35 @@ pub fn fold_declared_targets(events: &[StoredEvent]) -> Vec<DeclaredTarget> {
             DeclaredTarget {
                 name: payload.name,
                 kind: payload.kind,
+                host: payload.host,
                 seq: event.seq,
                 ts: event.ts,
             },
         );
     }
     by_name.into_values().collect()
+}
+
+/// Pure fold of the host allowlist (Story 3.3): the LATEST
+/// `host_allowlist.edited` event's full list wins — the allowlist is a
+/// single setting, not an accumulation. Rollback-aware through the shared
+/// fold cursor (Story 2.6).
+pub fn fold_host_allowlist(events: &[StoredEvent]) -> Vec<String> {
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
+    let mut allowlist: Option<Vec<String>> = None;
+    for event in events {
+        if event.kind != HOST_ALLOWLIST_EDITED {
+            continue;
+        }
+        let Ok(payload) =
+            serde_json::from_value::<HostAllowlistEditedPayload>(event.payload.clone())
+        else {
+            continue; // a corrupt edit never breaks the fold
+        };
+        allowlist = Some(payload.hosts);
+    }
+    allowlist.unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -572,18 +672,103 @@ mod tests {
         let ev = NewEvent::target_declared(TargetDeclaredPayload {
             name: "cluster-1".into(),
             kind: "ssh".into(),
+            host: Some("gpu-01.lab".into()),
         })
         .unwrap();
         assert_eq!(ev.kind, TARGET_DECLARED);
         assert_eq!(ev.actor, Actor::User);
+        assert_eq!(ev.payload["host"], json!("gpu-01.lab"));
         for bad in ["", " ", "-lead", "trail-", "Upper", "sp ace", "under_score"] {
             let err = NewEvent::target_declared(TargetDeclaredPayload {
                 name: bad.into(),
                 kind: "local".into(),
+                host: None,
             })
             .unwrap_err();
             assert!(err.to_string().contains("name"), "{bad:?}: {err}");
         }
+    }
+
+    #[test]
+    fn an_ssh_target_requires_one_valid_host() {
+        // ssh without a host never lands
+        let err = NewEvent::target_declared(TargetDeclaredPayload {
+            name: "cluster-1".into(),
+            kind: "ssh".into(),
+            host: None,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("host"), "unexpected: {err}");
+        // local targets carry no host (and may not: one is refused)
+        NewEvent::target_declared(TargetDeclaredPayload {
+            name: "laptop".into(),
+            kind: "local".into(),
+            host: None,
+        })
+        .unwrap();
+        // the host is one token: whitespace, shell syntax, option-leading
+        // dashes and blank hosts never land — it becomes one argv element
+        for bad in ["", "  ", "gpu 01", "-oProxyCommand=evil", "a;b", "a|b", "a$b"] {
+            let err = NewEvent::target_declared(TargetDeclaredPayload {
+                name: "cluster-1".into(),
+                kind: "ssh".into(),
+                host: Some(bad.into()),
+            })
+            .unwrap_err();
+            assert!(err.to_string().contains("invalid_host:"), "{bad:?}: {err}");
+        }
+        // user@host is a host (ssh's own syntax, one token, no metachars)
+        NewEvent::target_declared(TargetDeclaredPayload {
+            name: "cluster-1".into(),
+            kind: "ssh".into(),
+            host: Some("ricardo@gpu-01.lab".into()),
+        })
+        .unwrap();
+    }
+
+    // ---- the host allowlist (Story 3.3) ----
+
+    #[test]
+    fn the_allowlist_edits_validate_and_fold_latest_wins() {
+        let conn = conn();
+        let store = EventStore::new(&conn);
+        // malformed entries never land
+        let err = NewEvent::host_allowlist_edited(HostAllowlistEditedPayload {
+            hosts: vec!["gpu-01.lab".into(), "bad host".into()],
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid_host:"), "unexpected: {err}");
+        // a full-list edit lands, then a second replaces it entirely
+        store
+            .append(
+                NewEvent::host_allowlist_edited(HostAllowlistEditedPayload {
+                    hosts: vec!["gpu-01.lab".into(), "10.0.0.4".into()],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            fold_host_allowlist(&store.events_all().unwrap()),
+            vec!["gpu-01.lab".to_string(), "10.0.0.4".to_string()]
+        );
+        store
+            .append(
+                NewEvent::host_allowlist_edited(HostAllowlistEditedPayload {
+                    hosts: vec!["cluster.hpc.edu".into()],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        // latest wins — the allowlist is a setting, not an accumulation
+        assert_eq!(
+            fold_host_allowlist(&store.events_all().unwrap()),
+            vec!["cluster.hpc.edu".to_string()]
+        );
+        // and an empty list clears it
+        store
+            .append(NewEvent::host_allowlist_edited(HostAllowlistEditedPayload { hosts: vec![] }).unwrap())
+            .unwrap();
+        assert!(fold_host_allowlist(&store.events_all().unwrap()).is_empty());
     }
 
     // ---- the fold ----
@@ -698,6 +883,7 @@ mod tests {
                     NewEvent::target_declared(TargetDeclaredPayload {
                         name: name.into(),
                         kind: kind.into(),
+                        host: if kind == "ssh" { Some("gpu-01.lab".into()) } else { None },
                     })
                     .unwrap(),
                 )
@@ -705,7 +891,7 @@ mod tests {
         }
         let targets = fold_declared_targets(&store.events_all().unwrap());
         assert_eq!(targets.len(), 2, "one per name, latest wins");
-        assert!(targets.iter().any(|t| t.name == "laptop" && t.kind == "local"));
-        assert!(targets.iter().any(|t| t.name == "cluster-1" && t.kind == "ssh"));
+        assert!(targets.iter().any(|t| t.name == "laptop" && t.kind == "local" && t.host.is_none()));
+        assert!(targets.iter().any(|t| t.name == "cluster-1" && t.kind == "ssh" && t.host.as_deref() == Some("gpu-01.lab")));
     }
 }

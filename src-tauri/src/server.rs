@@ -55,6 +55,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         )
         .route("/api/missions/{mission_id}/jobs", get(mission_jobs))
         .route("/api/targets", get(compute_targets))
+        .route("/api/host-allowlist", get(host_allowlist))
         .with_state(ServerState { db })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
@@ -203,8 +204,9 @@ async fn mission_jobs(
         .map_err(|_| internal())
 }
 
-/// The compute target list (Story 3.2, FR-11.1 — read-only per AD-14):
-/// declared targets plus the built-in `local`.
+/// The compute target list (Story 3.2/3.3, FR-11.1 — read-only per
+/// AD-14): declared targets plus the built-in `local`, with each ssh
+/// target's host and allowlisted status.
 async fn compute_targets(
     State(state): State<ServerState>,
 ) -> Result<Json<Vec<crate::jobs_commands::ComputeTargetView>>, StatusCode> {
@@ -213,6 +215,17 @@ async fn compute_targets(
     crate::jobs_commands::list_targets_inner(&events)
         .map(Json)
         .map_err(|_| internal())
+}
+
+/// The host allowlist (Story 3.3 — read-only per AD-14): the hosts SSH
+/// targets may connect to. Editing happens in the desktop app (the
+/// mutation commands are Tauri-only, AD-14).
+async fn host_allowlist(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    Ok(Json(crate::domain::jobs::fold_host_allowlist(&events)))
 }
 
 /// Resolve the frontend dist dir: `RC_DIST_DIR` override, else the compile-time
