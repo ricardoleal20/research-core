@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "../../api";
   import { t } from "../../i18n";
-  import type { HypothesisStatus, Proposal, ProposalStatus } from "../../types";
+  import type { HypothesisStatus, Proposal, ProposalStatus, ProposedPin } from "../../types";
 
   // Quarantine review (Story 2.2, AD-3/AD-13): agent proposals wait here as
   // diff cards — nothing changes until a human merges. The basis-stale
@@ -103,6 +103,18 @@
   }
 
   const fmtTs = (ts: string) => new Date(ts).toLocaleString();
+
+  // Result-pin proposals (Story 3.4, FR-11.5, AD-5): a fetched job result
+  // arrives as a numerical pin CANDIDATE — same Approve/Reject as every
+  // proposal; the merge is what pins it (auto-pinning is v0.2.0).
+  const isPin = (p: Proposal) => p.proposedKind === "evidence.pinned";
+  const asPin = (p: Proposal): ProposedPin => p.proposedPayload as ProposedPin;
+  // The confidence dot's color (same scale as the hypothesis cards): green
+  // at ≥0.8, amber at ≥0.5, red below — labeled with the assessing model,
+  // never "verified" (FR-3.6).
+  const confidenceColor = (c: number) =>
+    c >= 0.8 ? "#047857" : c >= 0.5 ? "#B45309" : "#BE123C";
+  const pct = (c: number) => `${Math.round(c * 100)}%`;
 </script>
 
 {#if proposals !== null && proposals.length > 0}
@@ -152,19 +164,55 @@
               <span class="q-run mono" title={t("quarantine.run")}>run {proposal.runId}</span>
             </header>
 
-            <p class="q-diff">
-              <span class="q-verb">{t("quarantine.proposes")}</span>
-              <span class="q-change">{t("quarantine.change")}:</span>
-              <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.from].ink};background:${lifecycle[proposal.proposedPayload.from].soft}`}>
-                {t(`hyp.status.${proposal.proposedPayload.from}`)}
-              </span>
-              <span class="q-arrow" aria-hidden="true">→</span>
-              <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.to].ink};background:${lifecycle[proposal.proposedPayload.to].soft}`}>
-                {t(`hyp.status.${proposal.proposedPayload.to}`)}
-              </span>
-            </p>
+            {#if isPin(proposal)}
+              <!-- The numerical pin candidate's anatomy (AD-5, FR-3.3): the
+                   artifact it anchors to, the sha-256 digest computed at
+                   proposal time (mono, full digest on hover), the confidence
+                   dot labeled with the assessing model (FR-3.6 — attributed,
+                   never "verified"), and the captured content it anchors. -->
+              {@const pin = asPin(proposal)}
+              <p class="q-diff">
+                <span class="q-verb">{t("quarantine.pinProposes")}</span>
+              </p>
+              <div class="q-pin">
+                <span class="q-pin-main">
+                  <span class="q-pin-label">{t("quarantine.artifact")}</span>
+                  <span class="q-pin-ref mono">{pin.artifact_ref}</span>
+                </span>
+                <span
+                  class="q-pin-conf"
+                  title={`${pin.assessing_model} · ${pct(pin.confidence)}`}
+                >
+                  <span
+                    class="q-dot"
+                    style={`background:${confidenceColor(pin.confidence)}`}
+                    aria-hidden="true"
+                  ></span>
+                  {pin.assessing_model} · {pct(pin.confidence)}
+                </span>
+                <span class="q-pin-digest mono" title={pin.digest}>
+                  sha-256 {pin.digest.slice(0, 16)}…
+                </span>
+              </div>
+              <blockquote class="q-excerpt" title={pin.digest}>
+                {pin.excerpt}
+              </blockquote>
+              <p class="q-note">{t("quarantine.awaitingMerge")}</p>
+            {:else}
+              <p class="q-diff">
+                <span class="q-verb">{t("quarantine.proposes")}</span>
+                <span class="q-change">{t("quarantine.change")}:</span>
+                <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.from].ink};background:${lifecycle[proposal.proposedPayload.from].soft}`}>
+                  {t(`hyp.status.${proposal.proposedPayload.from}`)}
+                </span>
+                <span class="q-arrow" aria-hidden="true">→</span>
+                <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.to].ink};background:${lifecycle[proposal.proposedPayload.to].soft}`}>
+                  {t(`hyp.status.${proposal.proposedPayload.to}`)}
+                </span>
+              </p>
 
-            <p class="q-basis">“{proposal.proposedPayload.basis}”</p>
+              <p class="q-basis">“{proposal.proposedPayload.basis}”</p>
+            {/if}
 
             {#if proposal.basisStale}
               <!-- The basis-stale variant (AD-13): the bilingual warning
@@ -240,16 +288,35 @@
                   {t(`quarantine.status.${proposal.status}`)}
                 </span>
               </header>
-              <p class="q-diff">
-                <span class="q-change">{t("quarantine.change")}:</span>
-                <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.from].ink};background:${lifecycle[proposal.proposedPayload.from].soft}`}>
-                  {t(`hyp.status.${proposal.proposedPayload.from}`)}
-                </span>
-                <span class="q-arrow" aria-hidden="true">→</span>
-                <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.to].ink};background:${lifecycle[proposal.proposedPayload.to].soft}`}>
-                  {t(`hyp.status.${proposal.proposedPayload.to}`)}
-                </span>
-              </p>
+              {#if isPin(proposal)}
+                <!-- Decided result pins render the same candidate anatomy
+                     (the artifact + digest + attribution), with the decision
+                     receipt below — nothing disappears. -->
+                {@const pin = asPin(proposal)}
+                <p class="q-diff">
+                  <span class="q-verb">{t("quarantine.pinProposes")}</span>
+                </p>
+                <div class="q-pin">
+                  <span class="q-pin-main">
+                    <span class="q-pin-label">{t("quarantine.artifact")}</span>
+                    <span class="q-pin-ref mono">{pin.artifact_ref}</span>
+                  </span>
+                  <span class="q-pin-digest mono" title={pin.digest}>
+                    sha-256 {pin.digest.slice(0, 16)}…
+                  </span>
+                </div>
+              {:else}
+                <p class="q-diff">
+                  <span class="q-change">{t("quarantine.change")}:</span>
+                  <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.from].ink};background:${lifecycle[proposal.proposedPayload.from].soft}`}>
+                    {t(`hyp.status.${proposal.proposedPayload.from}`)}
+                  </span>
+                  <span class="q-arrow" aria-hidden="true">→</span>
+                  <span class="status-chip" style={`color:${lifecycle[proposal.proposedPayload.to].ink};background:${lifecycle[proposal.proposedPayload.to].soft}`}>
+                    {t(`hyp.status.${proposal.proposedPayload.to}`)}
+                  </span>
+                </p>
+              {/if}
               {#if proposal.status === "merged" && proposal.basisStale}
                 <p class="q-stale q-stale-marker">
                   <span class="q-stale-icon" aria-hidden="true">⚠</span>
@@ -444,6 +511,75 @@
     line-height: 1.5;
     color: var(--rc-ink-muted);
     font-style: italic;
+  }
+  /* The numerical pin candidate's anatomy (Story 3.4, AD-5 — same tokens
+     as the hypothesis cards' pin rows). */
+  .q-pin {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 12.5px;
+    color: var(--rc-ink);
+    background: var(--rc-surface-2);
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+  .q-pin-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .q-pin-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--rc-ink-muted);
+  }
+  .q-pin-ref {
+    font-size: 12px;
+    color: var(--rc-ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .q-pin-conf {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--rc-ink);
+    white-space: nowrap;
+  }
+  .q-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    flex: none;
+  }
+  .q-pin-digest {
+    font-size: 11px;
+    color: var(--rc-ink-muted);
+    letter-spacing: 0.01em;
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  .q-excerpt {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--rc-ink-muted);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    background: var(--rc-surface-2);
+    border-left: 3px solid var(--rc-border);
+    border-radius: 0 8px 8px 0;
+    padding: 8px 10px;
+    max-height: 120px;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   /* The basis-stale warning banner (AD-13) — amber, never silent. */
   .q-stale {

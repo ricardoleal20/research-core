@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, ComputeTargetView } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -58,6 +58,18 @@ const browserApi = {
       );
     }
     return mockApi.fetchJob(jobId);
+  },
+  // Fetch results → quarantined evidence (Story 3.4, FR-11.5): a mutation —
+  // the served browser view refuses it; the read-only per-job proposal list
+  // is available at /api/jobs/:id/result-proposals via listProposals.
+  fetchJobResults: async (jobId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — fetch results from the desktop app / " +
+          "Vista de solo lectura — obtén resultados desde la app de escritorio",
+      );
+    }
+    return mockApi.fetchJobResults(jobId);
   },
   listComputeTargets: async () => {
     if (await servedByCore) return httpJson<ComputeTargetView[]>("/api/targets");
@@ -594,6 +606,12 @@ export const api = mockActive ? browserApi : {
     invoke<Job>("submit_job", { missionId, target, spec }),
   pollJobs: (missionId: string) => invoke<Job[]>("poll_jobs", { missionId }),
   fetchJob: (jobId: string) => invoke<JobResult>("fetch_job", { jobId }),
+  // Fetch results → quarantined evidence (Story 3.4, FR-11.5, AD-3/AD-5):
+  // each meaningful artifact lands as a proposal whose intended payload is a
+  // numerical pin (artifact_ref + sha-256 digest computed in the core);
+  // idempotent — a second fetch appends nothing. The merge pins it.
+  fetchJobResults: (jobId: string) =>
+    invoke<FetchedJobResults>("fetch_job_results", { jobId }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, ComputeTargetView } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -283,6 +283,18 @@ let mockEventSeq = 0;
  *  audit stamp seq (creation, user transition, or applied merge). */
 const hypothesisCurrentSeq = (h: Hypothesis): number => h.audit.seq;
 
+/** Narrow a proposal's intended payload to a transition (Story 3.4: pin
+ *  proposals carry the ProposedPin shape instead — callers branch on
+ *  proposedKind, mirroring the core's closed vocabulary). */
+const asTransition = (p: Proposal): ProposedTransition | null =>
+  p.proposedKind === "hypothesis.status_changed"
+    ? (p.proposedPayload as ProposedTransition)
+    : null;
+
+/** Narrow a proposal's intended payload to a pin candidate. */
+const asPin = (p: Proposal): ProposedPin | null =>
+  p.proposedKind === "evidence.pinned" ? (p.proposedPayload as ProposedPin) : null;
+
 // In-memory checkpoints (mirrors the event-sourced core, Story 2.6, AD-1):
 // a checkpoint snapshots the mock state at creation; rollback restores the
 // snapshot and marks everything created after the checkpoint as superseded
@@ -327,7 +339,12 @@ function exportFilesFor(scope: string): string[] {
   const timeline = () => [
     "timeline/events.jsonl",
     "digest/digest.md",
-    ...proposals.map((p) => `proposals/pr-${p.seq}-${slug(p.proposedPayload.to ?? "")}.md`),
+    ...proposals.map((p) => {
+      const t = asTransition(p);
+      const pin = asPin(p);
+      const label = t ? t.to : pin ? (pin.artifact_ref ?? "pin") : "proposal";
+      return `proposals/pr-${p.seq}-${slug(label ?? "")}.md`;
+    }),
   ];
   const searchLog = () => ["search-log/search-log.md"];
   switch (scope) {
@@ -370,10 +387,12 @@ const orphanedFor = (cp: Checkpoint): { events: OrphanedEvent[]; proposals: Orph
   for (const p of proposals) {
     if (p.seq > cp.seq && !p.orphanedByRollback) {
       events.push({ seq: p.seq, ts: p.ts, kind: "proposal.created", actor: "agent" });
+      const t = asTransition(p);
       orphans.push({
         proposalId: p.id, seq: p.seq,
         targetLabel: p.targetLabel, targetSeq: p.targetSeq,
-        proposedTo: p.proposedPayload.to, basis: p.proposedPayload.basis,
+        proposedTo: t ? t.to : null,
+        basis: t ? t.basis : null,
       });
     }
   }
@@ -408,12 +427,36 @@ function mockPropose(h: Hypothesis, to: HypothesisStatus, basis: string, runId: 
 }
 
 /** Apply a merged proposal to the mock board — the merge is what applies
- *  the change (the fold's approval-order application, mirrored). */
+ *  the change (the fold's approval-order application, mirrored). A merged
+ *  result pin (Story 3.4) pins its anchor claim — never the board. */
 function mockApply(p: Proposal, decidedSeq: number): void {
   const h = hypotheses.find((x) => x.id === p.targetEntity);
   if (!h) return;
-  h.status = p.proposedPayload.to;
-  h.audit = { seq: decidedSeq, ts: nowISO(), actor: "agent", basis: p.proposedPayload.basis };
+  const pin = asPin(p);
+  if (pin) {
+    const claim = claims.find((c) => c.id === pin.claim_id);
+    if (!claim) return;
+    claim.pinned = true;
+    claim.pin = {
+      seq: decidedSeq,
+      ts: nowISO(),
+      claimId: claim.id,
+      hypothesisId: pin.hypothesis_id,
+      kind: "numerical",
+      refId: null,
+      artifactRef: pin.artifact_ref ?? null,
+      excerpt: pin.excerpt,
+      digest: pin.digest,
+      confidence: pin.confidence,
+      assessingModel: pin.assessing_model,
+      refLabel: null,
+    };
+    return;
+  }
+  const t = asTransition(p);
+  if (!t) return;
+  h.status = t.to;
+  h.audit = { seq: decidedSeq, ts: nowISO(), actor: "agent", basis: t.basis };
 }
 
 /** Upsert a relation chip onto one endpoint (latest event per endpoint
@@ -457,6 +500,10 @@ const seededRows: DigestRow[] = [
     status: "active", runs: 1, finished: 1, failed: 0, failureReason: null,
     ceilingReached: false, proposalsPending: 2, spendCents: 42, ceilingCents: 100,
     receiptSeq: 101, runId: "nightshift-21", lastRunTs: "2026-09-19T03:04:00Z",
+    // Story 3.4 (FR-11.5): the overnight cluster run — reported with a
+    // one-line verdict, its results waiting in quarantine.
+    jobsFinished: 1, jobsFailed: 0,
+    jobVerdict: { target: "cluster-1", jobId: "3f2a91c4-77b1-4c5e-9a20-8d41c2b6a0f3", failed: false, reason: null },
   },
   {
     missionId: "m22-seed", missionSeq: 22,
@@ -464,6 +511,7 @@ const seededRows: DigestRow[] = [
     status: "active", runs: 1, finished: 1, failed: 0, failureReason: null,
     ceilingReached: true, proposalsPending: 0, spendCents: 100, ceilingCents: 100,
     receiptSeq: 102, runId: "nightshift-22", lastRunTs: "2026-09-19T02:14:00Z",
+    jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
   },
   {
     missionId: "m24-seed", missionSeq: 24,
@@ -471,6 +519,7 @@ const seededRows: DigestRow[] = [
     status: "completed", runs: 2, finished: 2, failed: 0, failureReason: null,
     ceilingReached: false, proposalsPending: 0, spendCents: 31, ceilingCents: 100,
     receiptSeq: 103, runId: "nightshift-24", lastRunTs: "2026-09-19T01:44:00Z",
+    jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
   },
   {
     missionId: "m26-seed", missionSeq: 26,
@@ -478,6 +527,7 @@ const seededRows: DigestRow[] = [
     status: "failed", runs: 1, finished: 0, failed: 1, failureReason: "provider_error",
     ceilingReached: false, proposalsPending: 0, spendCents: 0, ceilingCents: 100,
     receiptSeq: 104, runId: "nightshift-26", lastRunTs: "2026-09-19T02:58:00Z",
+    jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
   },
 ];
 const seededDigest: MorningDigest = {
@@ -598,7 +648,7 @@ function mockReceiptFor(runId: string): RunReceipt | null {
       ...runProposals.map((p): ReceiptRow => ({
         seq: p.seq, ts: p.ts, kind: "proposal",
         proposalId: p.id, proposalSeq: p.seq,
-        to: p.proposedPayload.to, status: p.status,
+        to: asTransition(p)?.to ?? "", status: p.status,
       })),
     ];
     if (terminal) {
@@ -640,6 +690,13 @@ function currentMockDigest(): MorningDigest {
       const failedRuns = runs.filter((r) => r.kind === "run.failed");
       const lastStarted = [...runs].reverse().find((r) => r.kind === "run.started");
       const pending = proposals.filter((p) => p.missionId === m.id && p.status === "pending").length;
+      // Remote job completions (Story 3.4): the mock counts its finished /
+      // failed jobs per mission, latest verdict last.
+      const jobs = mockJobs.filter((j) => j.missionId === m.id);
+      const jobsFinished = jobs.filter((j) => j.phase === "finished").length;
+      const failedJobs = jobs.filter((j) => j.phase === "failed");
+      // the latest completed job (mockJobs is append-ordered)
+      const latestJob = jobs.filter((j) => j.phase === "finished" || j.phase === "failed").pop();
       const row: DigestRow = {
         missionId: m.id,
         missionSeq: m.seq,
@@ -658,6 +715,16 @@ function currentMockDigest(): MorningDigest {
         receiptSeq: lastStarted?.seq ?? 0,
         runId: lastStarted?.runId ?? "",
         lastRunTs: lastStarted?.ts ?? seededAt,
+        jobsFinished,
+        jobsFailed: failedJobs.length,
+        jobVerdict: latestJob
+          ? {
+              target: latestJob.target,
+              jobId: latestJob.id,
+              failed: latestJob.phase === "failed",
+              reason: latestJob.reason ?? null,
+            }
+          : null,
       };
       return row;
     })
@@ -1547,6 +1614,111 @@ export const mockApi = {
       code: 0,
       stdout: `[mock] ${argv}\n[mock] completed on target \`${job.target}\` — 2.0s, exit 0`,
       stderr: "",
+    };
+  },
+  // Fetch results → quarantined evidence (Story 3.4, FR-11.5, AD-3/AD-5):
+  // mirrors the typed core — the finished job's captured stdout becomes ONE
+  // proposal per meaningful artifact whose intended payload is a numerical
+  // pin (artifact_ref + sha-256 digest computed here, never from the
+  // caller), anchored to an UNPINNED claim on the mission's first
+  // hypothesis. Idempotent: a second fetch appends nothing. The merge pins.
+  fetchJobResults: async (jobId: string): Promise<FetchedJobResults> => {
+    await delay();
+    advanceMockJobs();
+    const job = mockJobs.find((j) => j.id === jobId);
+    if (!job) throw new Error(`not_found: no job with id \`${jobId}\``);
+    if (job.phase !== "finished") {
+      throw new Error(
+        `job_not_finished: the job is ${job.phase} — results land as evidence proposals only when a job finishes`,
+      );
+    }
+    const argv = [job.spec.cmd, ...(job.spec.args ?? [])].join(" ");
+    const results: JobResult = {
+      code: 0,
+      stdout: `[mock] ${argv}\n[mock] accuracy: 0.912, ±0.006, n=5 seeds — completed on \`${job.target}\``,
+      stderr: "",
+    };
+    // idempotency: this job's result proposals already exist
+    const existing = proposals.filter(
+      (p) => p.proposedKind === "evidence.pinned" && p.runId === `fetch-${job.id}`,
+    );
+    if (existing.length > 0) {
+      return {
+        job: { ...job },
+        results,
+        proposals: existing.map((p) => ({ ...p, proposedPayload: { ...p.proposedPayload } })),
+        created: 0,
+      };
+    }
+    // the v1 targeting rule: the mission's FIRST hypothesis
+    const hyp = hypotheses.find((h) => h.missionId === job.missionId);
+    if (!hyp) {
+      throw new Error(
+        "no_hypothesis: the mission has no hypothesis to pin results onto — a result pin targets the mission's first hypothesis (v1)",
+      );
+    }
+    const artifactRef = `jobs/${job.id}/stdout`;
+    const digest = await sha256Hex(results.stdout);
+    // the anchor claim (AD-5 — a pin attaches to a claim): registered
+    // UNPINNED; it renders amber until the merge pins it (FR-3.4)
+    claimSeq += 1;
+    mockEventSeq += 1;
+    const claim: Claim = {
+      id: "cl" + claimSeq + "-" + Date.now(),
+      seq: mockEventSeq,
+      ts: nowISO(),
+      hypothesisId: hyp.id,
+      text: `Result artifact \`${artifactRef}\` from job e-${job.seq} on \`${job.target}\``,
+      sourceMessageId: null,
+      pinned: false,
+      pin: null,
+    };
+    claims.push(claim);
+    // the pin-candidate proposal — awaiting merge like every other proposal
+    proposalSeq += 1;
+    mockEventSeq += 1;
+    const p: Proposal = {
+      id: "pr" + proposalSeq + "-" + Date.now(),
+      seq: mockEventSeq,
+      ts: nowISO(),
+      runId: `fetch-${job.id}`,
+      missionId: job.missionId,
+      targetEntity: hyp.id,
+      targetLabel: hyp.statement,
+      targetSeq: hyp.seq,
+      proposedKind: "evidence.pinned",
+      proposedPayload: {
+        claim_id: claim.id,
+        hypothesis_id: hyp.id,
+        kind: "numerical",
+        ref_id: null,
+        artifact_ref: artifactRef,
+        excerpt: results.stdout,
+        digest,
+        confidence: 0.5,
+        assessing_model: settings.model || "simulated",
+      },
+      basisSeq: hypothesisCurrentSeq(hyp),
+      basisStale: false,
+      status: "pending",
+      decided: null,
+      supersededBy: null,
+    };
+    proposals.push(p);
+    // the proposal surfaces in the mission's runs drill-down (receipt voice)
+    missionRuns[job.missionId] = missionRuns[job.missionId] ?? [];
+    missionRuns[job.missionId].push({
+      seq: p.seq,
+      id: "r" + p.seq + "-" + Date.now(),
+      ts: nowISO(),
+      kind: "proposal.created",
+      actor: "agent",
+    });
+    return {
+      job: { ...job },
+      results,
+      proposals: [{ ...p, proposedPayload: { ...p.proposedPayload } }],
+      created: 1,
     };
   },
 

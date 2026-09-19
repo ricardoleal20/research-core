@@ -337,6 +337,20 @@ const DICT: Record<string, Record<Lang, string>> = {
     pt: "Não foi possível carregar os trabalhos: ",
     fr: "Impossible de charger les tâches : ",
   },
+  // Fetch results → quarantined evidence (Story 3.4, FR-11.5): the fetch
+  // affordance lands the artifacts as pin-candidate proposals.
+  "missions.jobs.fetchError": {
+    es: "No se pudieron obtener los resultados: ",
+    en: "Could not fetch results: ",
+    pt: "Não foi possível obter os resultados: ",
+    fr: "Impossible de récupérer les résultats : ",
+  },
+  "missions.jobs.quarantined": {
+    es: "{count} propuesta(s) de evidencia en cuarentena — revisa en Pendientes",
+    en: "{count} evidence proposal(s) in quarantine — review under Pending review",
+    pt: "{count} proposta(s) de evidência em quarentena — revise em Revisão pendente",
+    fr: "{count} proposition(s) de preuve en quarantaine — à examiner dans Révision en attente",
+  },
 
   // morning digest (Story 2.3, FR-4): the Night Shift result, skimmable in
   // ninety seconds — one verdict per mission, spend vs ceiling, honest
@@ -377,6 +391,26 @@ const DICT: Record<string, Record<Lang, string>> = {
     en: "criterion met",
     pt: "critério cumprido",
     fr: "critère rempli",
+  },
+  // Remote job completions (Story 3.4, FR-11.5): the digest reports them
+  // with one-line verdicts — target, job, finished/failed.
+  "digest.verdict.jobs": {
+    es: "{count} trabajo(s) terminado(s)",
+    en: "{count} job(s) finished",
+    pt: "{count} trabalho(s) terminado(s)",
+    fr: "{count} tâche(s) terminée(s)",
+  },
+  "digest.job.finished": {
+    es: "{target} · trabajo {job} · terminado",
+    en: "{target} · job {job} · finished",
+    pt: "{target} · trabalho {job} · terminado",
+    fr: "{target} · tâche {job} · terminée",
+  },
+  "digest.job.failed": {
+    es: "{target} · trabajo {job} · falló: {reason}",
+    en: "{target} · job {job} · failed: {reason}",
+    pt: "{target} · trabalho {job} · falhou: {reason}",
+    fr: "{target} · tâche {job} · échec : {reason}",
   },
   "digest.receipts": { es: "recibos", en: "receipts", pt: "recibos", fr: "reçus" },
   "digest.alertLabel": { es: "interruptor de hombre muerto", en: "dead-man switch", pt: "interruptor de homem morto", fr: "interrupteur d'homme mort" },
@@ -674,6 +708,22 @@ const DICT: Record<string, Record<Lang, string>> = {
     fr: "remplacée par la fusion d'une proposition sœur",
   },
   "quarantine.decided": { es: "decidida", en: "decided", pt: "decidida", fr: "décidée" },
+  // Result-pin proposals (Story 3.4, FR-11.5, AD-5): the numerical pin
+  // candidate's anatomy — artifact, sha-256 digest fragment, attributed
+  // confidence — awaiting the same Approve/Reject as every proposal.
+  "quarantine.pinProposes": {
+    es: "propone fijar evidencia numérica",
+    en: "proposes pinning numerical evidence",
+    pt: "propõe fixar evidência numérica",
+    fr: "propose d'épingler une preuve numérique",
+  },
+  "quarantine.artifact": { es: "artefacto", en: "artifact", pt: "artefato", fr: "artefact" },
+  "quarantine.awaitingMerge": {
+    es: "el pin se aplica solo al aprobar — el fijado automático no existe en v1",
+    en: "the pin applies only on approval — auto-pinning does not exist in v1",
+    pt: "o pino aplica-se só ao aprovar — a fixação automática não existe na v1",
+    fr: "l'épingle ne s'applique qu'à l'approbation — l'épinglage automatique n'existe pas en v1",
+  },
 
   // onboarding — the sixty-second first value (Story 1.9, FR-8.1/8.2): the
   // welcome's two quiet actions and the result moment. Zero jargon beyond

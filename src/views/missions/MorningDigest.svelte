@@ -72,18 +72,37 @@
 
   // The one-line verdict of a row (FR-4.4 — ≤2 lines rendered: the verdict
   // plus its translation). The honest failure row carries its reason (FR-4.3).
+  // Remote job completions (Story 3.4) join the line — a jobs-only night
+  // still names what the cluster did.
   function verdict(row: DigestRow): string {
     const label = `M-${row.missionSeq}`;
     if (row.failed > 0 && row.finished === 0) {
       return `${label} · ${t("digest.verdict.failed", { reason: row.failureReason ?? "unknown" })}`;
     }
     let line = `${label} · ${t("digest.verdict.ok", { runs: row.runs, proposals: row.proposalsPending })}`;
+    if (row.jobsFinished > 0) {
+      line += ` · ${t("digest.verdict.jobs", { count: row.jobsFinished })}`;
+    }
     if (row.ceilingReached) {
       line += ` · ${t("digest.verdict.ceiling")}`;
     } else if (row.status === "completed") {
       line += ` · ${t("digest.verdict.criterion")}`;
     }
     return line;
+  }
+
+  // The latest completed job's one-line verdict (Story 3.4, FR-11.5):
+  // target · job · finished/failed — the short id is the mono anchor.
+  function jobVerdict(row: DigestRow): string {
+    if (!row.jobVerdict) return "";
+    const job = row.jobVerdict.jobId.slice(0, 8);
+    return row.jobVerdict.failed
+      ? t("digest.job.failed", {
+          target: row.jobVerdict.target,
+          job,
+          reason: row.jobVerdict.reason ?? "unknown",
+        })
+      : t("digest.job.finished", { target: row.jobVerdict.target, job });
   }
 </script>
 
@@ -140,6 +159,12 @@
     {#each digest.rows as row (row.missionId)}
       <div class="d-row" class:failed={row.failed > 0 && row.finished === 0}>
         <p class="d-line mono" title={row.question}>{verdict(row)}</p>
+        {#if row.jobVerdict}
+          <!-- The job completion's one-line verdict (Story 3.4, FR-11.5):
+               target · job · finished/failed — its results wait in
+               quarantine as pin candidates. -->
+          <p class="d-line d-job mono">{jobVerdict(row)}</p>
+        {/if}
         <div class="d-side">
           <span class="status-chip" style={`color:${statusColor[row.status]};background:color-mix(in srgb, ${statusColor[row.status]} 10%, transparent)`}>
             {t(`missions.status.${row.status}`)}
@@ -338,6 +363,12 @@
     font-size: 12.5px;
     line-height: 1.7;
     min-width: 0;
+  }
+  /* The job completion verdict (Story 3.4): the second line of a row that
+     ran remote jobs — quieter than the mission verdict, still mono. */
+  .d-job {
+    font-size: 11.5px;
+    color: var(--rc-ink-muted);
   }
   .d-label {
     font-weight: 500;

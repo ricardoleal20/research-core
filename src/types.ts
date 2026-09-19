@@ -276,11 +276,28 @@ export interface ProposalDecision {
 }
 
 // The proposed change — closed vocabulary v1: hypothesis status transitions
-// (the intended event's payload, already validated by its own constructor).
+// (the intended event's payload, already validated by its own constructor),
+// and evidence pins (Story 3.4, FR-11.5): a fetched job result proposes a
+// numerical pin candidate (artifact_ref + sha-256 digest computed at
+// proposal time, AD-5) awaiting merge.
 export interface ProposedTransition {
   from: HypothesisStatus;
   to: HypothesisStatus;
   basis: string; // the agent's justification for the change
+}
+
+// The intended numerical evidence.pinned payload of a result proposal
+// (Story 3.4, AD-5) — snake_case on the wire (the log's payload convention).
+export interface ProposedPin {
+  claim_id: string;
+  hypothesis_id: string;
+  kind: "citation" | "numerical";
+  ref_id?: string | null;
+  artifact_ref?: string | null; // the artifact the pin anchors to (numerical)
+  excerpt: string; // the pinned content (the captured output)
+  digest: string; // sha-256 of the excerpt — computed at proposal time
+  confidence: number; // agent-assessed, attributed (FR-3.6)
+  assessing_model: string;
 }
 
 export interface Proposal {
@@ -292,8 +309,8 @@ export interface Proposal {
   targetEntity: string; // the hypothesis the proposal intends to change
   targetLabel: string | null; // the hypothesis statement — the card's label
   targetSeq: number | null; // the H-n label seq
-  proposedKind: string; // "hypothesis.status_changed"
-  proposedPayload: ProposedTransition;
+  proposedKind: string; // "hypothesis.status_changed" | "evidence.pinned"
+  proposedPayload: ProposedTransition | ProposedPin; // discriminated by proposedKind
   basisSeq: number; // the seq of the entity state the proposal derives from (AD-13)
   basisStale: boolean; // pending: entity advanced past the basis (warning variant); merged: the forced-past-stale marker
   status: ProposalStatus;
@@ -342,6 +359,21 @@ export interface DigestRow {
   receiptSeq: number; // the latest run.started seq — the receipts link
   runId: string; // the latest run's id (Story 2.5) — the receipt drill-down's target
   lastRunTs: string; // ISO-8601 UTC
+  // Remote job completions in the window (Story 3.4, FR-11.5): the digest
+  // reports them with one-line verdicts — a jobs-only night still earns its
+  // row.
+  jobsFinished: number;
+  jobsFailed: number;
+  jobVerdict: DigestJobVerdict | null; // the latest completed job's verdict
+}
+
+// One remote job completion's verdict (Story 3.4): which target, which job,
+// finished or failed (with the reason — no job ends silently, AD-12).
+export interface DigestJobVerdict {
+  target: string; // the named compute target
+  jobId: string; // the job's id — rendered short
+  failed: boolean;
+  reason?: string | null; // code-form reason (present iff failed)
 }
 
 // The dead-man-switch alert row (FR-9.1 hook): a run that died with a stale
@@ -728,6 +760,17 @@ export interface JobResult {
   code: number | null;
   stdout: string;
   stderr: string;
+}
+
+// What fetch_job_results produced (Story 3.4, FR-11.5): the captured output
+// and the quarantined proposals it landed as — one per meaningful artifact,
+// each a numerical pin candidate awaiting merge (AD-3; auto-pinning is
+// v0.2.0). `created` is 0 on an idempotent re-fetch.
+export interface FetchedJobResults {
+  job: Job;
+  results: JobResult;
+  proposals: Proposal[];
+  created: number;
 }
 
 // One compute target as the mission card's target row renders it: a name

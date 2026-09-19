@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ComputeTargetView, Job, JobResult, JobSpec, Mission, MissionRun } from "../../types";
+  import type { ComputeTargetView, Job, JobSpec, Mission, MissionRun, FetchedJobResults } from "../../types";
   import { t } from "../../i18n";
   import { api } from "../../api";
   import HypothesesBoard from "./HypothesesBoard.svelte";
@@ -34,9 +34,12 @@
   let specMemory = $state("");
   let submitting = $state(false);
   let submitError = $state("");
-  // fetched results per job id (terminal jobs only — the quarantine flow
-  // that turns results into evidence is Story 3.4)
-  let results = $state<Record<string, JobResult>>({});
+  // Fetched results per job id (Story 3.4, FR-11.5): the fetch lands the
+  // artifacts as QUARANTINED pin-candidate proposals — the note names the
+  // count, the captured output previews below. Idempotent: a second fetch
+  // appends nothing.
+  let fetched = $state<Record<string, FetchedJobResults>>({});
+  let fetching = $state<string | null>(null);
 
   // The spec as typed JSON — composed from the fields above, never typed
   // as text. This is exactly what submit_job receives and validates.
@@ -122,12 +125,19 @@
     }
   }
 
+  // The fetch affordance (Story 3.4): fetching a finished job's results
+  // sends each meaningful artifact to quarantine as a numerical pin
+  // candidate — the proposals appear in Pending review; approving pins.
   async function fetchResults(job: Job) {
-    if (results[job.id]) return;
+    if (fetched[job.id] || fetching) return;
+    fetching = job.id;
+    submitError = "";
     try {
-      results[job.id] = await api.fetchJob(job.id);
+      fetched[job.id] = await api.fetchJobResults(job.id);
     } catch (e) {
-      submitError = String(e);
+      submitError = t("missions.jobs.fetchError") + e;
+    } finally {
+      fetching = null;
     }
   }
 
@@ -442,32 +452,44 @@
                 {#if job.exitCode != null}
                   <span class="mc-job-code mono">{t("missions.jobs.exit")} {job.exitCode}</span>
                 {/if}
-                {#if job.phase === "finished" || job.phase === "failed"}
+                {#if job.phase === "finished"}
+                  <!-- The fetch affordance (Story 3.4, FR-11.5): fetching
+                       lands the artifacts as quarantined pin-candidate
+                       proposals — a failed job keeps its stamped reason. -->
                   <button
                     class="mc-job-fetch mono"
                     type="button"
+                    disabled={fetching === job.id}
                     onclick={() => fetchResults(job)}
                   >
-                    {t("missions.jobs.fetch")} →
+                    {fetching === job.id ? "…" : t("missions.jobs.fetch")} →
                   </button>
                 {/if}
               </div>
               {#if job.reason}
                 <p class="mc-job-reason mono">{t("missions.jobs.reason")}: {job.reason}</p>
               {/if}
-              {#if results[job.id]}
+              {#if fetched[job.id]}
                 <div class="mc-job-results">
                   <span class="mc-results-label">{t("missions.jobs.results")}</span>
-                  {#if results[job.id].stdout}
+                  {#if fetched[job.id].proposals.length > 0}
+                    <!-- The quarantine note: the artifacts left as pin
+                         candidates, awaiting review (AD-3 — nothing pins
+                         without the human's merge). -->
+                    <p class="mc-quarantine-note">
+                      {t("missions.jobs.quarantined", { count: fetched[job.id].proposals.length })}
+                    </p>
+                  {/if}
+                  {#if fetched[job.id].results.stdout}
                     <div class="mc-result-block">
                       <span class="mono">{t("missions.jobs.stdout")}</span>
-                      <pre class="mono">{results[job.id].stdout}</pre>
+                      <pre class="mono">{fetched[job.id].results.stdout}</pre>
                     </div>
                   {/if}
-                  {#if results[job.id].stderr}
+                  {#if fetched[job.id].results.stderr}
                     <div class="mc-result-block">
                       <span class="mono">{t("missions.jobs.stderr")}</span>
-                      <pre class="mono">{results[job.id].stderr}</pre>
+                      <pre class="mono">{fetched[job.id].results.stderr}</pre>
                     </div>
                   {/if}
                 </div>
@@ -1048,6 +1070,17 @@
     gap: 6px;
     border-top: 1px dashed var(--rc-border);
     padding-top: 6px;
+  }
+  /* The quarantine note (Story 3.4): where the artifacts went — pin
+     candidates waiting for the human's merge (AD-3). */
+  .mc-quarantine-note {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--rc-accent);
+    background: var(--rc-accent-soft);
+    border-radius: 6px;
+    padding: 5px 8px;
   }
   .mc-results-label {
     font-size: 11px;
