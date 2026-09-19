@@ -277,9 +277,9 @@ function fmtCents(cents: number): string {
 }
 
 const SPEND_FILL: Record<string, string> = {
-  ok: "#047857", // spend-ok
-  near: "#B45309", // spend-near
-  blocked: "#B91C1C", // spend-blocked
+  ok: "var(--spend-ok)", // spend-ok
+  near: "var(--spend-near)", // spend-near
+  blocked: "var(--spend-blocked)", // spend-blocked
 };
 
 /// DESIGN.md components.spend-meter: thin track, fill colored by state —

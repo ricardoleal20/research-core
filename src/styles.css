@@ -5,6 +5,21 @@
   --st-unread:#8A93A3; --st-reading:#D98324; --st-read:#2F9E6B; --st-reviewed:#3B5BDB;
   --st-unread-tx:#5A6373; --st-reading-tx:#8A5214; --st-read-tx:#1A6B47; --st-reviewed-tx:#3B5BDB;
   --dot-1:#3B5BDB; --dot-2:#2F9E6B; --dot-3:#D98324; --dot-4:#9B5DE5; --dot-5:#E64980;
+  /* v1 semantic extensions (DESIGN.md ux-research-core-2026-09-18) — reoccurred onto the real palette */
+  --destructive:#C0392B; --destructive-hover:#A93226; --destructive-tx:#C0392B;
+  --lifecycle-proposed:#8A93A3; --lifecycle-proposed-tx:#5A6373;
+  --lifecycle-testing:#D98324; --lifecycle-testing-tx:#8A5214;
+  --lifecycle-supported:#2F9E6B; --lifecycle-supported-tx:#1A6B47;
+  --lifecycle-refuted:#C0392B; --lifecycle-refuted-tx:#C0392B;
+  --lifecycle-revised:#3B5BDB; --lifecycle-revised-tx:#2B46B8;
+  --quarantine-pending:#D98324; --quarantine-pending-tx:#8A5214;
+  --quarantine-merged:#2F9E6B; --quarantine-merged-tx:#1A6B47;
+  --quarantine-rejected:#8A93A3; --quarantine-rejected-tx:#5A6373;
+  --quarantine-superseded:#6E7686; --quarantine-void:#6E7686;
+  --basis-stale:#D98324; --basis-stale-tx:#8A5214;
+  --spend-ok:#2F9E6B; --spend-near:#D98324; --spend-blocked:#C0392B;
+  --telemetry-healthy:#2F9E6B; --telemetry-degraded:#D98324; --telemetry-error:#C0392B; --telemetry-dead:#C0392B;
+  --mission-active:#3B5BDB; --mission-completed:#2F9E6B; --mission-stopped:#8A93A3; --mission-failed:#C0392B;
   --win-edge:#D7DAE2;
   --font-display:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   --font-body:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
