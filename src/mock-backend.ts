@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, Autonomy } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -60,6 +60,10 @@ const messages: Record<string, Message[]> = {};
 let chatSeq = 0;
 let msgSeq = 0;
 const nowISO = () => "2025-09-01T12:00:00Z";
+
+// In-memory missions so the question box → mission composer flow works in-browser.
+const missions: Mission[] = [];
+let missionSeq = 0;
 
 const agents: Agent[] = [
   { id: "a1", key: "rigor", name: "Rigor", description: "Detecta fallos metodológicos y lógicos.", icon: "brain", enabled: 1, kind: "judge" },
@@ -169,6 +173,25 @@ export const mockApi = {
 
   // LLM CLI detection
   testCli: async (command: string) => ({ command, path: `/usr/local/bin/${command}` }),
+
+  // missions
+  createMission: async (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number }) => {
+    await delay();
+    missionSeq += 1;
+    const mission: Mission = {
+      id: "m" + missionSeq + "-" + Date.now(),
+      seq: missionSeq,
+      ts: nowISO(),
+      question: m.question,
+      stopCondition: m.stopCondition,
+      successCriterion: m.successCriterion,
+      autonomy: m.autonomy,
+      spendCeilingCents: m.spendCeilingCents,
+    };
+    missions.push(mission);
+    return mission;
+  },
+  listMissions: async () => { await delay(); return [...missions]; },
 
   // danger zone
   resetDatabase: async () => { await delay(); },

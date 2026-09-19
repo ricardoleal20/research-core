@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, Autonomy } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // When the Tauri runtime is absent (plain browser via `vite`), fall back to an
@@ -75,6 +75,11 @@ export const api = mockActive ? mockApi : {
 
   // LLM CLI detection
   testCli: (command: string) => invoke<{ command: string; path: string | null }>("test_cli", { command }),
+
+  // missions (event-sourced: create appends mission.created, list folds the projection)
+  createMission: (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number }) =>
+    invoke<Mission>("create_mission", m),
+  listMissions: () => invoke<Mission[]>("list_missions"),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

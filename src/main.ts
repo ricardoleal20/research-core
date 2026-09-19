@@ -13,8 +13,9 @@ import { renderSplash, renderLogin } from "./views/welcome";
 import { renderWizard } from "./views/wizard";
 import { renderTutorial } from "./views/tutorial";
 import { showLockScreen } from "./views/lockscreen";
+import { renderMissions, unmountMissions } from "./views/missions";
 
-export type Tab = "investigacion" | "refs" | "ai-review" | "asistente" | "acciones" | "status" | "ajustes";
+export type Tab = "misiones" | "investigacion" | "refs" | "ai-review" | "asistente" | "acciones" | "status" | "ajustes";
 
 export const state: {
   projects: Project[];
@@ -69,6 +70,7 @@ export function setActive(p: Project | null) {
 }
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: "misiones", label: "Misiones" },
   { id: "investigacion", label: "Inicio" },
   { id: "refs", label: "Refs" },
   { id: "ai-review", label: "AI Review" },
@@ -132,7 +134,7 @@ export function setTab(tab: Tab) {
 
 function renderSubheader() {
   const sh = $("#subheader")!;
-  if (!state.active || state.tab === "ajustes") {
+  if (!state.active || state.tab === "ajustes" || state.tab === "misiones") {
     sh.innerHTML = "";
     sh.style.display = "none";
     return;
@@ -159,6 +161,14 @@ function renderSubheader() {
 
 export async function renderView() {
   const view = $("#view")!;
+  // Leaving the Svelte missions surface unmounts it cleanly.
+  if (state.tab !== "misiones") unmountMissions();
+  // Missions are workspace-level (not project-scoped): render regardless of
+  // whether a project is active.
+  if (state.tab === "misiones") {
+    renderMissions(view);
+    return;
+  }
   if (state.tab === "ajustes") {
     await renderAjustes(view);
     return;

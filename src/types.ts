@@ -122,3 +122,17 @@ export interface McpServer {
   connected: number;
   created_at: string;
 }
+
+// Missions (event-sourced read model, camelCase wire form per Tauri 2)
+export type Autonomy = "watch" | "suggest" | "act_with_receipts";
+
+export interface Mission {
+  id: string; // the mission.created event id
+  seq: number; // store-assigned seq of the creation event
+  ts: string; // ISO-8601 UTC
+  question: string;
+  stopCondition: string;
+  successCriterion: string;
+  autonomy: Autonomy;
+  spendCeilingCents: number;
+}
