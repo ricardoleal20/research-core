@@ -400,3 +400,66 @@ export interface FirstValueResult {
   mission: Mission;
   candidates: HypothesisCandidate[];
 }
+
+// ---- Trust center (Story 2.4, FR-5): dials, ceilings, kill switch ----
+
+// The runtime's kill state (AD-15e): while "killed" is the latest
+// runtime-state event by seq, every dispatch is refused.
+export type RuntimeState = "running" | "killed";
+
+// One scope's autonomy dial setting: the mission id or target name (null for
+// the global scope).
+export interface ScopeDial {
+  scopeId: string | null;
+  mode: Autonomy;
+}
+
+// One scope's spend ceiling setting, in cents.
+export interface ScopeCeiling {
+  scopeId: string | null;
+  ceilingCents: number;
+}
+
+// One mission's spend meter: current spend vs the effective (most
+// restrictive) ceiling.
+export interface MissionMeter {
+  missionId: string;
+  question: string;
+  spendCents: number;
+  ceilingCents: number;
+  state: SpendState;
+  dial: Autonomy; // the mission's effective dial (creation ∩ configured)
+}
+
+// One compute target's spend meter (null ceiling = unbounded).
+export interface TargetMeter {
+  target: string;
+  spendCents: number;
+  ceilingCents: number | null;
+  dial: Autonomy | null; // the target's configured dial (null = unconfigured)
+}
+
+// The last run's spend line ("last run: 82¢ of 100¢").
+export interface LastRunSpend {
+  runId: string;
+  spendCents: number;
+  ceilingCents: number | null;
+}
+
+// Everything the trust center renders (FR-5): runtime state, effective dials
+// and ceilings at every scope, spend vs ceiling per scope, and the last
+// run's spend line — the read model over the trust events.
+export interface TrustStatus {
+  runtimeState: RuntimeState;
+  killedSeq: number | null;
+  globalAutonomy: Autonomy | null;
+  missionDials: ScopeDial[];
+  targetDials: ScopeDial[];
+  globalCeilingCents: number | null;
+  missionCeilings: ScopeCeiling[];
+  targetCeilings: ScopeCeiling[];
+  globalSpendCents: number;
+  missions: MissionMeter[];
+  targets: TargetMeter[];
+  lastRun: LastRunSpend | null;
+}

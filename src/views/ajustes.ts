@@ -3,13 +3,14 @@ import { state, setTab, esc, el, toast } from "../main";
 import { ico } from "../icons";
 import { t, setLang, getLang } from "../i18n";
 import { showSettingsSkeleton } from "../skeleton";
-import type { McpServer } from "../types";
+import type { McpServer, TrustStatus, Autonomy, MissionMeter, TargetMeter } from "../types";
 
 const APP_VERSION = "0.1.0";
 const GITHUB_URL = "https://github.com/ricardoleal20/research-core";
 
 let settings: Record<string, string> = {};
 let servers: McpServer[] = [];
+let trust: TrustStatus | null = null;
 let ajView: HTMLElement | null = null;
 // Remember the open section so it survives a language-change re-render.
 let activeSection = "general";
@@ -35,12 +36,15 @@ export async function renderAjustes(view: HTMLElement) {
       const s = { ...state.settings, ...(await api.getSettings()) };
       let sv: McpServer[] = [];
       try { sv = await api.listMcpServers(); } catch { sv = []; }
-      return { s, sv };
+      let tr: TrustStatus | null = null;
+      try { tr = await api.getTrustStatus(); } catch { tr = null; }
+      return { s, sv, tr };
     })(),
     waitSkeleton(),
   ]);
   settings = loaded.s;
   servers = loaded.sv;
+  trust = loaded.tr;
   setLang(settings.lang || "es");
 
   view.innerHTML = `<div class="settings-body">
@@ -48,6 +52,8 @@ export async function renderAjustes(view: HTMLElement) {
       <div class="sb-label">${t("ajustes.title")}</div>
       <nav class="settings-nav">
         <button class="settings-nav-item ${activeSection === "general" ? "is-active" : ""}" data-section="general">${t("sec.general")}</button>
+
+        <button class="settings-nav-item ${activeSection === "trust" ? "is-active" : ""}" data-section="trust">${t("sec.trust")}</button>
 
         <hr class="settings-nav-sep">
 
@@ -80,6 +86,7 @@ export async function renderAjustes(view: HTMLElement) {
         ${cardLocal()}
         ${cardDanger()}
       </div>
+      <div class="aj-section ${activeSection === "trust" ? "is-active" : ""}" data-section="trust" id="aj-section-trust" ${activeSection === "trust" ? "" : "hidden"}>${trustCards()}</div>
       <div class="aj-section ${activeSection === "mcp" ? "is-active" : ""}" data-section="mcp" ${activeSection === "mcp" ? "" : "hidden"}>${cardMcp()}</div>
       <div class="aj-section ${activeSection === "agent" ? "is-active" : ""}" data-section="agent" ${activeSection === "agent" ? "" : "hidden"}>${cardAgent()}</div>
       <div class="aj-section ${activeSection === "provider" ? "is-active" : ""}" data-section="provider" ${activeSection === "provider" ? "" : "hidden"}>${cardIa()}</div>
@@ -90,6 +97,7 @@ export async function renderAjustes(view: HTMLElement) {
   wireSidebar();
   wireToggles();
   wireLang();
+  wireTrust();
   wireSecurity();
   $("#aj-save")!.addEventListener("click", save);
   $("#aj-reset")!.addEventListener("click", confirmReset);
@@ -243,6 +251,289 @@ function cardApp() {
     </div>
     <p class="aj-note">${t("app.githubDesc")}</p>
   </div>`;
+}
+
+/* ---------- Trust center (Story 2.4, FR-5) ---------- */
+
+/// Cents → "$14.62"; small amounts keep the receipt voice ("82¢").
+function fmtMoney(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+function fmtCents(cents: number): string {
+  return cents > 0 && cents < 100 ? `${cents}¢` : fmtMoney(cents);
+}
+
+const SPEND_FILL: Record<string, string> = {
+  ok: "#047857", // spend-ok
+  near: "#B45309", // spend-near
+  blocked: "#B91C1C", // spend-blocked
+};
+
+/// DESIGN.md components.spend-meter: thin track, fill colored by state —
+/// and always paired with the textual "$X of $Y" line (never color alone).
+function meterHtml(spendCents: number, ceilingCents: number | null, key: string): string {
+  if (!ceilingCents || ceilingCents <= 0) {
+    return `<div class="trust-meter" data-meter="${key}"><i style="width:0%"></i></div>`;
+  }
+  const state = spendCents === 0 ? "ok" : spendCents >= ceilingCents ? "blocked" : spendCents * 5 >= ceilingCents * 4 ? "near" : "ok";
+  const pct = Math.min(100, Math.round((spendCents / ceilingCents) * 100));
+  return `<div class="trust-meter" data-meter="${key}" role="img" aria-label="${pct}%"><i style="width:${pct}%;background:${SPEND_FILL[state]}"></i></div>`;
+}
+
+/// The three-stop autonomy dial as a segmented control (FR-5.1). AD-15d's
+/// note rides every row: across scopes, most restrictive wins.
+function dialSeg(scope: "global" | "mission" | "target", scopeId: string | null, current: Autonomy | null): string {
+  const stops: [Autonomy, string][] = [
+    ["watch", t("trust.watch")],
+    ["suggest", t("trust.suggest")],
+    ["act_with_receipts", t("trust.act")],
+  ];
+  return `<div class="actions-seg trust-seg" role="group">
+    ${stops.map(([mode, label]) =>
+      `<button type="button" class="${current === mode ? "is-active" : ""}" data-trust-dial="${scope}" data-scope-id="${esc(scopeId ?? "")}" data-mode="${mode}">${label}</button>`
+    ).join("")}
+  </div>`;
+}
+
+function trustCards(): string {
+  if (!trust) {
+    return `<div class="card"><div class="card-head"><div class="card-title">${ico.shield} ${t("sec.trust")}</div></div><div class="empty-row">${t("trust.targetsSub")}</div></div>`;
+  }
+  return cardTrustAutonomy() + cardTrustSpend() + cardTrustKill() + cardTrustProviders() + cardTrustTargets();
+}
+
+function cardTrustAutonomy(): string {
+  const tr = trust!;
+  const missionRows = tr.missions.map((m: MissionMeter) => `
+    <div class="trust-row">
+      <div class="trust-row-l">
+        <div class="trust-row-t">${esc(m.question)}</div>
+        <div class="trust-row-n micro">${t("trust.mostRestrictive")}</div>
+      </div>
+      ${dialSeg("mission", m.missionId, m.dial)}
+    </div>`).join("");
+  return `<div class="card" id="card-trust-autonomy">
+    <div class="card-head">
+      <div class="card-title">${ico.layers} ${t("trust.autonomy")}</div>
+      <div class="micro">${t("trust.autonomySub")}</div>
+    </div>
+    <div class="trust-row">
+      <div class="trust-row-l">
+        <div class="trust-row-t">${t("trust.global")}</div>
+        <div class="trust-row-n micro">${t("trust.mostRestrictive")}</div>
+      </div>
+      ${dialSeg("global", null, tr.globalAutonomy)}
+    </div>
+    ${missionRows}
+    <p class="aj-note micro">${t("trust.targetsFootnote")}</p>
+  </div>`;
+}
+
+function cardTrustSpend(): string {
+  const tr = trust!;
+  const globalPct = tr.globalCeilingCents
+    ? Math.min(100, Math.round((tr.globalSpendCents / tr.globalCeilingCents) * 100))
+    : 0;
+  const missionRows = tr.missions.map((m: MissionMeter) => `
+    <div class="trust-row">
+      <div class="trust-row-l">
+        <div class="trust-row-t">${esc(m.question)} <span class="chip">${t("trust.hard")}</span></div>
+        <div class="trust-row-n mono">${t("trust.current")}: ${fmtCents(m.spendCents)} ${t("trust.of")} ${fmtMoney(m.ceilingCents)}</div>
+        ${meterHtml(m.spendCents, m.ceilingCents, `mission-${m.missionId}`)}
+      </div>
+      <div class="trust-ceil">
+        <span class="mono trust-cur">$</span>
+        <input class="trust-ceil-input" type="text" inputmode="decimal" data-trust-ceiling="mission" data-scope-id="${esc(m.missionId)}" value="${(m.ceilingCents / 100).toFixed(2)}" aria-label="${t("trust.perRunCeiling")}">
+      </div>
+    </div>`).join("");
+  const lastRun = tr.lastRun
+    ? `${t("trust.lastRun")} ${esc(tr.lastRun.runId)}: ${fmtCents(tr.lastRun.spendCents)} ${t("trust.of")} ${tr.lastRun.ceilingCents ? fmtMoney(tr.lastRun.ceilingCents) : "—"}`
+    : t("trust.unset");
+  return `<div class="card" id="card-trust-spend">
+    <div class="card-head">
+      <div class="card-title">${ico.shield} ${t("trust.spend")}</div>
+      <div class="micro">${ico.check} ${t("trust.spendSub")}</div>
+    </div>
+    <div class="trust-row">
+      <div class="trust-row-l">
+        <div class="trust-row-t">${t("trust.monthlyCeiling")} <span class="chip">${t("trust.hard")}</span></div>
+        <div class="trust-row-n mono">${t("trust.current")}: ${fmtMoney(tr.globalSpendCents)} ${t("trust.of")} ${tr.globalCeilingCents ? fmtMoney(tr.globalCeilingCents) : "—"}${tr.globalCeilingCents ? ` · ${globalPct}%` : ""}</div>
+        ${meterHtml(tr.globalSpendCents, tr.globalCeilingCents, "global")}
+      </div>
+      <div class="trust-ceil">
+        <span class="mono trust-cur">$</span>
+        <input class="trust-ceil-input" type="text" inputmode="decimal" data-trust-ceiling="global" data-scope-id="" value="${tr.globalCeilingCents ? (tr.globalCeilingCents / 100).toFixed(2) : ""}" placeholder="25.00" aria-label="${t("trust.monthlyCeiling")}">
+      </div>
+    </div>
+    <div class="trust-sub-head">${t("trust.perRunCeiling")} <span class="mono micro">· ${lastRun}</span></div>
+    ${missionRows}
+  </div>`;
+}
+
+function cardTrustKill(): string {
+  const tr = trust!;
+  const killed = tr.runtimeState === "killed";
+  // The telemetry line: label + icon, never color alone (DESIGN.md tokens).
+  const statusChips = killed
+    ? `<span class="status-badge is-off"><span class="dot"></span>${t("trust.killed")}</span>
+       <span class="trust-telem micro">${ico.activity} ${t("trust.heartbeatsOff")}</span>`
+    : `<span class="status-badge is-active"><span class="dot"></span>${t("trust.running")}</span>
+       <span class="trust-telem micro">${ico.activity} ${t("trust.heartbeats")}</span>
+       <span class="chip">${t("trust.healthy")}</span>`;
+  const control = killed
+    ? `<button class="btn btn-ghost btn-sm" id="trust-resume" type="button">${t("trust.resume")}</button>`
+    : `<button class="btn btn-danger btn-sm" id="trust-kill-toggle" type="button">${ico.power} ${t("trust.kill")}</button>`;
+  return `<div class="card" id="card-trust-kill" style="${killed ? "border-color:var(--st-unread)" : ""}">
+    <div class="card-head"><div class="card-title">${ico.power} ${t("trust.kill")}</div></div>
+    <div class="trust-row">
+      <div class="trust-row-l">
+        <div class="trust-row-t">${t("trust.autonomousWork")}</div>
+        <div class="trust-row-n small">${killed ? t("trust.killOff") : t("trust.killOn")}</div>
+        <div class="trust-kill-status">${statusChips}</div>
+      </div>
+      ${control}
+    </div>
+    <div class="trust-kill-confirm" id="trust-kill-confirm" hidden>
+      <p class="small">${t("trust.confirmStopDesc")}</p>
+      <div>
+        <button class="btn btn-danger btn-sm" id="trust-kill-confirm-btn" type="button">${t("trust.confirmStop")}</button>
+        <button class="btn btn-ghost btn-sm" id="trust-kill-cancel" type="button">${t("trust.cancel")}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function cardTrustProviders(): string {
+  // BYOK rows (AD-16): the key lives in the OS keychain and is never shown —
+  // the row only ever reports configured / no key.
+  const providers = ["openai", "anthropic", "google", "openrouter", "custom"];
+  const configured = (name: string) =>
+    name === (settings.provider || "").trim() && (settings.api_key || "").trim() !== "";
+  const rows = providers.map((name) => `
+    <div class="trust-prov">
+      <div class="trust-row-t">${esc(name.charAt(0).toUpperCase() + name.slice(1))}</div>
+      <div class="trust-prov-r">
+        ${configured(name)
+          ? `<span class="chip">${t("trust.configured")}</span>
+             <span class="trust-telem micro">${ico.key} ${t("trust.keyInKeychain")}</span>`
+          : `<span class="chip">${t("trust.noKey")}</span>`}
+      </div>
+    </div>`).join("");
+  return `<div class="card" id="card-trust-providers">
+    <div class="card-head">
+      <div class="card-title">${ico.key} ${t("trust.providers")}</div>
+      <div class="micro">${t("trust.providersSub")}</div>
+    </div>
+    ${rows}
+  </div>`;
+}
+
+function cardTrustTargets(): string {
+  const tr = trust!;
+  if (tr.targets.length === 0) {
+    return `<div class="card" id="card-trust-targets">
+      <div class="card-head">
+        <div class="card-title">${ico.server} ${t("trust.targets")}</div>
+        <div class="micro">${t("trust.targetsSub")}</div>
+      </div>
+      <div class="empty-row">${t("trust.targetsSub")}</div>
+    </div>`;
+  }
+  const rows = tr.targets.map((tg: TargetMeter) => `
+    <div class="trust-target">
+      <div class="trust-row">
+        <div class="trust-row-l">
+          <div class="trust-row-t mono">${esc(tg.target)}</div>
+          <div class="trust-row-n mono">${t("trust.current")}: ${fmtCents(tg.spendCents)} ${t("trust.of")} ${tg.ceilingCents ? fmtMoney(tg.ceilingCents) : t("trust.unset")}</div>
+          ${meterHtml(tg.spendCents, tg.ceilingCents, `target-${tg.target}`)}
+        </div>
+        ${dialSeg("target", tg.target, tg.dial)}
+      </div>
+      <div class="trust-ceil trust-ceil-right">
+        <span class="mono trust-cur">$</span>
+        <input class="trust-ceil-input" type="text" inputmode="decimal" data-trust-ceiling="target" data-scope-id="${esc(tg.target)}" value="${tg.ceilingCents ? (tg.ceilingCents / 100).toFixed(2) : ""}" placeholder="—" aria-label="${t("trust.targets")}">
+      </div>
+    </div>`).join("");
+  return `<div class="card" id="card-trust-targets">
+    <div class="card-head">
+      <div class="card-title">${ico.server} ${t("trust.targets")}</div>
+      <div class="micro">${t("trust.targetsSub")}</div>
+    </div>
+    ${rows}
+  </div>`;
+}
+
+/// Re-render the trust section in place after a mutation (the API returns
+/// the fresh status — the read model, not the input).
+function rerenderTrust() {
+  const section = $("#aj-section-trust");
+  if (!section || !trust) return;
+  section.innerHTML = trustCards();
+  wireTrust();
+}
+
+async function applyDial(btn: HTMLElement) {
+  const scope = btn.dataset.trustDial!;
+  const scopeId = btn.dataset.scopeId || null;
+  const mode = btn.dataset.mode as Autonomy;
+  try {
+    trust = await api.configureAutonomy(scope, scopeId, mode);
+    rerenderTrust();
+  } catch (e) {
+    toast(t("trust.saveError") + e);
+  }
+}
+
+async function applyCeiling(input: HTMLInputElement) {
+  const scope = input.dataset.trustCeiling!;
+  const scopeId = input.dataset.scopeId || null;
+  const dollars = parseFloat(input.value.replace(",", "."));
+  if (Number.isNaN(dollars) || dollars < 0) {
+    toast(t("trust.saveError") + "NaN");
+    return;
+  }
+  try {
+    trust = await api.configureCeiling(scope, scopeId, Math.round(dollars * 100));
+    rerenderTrust();
+  } catch (e) {
+    toast(t("trust.saveError") + e);
+  }
+}
+
+function wireTrust() {
+  if (!trust) return;
+  $$("#aj-section-trust [data-trust-dial]").forEach((b) =>
+    b.addEventListener("click", () => applyDial(b)));
+  $$("#aj-section-trust [data-trust-ceiling]").forEach((input) =>
+    input.addEventListener("change", () => applyCeiling(input as HTMLInputElement)));
+  // Kill switch: a working confirm step — the button reveals the confirm row;
+  // only the confirm fires it (AD-15e: a runtime-owned core command).
+  $("#trust-kill-toggle")?.addEventListener("click", () => {
+    const confirm = $("#trust-kill-confirm");
+    if (confirm) confirm.hidden = false;
+  });
+  $("#trust-kill-cancel")?.addEventListener("click", () => {
+    const confirm = $("#trust-kill-confirm");
+    if (confirm) confirm.hidden = true;
+  });
+  $("#trust-kill-confirm-btn")?.addEventListener("click", async () => {
+    try {
+      trust = await api.killRuntime();
+      toast(t("trust.killedToast"));
+      rerenderTrust();
+    } catch (e) {
+      toast(t("trust.saveError") + e);
+    }
+  });
+  $("#trust-resume")?.addEventListener("click", async () => {
+    try {
+      trust = await api.resumeRuntime();
+      toast(t("trust.resumedToast"));
+      rerenderTrust();
+    } catch (e) {
+      toast(t("trust.saveError") + e);
+    }
+  });
 }
 
 /* ---------- wiring ---------- */

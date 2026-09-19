@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -66,6 +66,85 @@ const missions: Mission[] = [];
 let missionSeq = 0;
 // In-memory run lists per mission id (empty until events would reference them).
 const missionRuns: Record<string, MissionRun[]> = {};
+
+// In-memory trust state (Story 2.4, FR-5): dials, ceilings, kill switch —
+// the mock the dev-browser trust center renders. Mirrors the core's folded
+// read model: most-restrictive-wins across scopes, hard ceilings, the
+// runtime's kill state.
+const mockMissionIds = ["m1-1726732800000", "m2-1726732900000"];
+const trustState: {
+  runtimeState: RuntimeState;
+  killedSeq: number | null;
+  globalAutonomy: Autonomy | null;
+  missionDials: ScopeDial[];
+  targetDials: ScopeDial[];
+  globalCeilingCents: number | null;
+  missionCeilings: ScopeCeiling[];
+  targetCeilings: ScopeCeiling[];
+  globalSpendCents: number;
+  missionSpend: Record<string, number>;
+  targetSpend: Record<string, number>;
+  lastRun: LastRunSpend | null;
+} = {
+  runtimeState: "running",
+  killedSeq: null,
+  globalAutonomy: "suggest",
+  missionDials: [
+    { scopeId: mockMissionIds[0], mode: "act_with_receipts" },
+    { scopeId: mockMissionIds[1], mode: "watch" },
+  ],
+  targetDials: [{ scopeId: "cli", mode: "watch" }],
+  globalCeilingCents: 2500,
+  missionCeilings: [{ scopeId: mockMissionIds[0], ceilingCents: 100 }],
+  targetCeilings: [{ scopeId: "openai", ceilingCents: 1500 }],
+  globalSpendCents: 1462,
+  missionSpend: { [mockMissionIds[0]]: 82, [mockMissionIds[1]]: 0 },
+  targetSpend: { openai: 1213, anthropic: 249, cli: 0 },
+  lastRun: { runId: "step-42", spendCents: 82, ceilingCents: 100 },
+};
+
+/// The mock trust read model: exactly the shape `get_trust_status` folds in
+/// the core (mission meters from the seeded missions + the trust state).
+function mockTrustStatus(): TrustStatus {
+  const meters: MissionMeter[] = missions.length
+    ? missions.map((m) => {
+        const configured = trustState.missionCeilings.find((c) => c.scopeId === m.id);
+        const ceiling = configured ? Math.min(configured.ceilingCents, m.spendCeilingCents) : m.spendCeilingCents;
+        const spend = trustState.missionSpend[m.id] ?? m.spendCents;
+        const state: SpendState = spend === 0 ? "ok" : ceiling === 0 || spend >= ceiling ? "blocked" : spend * 5 >= ceiling * 4 ? "near" : "ok";
+        return { missionId: m.id, question: m.question, spendCents: spend, ceilingCents: ceiling, state, dial: trustState.missionDials.find((d) => d.scopeId === m.id)?.mode ?? m.autonomy };
+      })
+    : [
+        // the seeded two-mission shape (before any mission is created)
+        { missionId: mockMissionIds[0], question: "Does retrieval grounding reduce hallucinated citations?", spendCents: 82, ceilingCents: 100, state: "near", dial: "act_with_receipts" },
+        { missionId: mockMissionIds[1], question: "Do scaling laws hold for citation density?", spendCents: 0, ceilingCents: 500, state: "ok", dial: "watch" },
+      ];
+  const targetNames = Array.from(new Set([
+    ...trustState.targetDials.map((d) => d.scopeId!),
+    ...trustState.targetCeilings.map((c) => c.scopeId!),
+    ...Object.keys(trustState.targetSpend),
+  ])).sort();
+  const targets: TargetMeter[] = targetNames.map((target) => ({
+    target,
+    spendCents: trustState.targetSpend[target] ?? 0,
+    ceilingCents: trustState.targetCeilings.find((c) => c.scopeId === target)?.ceilingCents ?? null,
+    dial: trustState.targetDials.find((d) => d.scopeId === target)?.mode ?? null,
+  }));
+  return {
+    runtimeState: trustState.runtimeState,
+    killedSeq: trustState.killedSeq,
+    globalAutonomy: trustState.globalAutonomy,
+    missionDials: trustState.missionDials,
+    targetDials: trustState.targetDials,
+    globalCeilingCents: trustState.globalCeilingCents,
+    missionCeilings: trustState.missionCeilings,
+    targetCeilings: trustState.targetCeilings,
+    globalSpendCents: trustState.globalSpendCents,
+    missions: meters,
+    targets,
+    lastRun: trustState.lastRun,
+  };
+}
 
 // In-memory hypotheses so the board flows (create, transition, relate) work
 // in-browser. Mirrors the event-sourced core: the FR-2.2 transition table is
@@ -1005,6 +1084,61 @@ export const mockApi = {
       url: ref.url ?? "",
       arxivId: (ref.doi ?? "").replace("10.48550/arXiv.", ""),
     });
+  },
+
+  // trust center (Story 2.4, FR-5): the read model + the dial, ceiling, and
+  // kill-switch mutations, mirroring the core's evented semantics.
+  getTrustStatus: async () => { await delay(); return mockTrustStatus(); },
+  configureAutonomy: async (scope: string, scopeId: string | null, mode: Autonomy) => {
+    await delay();
+    if (scope !== "global" && scope !== "mission" && scope !== "target") {
+      throw new Error(`unknown scope \`${scope}\` — expected global | mission | target`);
+    }
+    if (mode !== "watch" && mode !== "suggest" && mode !== "act_with_receipts") {
+      throw new Error(`unknown autonomy stop \`${mode}\` — expected watch | suggest | act_with_receipts`);
+    }
+    if (scope === "global") {
+      trustState.globalAutonomy = mode;
+    } else if (scopeId) {
+      const list = scope === "mission" ? trustState.missionDials : trustState.targetDials;
+      const existing = list.find((d) => d.scopeId === scopeId);
+      if (existing) existing.mode = mode;
+      else list.push({ scopeId, mode });
+      list.sort((a, b) => (a.scopeId ?? "").localeCompare(b.scopeId ?? ""));
+    } else {
+      throw new Error(`scope_id: a ${scope}-scoped setting requires its id`);
+    }
+    return mockTrustStatus();
+  },
+  configureCeiling: async (scope: string, scopeId: string | null, ceilingCents: number) => {
+    await delay();
+    if (scope !== "global" && scope !== "mission" && scope !== "target") {
+      throw new Error(`unknown scope \`${scope}\` — expected global | mission | target`);
+    }
+    if (scope === "global") {
+      trustState.globalCeilingCents = ceilingCents;
+    } else if (scopeId) {
+      const list = scope === "mission" ? trustState.missionCeilings : trustState.targetCeilings;
+      const existing = list.find((c) => c.scopeId === scopeId);
+      if (existing) existing.ceilingCents = ceilingCents;
+      else list.push({ scopeId, ceilingCents });
+      list.sort((a, b) => (a.scopeId ?? "").localeCompare(b.scopeId ?? ""));
+    } else {
+      throw new Error(`scope_id: a ${scope}-scoped setting requires its id`);
+    }
+    return mockTrustStatus();
+  },
+  killRuntime: async () => {
+    await delay();
+    trustState.runtimeState = "killed";
+    trustState.killedSeq = 42;
+    return mockTrustStatus();
+  },
+  resumeRuntime: async () => {
+    await delay();
+    trustState.runtimeState = "running";
+    trustState.killedSeq = null;
+    return mockTrustStatus();
   },
 
   // danger zone

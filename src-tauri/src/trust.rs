@@ -106,10 +106,10 @@ pub fn estimate_cents(layer: &ProviderLayer, model: &str) -> u64 {
 
 /// A reservation held against the ceilings: `reserved` is false for
 /// zero-cost calls (simulated / CLI) — the checks still ran (kill switch,
-/// dial), but no ledger event was appended.
-#[derive(Debug, Clone)]
+/// dial), but no ledger event was appended. The caller knows its own run id
+/// (it built the plan); the reservation only reports whether one is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reservation {
-    pub run_id: String,
     pub reserved: bool,
 }
 
@@ -157,7 +157,7 @@ pub async fn reserve(db: &Db, plan: &CallPlan) -> Result<Reservation, TrustError
     // Zero-cost calls (simulated / CLI) reserve nothing — but the kill and
     // dial checks above still ran.
     if plan.estimate_cents == 0 {
-        return Ok(Reservation { run_id: plan.run_id.clone(), reserved: false });
+        return Ok(Reservation { reserved: false });
     }
 
     // The ceiling check (FR-5.3): recorded spend PLUS in-flight reservations
@@ -185,7 +185,7 @@ pub async fn reserve(db: &Db, plan: &CallPlan) -> Result<Reservation, TrustError
         amount_cents: plan.estimate_cents,
         mission_id: plan.mission_id,
     })?)?;
-    Ok(Reservation { run_id: plan.run_id.clone(), reserved: true })
+    Ok(Reservation { reserved: true })
 }
 
 /// Settle a reservation after its call landed (AD-10): the cost attributed
@@ -234,18 +234,18 @@ pub async fn reserve_and_chat(
     req: ChatRequest,
     plan: CallPlan,
 ) -> Result<ChatResponse, TrustError> {
-    reserve(db, &plan).await?;
+    let reservation = reserve(db, &plan).await?;
     let req = req.with_reservation(plan.run_id.clone());
     match layer.chat(req).await {
         Ok(resp) => {
-            if plan.estimate_cents > 0 {
+            if reservation.reserved {
                 let cost = pricing::cost_cents(&plan.target, &plan.model, &resp.usage);
                 settle_recorded(db, &plan, cost).await?;
             }
             Ok(resp)
         }
         Err(e) => {
-            if plan.estimate_cents > 0 {
+            if reservation.reserved {
                 let _ = settle_released(db, &plan, RELEASE_PROVIDER_ERROR).await;
             }
             Err(e.into())
@@ -294,6 +294,10 @@ pub struct MissionMeter {
     pub spend_cents: u64,
     pub ceiling_cents: u64,
     pub state: crate::domain::missions::SpendState,
+    /// The mission's effective dial (its creation autonomy, or the latest
+    /// mission-scoped `autonomy.configured`) — the trust center renders the
+    /// segmented control from it.
+    pub dial: Autonomy,
 }
 
 /// One compute target's spend meter (no ceiling configured = unbounded).
@@ -304,6 +308,10 @@ pub struct TargetMeter {
     pub spend_cents: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ceiling_cents: Option<u64>,
+    /// The target's configured dial, when one exists (unconfigured = no
+    /// target-level restriction — the global and mission dials govern).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dial: Option<Autonomy>,
 }
 
 /// The last run's spend line ("last run: 82¢ of 100¢"): the run the latest
@@ -371,6 +379,7 @@ pub fn trust_status(
                 spend_cents: m.spend_cents,
                 ceiling_cents: ceiling,
                 state: crate::domain::missions::spend_state(m.spend_cents, ceiling),
+                dial: config.mission_dial(m.id, m.autonomy),
             }
         })
         .collect();
@@ -391,6 +400,7 @@ pub fn trust_status(
         .map(|target| TargetMeter {
             spend_cents: ledger.target_cents.get(&target).copied().unwrap_or(0),
             ceiling_cents: config.target_ceiling_cents.get(&target).copied(),
+            dial: config.target_autonomy.get(&target).copied(),
             target,
         })
         .collect();
@@ -749,6 +759,8 @@ mod tests {
         assert_eq!(status.missions[0].spend_cents, 82);
         assert_eq!(status.missions[0].ceiling_cents, 100);
         assert_eq!(status.missions[0].state, SpendState::Near);
+        assert_eq!(status.missions[0].dial, Autonomy::Suggest); // creation autonomy, never reconfigured
+        assert_eq!(status.targets[0].dial, Some(Autonomy::Watch));
         // the last-run line: 82¢, against the global ceiling (the run's
         // mission ceiling is tighter — the meter above shows it)
         assert_eq!(status.last_run.as_ref().unwrap().run_id, "run-82");

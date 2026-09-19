@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -188,6 +188,51 @@ const browserApi = {
       );
     }
     return mockApi.setMissionSchedule(_missionId, _schedule);
+  },
+  // Trust center (Story 2.4, FR-5): the status read goes to the same-origin
+  // read-only API over the shared core; dial, ceiling, and kill-switch
+  // changes are mutations — the served browser view refuses them.
+  getTrustStatus: async () => {
+    if (await servedByCore) {
+      return httpJson<TrustStatus>("/api/trust");
+    }
+    return mockApi.getTrustStatus();
+  },
+  configureAutonomy: async (_scope: string, _scopeId: string | null, _mode: Autonomy) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage trust from the desktop app / " +
+          "Vista de solo lectura — gestiona la confianza desde la app de escritorio"
+      );
+    }
+    return mockApi.configureAutonomy(_scope, _scopeId, _mode);
+  },
+  configureCeiling: async (_scope: string, _scopeId: string | null, _ceilingCents: number) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage trust from the desktop app / " +
+          "Vista de solo lectura — gestiona la confianza desde la app de escritorio"
+      );
+    }
+    return mockApi.configureCeiling(_scope, _scopeId, _ceilingCents);
+  },
+  killRuntime: async () => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — the kill switch stays in the desktop app / " +
+          "Vista de solo lectura — el interruptor queda en la app de escritorio"
+      );
+    }
+    return mockApi.killRuntime();
+  },
+  resumeRuntime: async () => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — the kill switch stays in the desktop app / " +
+          "Vista de solo lectura — el interruptor queda en la app de escritorio"
+      );
+    }
+    return mockApi.resumeRuntime();
   },
   // Proposals (Story 2.2, AD-3/AD-13): reads go to the same-origin
   // read-only API over the shared core; merging and rejecting are
@@ -378,6 +423,16 @@ export const api = mockActive ? browserApi : {
   runFirstValue: (url: string) => invoke<FirstValueResult>("run_first_value", { url }),
   runFirstValueFromRef: (refId: string) =>
     invoke<FirstValueResult>("run_first_value_from_ref", { refId }),
+
+  // trust center (event-sourced, Story 2.4, FR-5): the status read + the
+  // dial, ceiling, and kill-switch mutations (the Tauri command path, AD-14)
+  getTrustStatus: () => invoke<TrustStatus>("get_trust_status"),
+  configureAutonomy: (scope: string, scopeId: string | null, mode: Autonomy) =>
+    invoke<TrustStatus>("configure_autonomy", { scope, scopeId, mode }),
+  configureCeiling: (scope: string, scopeId: string | null, ceilingCents: number) =>
+    invoke<TrustStatus>("configure_ceiling", { scope, scopeId, ceilingCents }),
+  killRuntime: () => invoke<TrustStatus>("kill_runtime"),
+  resumeRuntime: () => invoke<TrustStatus>("resume_runtime"),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

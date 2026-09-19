@@ -853,3 +853,38 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 .sk-main{padding:26px 32px;display:flex;flex-direction:column;gap:14px}
 .sk-pane{display:flex;flex-direction:column}
 .sk-dash-card{display:flex;flex-direction:column;gap:12px;padding:20px}
+
+/* ===== Trust center (Story 2.4, FR-5): dials, ceilings, kill switch ===== */
+
+.trust-row{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)}
+.trust-row:last-child{border-bottom:0}
+.trust-row-l{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.trust-row-t{font-size:13px;font-weight:600;color:var(--fg)}
+.trust-row-n{font-size:12px;color:var(--muted)}
+.trust-seg{flex-shrink:0;margin-top:2px}
+.trust-sub-head{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:18px 0 2px}
+.trust-sub-head .mono{text-transform:none;letter-spacing:0;font-weight:400}
+
+/* DESIGN.md components.spend-meter: thin track + state-colored fill —
+   always paired with the textual "$X of $Y" line, never color alone. */
+.trust-meter{height:6px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:6px;max-width:340px}
+.trust-meter i{display:block;height:100%;border-radius:3px;background:var(--accent);transition:width .3s ease}
+
+.trust-ceil{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.trust-ceil-right{justify-content:flex-end;margin:8px 0 2px}
+.trust-cur{font-size:12px;color:var(--muted)}
+.trust-ceil-input{width:90px;padding:6px 8px;font:inherit;font-size:13px;font-family:var(--mono,ui-monospace,monospace);background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg)}
+.trust-ceil-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+.trust-kill-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px}
+.trust-telem{display:inline-flex;align-items:center;gap:4px;color:var(--muted)}
+.trust-telem .ic,.trust-telem svg{width:13px;height:13px}
+.trust-kill-confirm{margin-top:12px;padding:12px;border:1px solid var(--st-unread);border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.trust-kill-confirm p{margin:0;color:var(--fg)}
+
+.trust-prov{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+.trust-prov:last-child{border-bottom:0}
+.trust-prov-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+.trust-target{padding:8px 0;border-bottom:1px solid var(--border)}
+.trust-target:last-child{border-bottom:0}
