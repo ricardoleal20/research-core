@@ -39,6 +39,7 @@ use crate::domain::missions::{MissionStatus, MissionsProjection, SpendState};
 use crate::domain::nightshift::{RUN_STARTED, SCAN_STEP};
 use crate::domain::proposals::ProposalsProjection;
 use crate::domain::receipts::{render_receipt, ReceiptAction, RunOutcome};
+use crate::domain::search::search_disclosure;
 use crate::eventstore::{Actor, EventError, EventStore, StoredEvent};
 
 pub const MANIFEST_FILE: &str = "MANIFEST.md";
@@ -1032,10 +1033,14 @@ fn render_timeline(
     Ok(files)
 }
 
-/// The search disclosure as the log holds it today: every literature-scan
-/// search, from the receipts' search rows (query, mission, run, date).
-/// Story 4.1's dedicated PRISMA-style search events (databases, filters,
-/// null results) will extend this file as they land.
+/// The search disclosure (FR-12.1/12.2, Story 4.1): every search the app
+/// performed, PRISMA-style, from the dedicated `search.run` events —
+/// query, database, filters, date, result count — with null results
+/// visibly marked "**0 results / 0 resultados**", never hidden. Pre-4.1
+/// logs (scans that predate dedicated search events) fall back to the
+/// run-started scan rows, so a review that searched never renders an
+/// empty disclosure; the empty note is only for logs that truly never
+/// searched. Rendered at the export's single seq cut like every scope.
 fn render_search_log(
     events: &[StoredEvent],
     ctx: &RenderCtx<'_, '_>,
@@ -1045,45 +1050,94 @@ fn render_search_log(
         "# Search disclosure / Divulgación de búsquedas — at cut / en el corte `{cut}`\n\n",
         cut = ctx.cut.label(),
     );
-    let cursor = FoldCursor::over(events);
-    let mut rows = Vec::new();
-    for event in cursor.live(events).filter(|e| e.kind == RUN_STARTED) {
-        let (Some(run_id), Some(mission_id)) = (
-            event.payload.get("run_id").and_then(|v| v.as_str()),
-            event
-                .payload
-                .get("mission_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .or_else(|| event.causes.first().copied()),
-        ) else {
-            continue;
-        };
-        let Some(mission) = missions.iter().find(|m| m.id == mission_id) else {
-            continue;
-        };
-        if event.payload.get("step").and_then(|v| v.as_str()) != Some(SCAN_STEP) {
-            continue;
-        }
-        rows.push(format!(
-            "- {ts} · M-{seq} · run `{run_id}` · query / consulta: \"{query}\"\n",
-            ts = event.ts.to_rfc3339(),
-            seq = mission.seq,
-            query = mission.question,
-        ));
-    }
-    if rows.is_empty() {
-        md.push_str("_No searches recorded / No hay búsquedas registradas._\n");
-    } else {
+    let disclosure = search_disclosure(events, None)?;
+    if !disclosure.rows.is_empty() {
         md.push_str(&format!(
-            "Every search the runs performed, as the log records it — including \
-             its date and the mission it ran for (FR-12: null results log \
-             identically once dedicated search events land).\n\n\
-             Cada búsqueda que ejecutaron las ejecuciones, tal como la registra \
-             el log — con su fecha y la misión para la que corrió.\n\n",
+            "Every search the runs and the user performed, PRISMA-style — query, \
+             database, filters, date, result count — including null results, \
+             logged identically (FR-12.1).\n\n\
+             Cada búsqueda que ejecutaron las ejecuciones y la usuaria, estilo \
+             PRISMA — consulta, base de datos, filtros, fecha, número de \
+             resultados — incluidos los resultados nulos, registrados \
+             idénticamente.\n\n\
+             **{total} searches / búsquedas · {nulls} null results / resultados nulos**\n\n",
+            total = disclosure.total,
+            nulls = disclosure.null_result_count,
         ));
-        for row in rows {
-            md.push_str(&row);
+        for row in &disclosure.rows {
+            let mission_ref = row
+                .mission_id
+                .and_then(|id| missions.iter().find(|m| m.id == id))
+                .map(|m| format!("M-{}", m.seq))
+                .unwrap_or_else(|| "—".into());
+            let filters = if row.filters.is_empty() {
+                "—".to_string()
+            } else {
+                row.filters
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let order = row.order.clone().unwrap_or_else(|| "default".into());
+            let count = if row.null_result {
+                "**0 results / 0 resultados** (null / nula)".to_string()
+            } else {
+                format!("{} results / resultados", row.result_count)
+            };
+            md.push_str(&format!(
+                "- {ts} · e-{seq} · {mission} · \"{query}\" · `{database}` · filters / filtros: \
+                 {filters} · order / orden: {order} · {count}\n",
+                ts = row.started_at.to_rfc3339(),
+                seq = row.seq,
+                mission = mission_ref,
+                query = row.query,
+                database = row.database,
+            ));
+        }
+    } else {
+        // Legacy logs (pre-4.1): scans ran without dedicated search
+        // events — their run-started scan rows are the honest disclosure,
+        // because a review that searched cannot render as empty.
+        let cursor = FoldCursor::over(events);
+        let mut rows = Vec::new();
+        for event in cursor.live(events).filter(|e| e.kind == RUN_STARTED) {
+            let (Some(run_id), Some(mission_id)) = (
+                event.payload.get("run_id").and_then(|v| v.as_str()),
+                event
+                    .payload
+                    .get("mission_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .or_else(|| event.causes.first().copied()),
+            ) else {
+                continue;
+            };
+            let Some(mission) = missions.iter().find(|m| m.id == mission_id) else {
+                continue;
+            };
+            if event.payload.get("step").and_then(|v| v.as_str()) != Some(SCAN_STEP) {
+                continue;
+            }
+            rows.push(format!(
+                "- {ts} · M-{seq} · run `{run_id}` · query / consulta: \"{query}\"\n",
+                ts = event.ts.to_rfc3339(),
+                seq = mission.seq,
+                query = mission.question,
+            ));
+        }
+        if rows.is_empty() {
+            md.push_str("_No searches recorded / No hay búsquedas registradas._\n");
+        } else {
+            md.push_str(
+                "Searches recorded by the scan step (a log from before dedicated \
+                 search events — FR-12.1 made them first-class).\n\n\
+                 Búsquedas registradas por el paso de escaneo (un log anterior a \
+                 los eventos de búsqueda dedicados).\n\n",
+            );
+            for row in rows {
+                md.push_str(&row);
+            }
         }
     }
     md.push_str(&footer(ctx));
@@ -1427,6 +1481,64 @@ mod tests {
             }
         }
         let _ = (mission, hyp);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_search_log_renders_the_prisma_disclosure_at_the_cut() {
+        // FR-12.1/12.2 (Story 4.1): dedicated `search.run` events render
+        // PRISMA-style — query, database, filters, date, count — with
+        // null results visibly marked, never hidden, at the single cut.
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let mission_id = seed_full_workspace(&store).0;
+        // one search with results, one null — both through the ONE seam
+        crate::domain::search::run_search(
+            &store,
+            &crate::domain::search::SearchParams {
+                query: "Does sparse attention hold at 32k?".into(),
+                database: "arxiv".into(),
+                filters: std::collections::BTreeMap::from([(
+                    "from_year".into(),
+                    serde_json::json!(2017),
+                )]),
+                order: Some("relevance".into()),
+                first_page: true,
+                mission_id: Some(mission_id),
+                run_id: Some("nightshift-32k".into()),
+            },
+        )
+        .unwrap();
+        crate::domain::search::run_search(
+            &store,
+            &crate::domain::search::SearchParams {
+                query: "qqqq zzzz".into(),
+                database: "semantic-scholar".into(),
+                filters: Default::default(),
+                order: None,
+                first_page: true,
+                mission_id: Some(mission_id),
+                run_id: None,
+            },
+        )
+        .unwrap();
+        let events = store.events_all().unwrap();
+        let dir = tmp_dir("search-disclosure");
+        export_events(&events, &dir, SCOPE_SEARCH_LOG, None, fixed_now()).unwrap();
+        let md = std::fs::read_to_string(dir.join("search-log/search-log.md")).unwrap();
+        // the PRISMA fields render per row
+        assert!(md.contains("\"Does sparse attention hold at 32k?\""));
+        assert!(md.contains("`arxiv`"));
+        assert!(md.contains("from_year=2017"));
+        assert!(md.contains("`semantic-scholar`"));
+        // the null result is visible, never hidden
+        assert!(md.contains("**0 results / 0 resultados**"));
+        // the summary counts both, nulls included
+        assert!(md.contains("2 searches / búsquedas"));
+        assert!(md.contains("1 null results / resultados nulos"));
+        // the disclosure stamps the export's single seq cut
+        let cut = events.last().unwrap().seq;
+        assert!(md.contains(&format!("cut / Renderizado en el corte `e-{cut}`")));
         std::fs::remove_dir_all(&dir).ok();
     }
 

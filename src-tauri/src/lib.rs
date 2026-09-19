@@ -14,6 +14,7 @@ mod proposals_commands;
 mod trust_commands;
 mod nightshift;
 mod runtime;
+mod search_commands;
 mod server;
 mod trust;
 
@@ -206,6 +207,8 @@ pub fn run() {
             checkpoints_commands::list_checkpoints,
             checkpoints_commands::preview_rollback,
             checkpoints_commands::rollback_to_checkpoint,
+            search_commands::run_search,
+            search_commands::get_search_disclosure,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
         ])

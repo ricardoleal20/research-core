@@ -311,6 +311,7 @@ impl NightShift {
     /// scan is an honest `run.failed` record, never a tick error (FR-4.3).
     async fn run_scan(&self, mission: &Mission) -> RunRecord {
         let run_id = format!("nightshift-{}", Uuid::new_v4().simple());
+        let found: u32;
         {
             let conn = self.db.0.lock().await;
             let store = EventStore::new(&conn);
@@ -341,10 +342,42 @@ impl NightShift {
             {
                 let _ = store.append(beat);
             }
+            // FR-12.1 (Story 4.1): the scan's literature search runs
+            // through the ONE search seam — `search::run_search` executes
+            // the search, appends the `search.run` PRISMA record, and
+            // returns the results, so the disclosure cannot be skipped. A
+            // corpus that answers nothing is logged identically (null
+            // results are first-class, never a hidden nothing).
+            found = match crate::domain::search::run_search(
+                &store,
+                &crate::domain::search::SearchParams {
+                    query: mission.question.clone(),
+                    database: crate::domain::search::DATABASE_ARXIV.into(),
+                    filters: Default::default(),
+                    order: None,
+                    first_page: true,
+                    mission_id: Some(mission.id),
+                    run_id: Some(run_id.clone()),
+                },
+            ) {
+                Ok(outcome) => outcome.row.result_count,
+                // the search record could not land — the run fails
+                // honestly rather than search undisclosed
+                Err(e) => {
+                    return RunRecord {
+                        mission_id: mission.id,
+                        run_id,
+                        finished: false,
+                        detail: format!("store_error: {e}"),
+                        proposals: 0,
+                    }
+                }
+            };
         }
         let task = format!(
-            "Escaneo nocturno de literatura sobre: «{}». Busca fuentes nuevas, resume los \
-             hallazgos en una línea y propón el siguiente paso para el tablero.",
+            "Escaneo nocturno de literatura sobre: «{}». El barrido inicial encontró {found} \
+             fuente(s) candidata(s). Busca fuentes nuevas, resume los hallazgos en una línea y \
+             propón el siguiente paso para el tablero.",
             mission.question
         );
         let record = match self.runtime.run_step(mission.id, ROLE_DRAFTER, &task).await {
@@ -735,6 +768,41 @@ mod tests {
         // a second tick the same day does not re-run the mission
         let records = shift.tick(now_local()).await.unwrap();
         assert!(records.is_empty(), "already ran today — no double run");
+    }
+
+    #[tokio::test]
+    async fn the_scan_search_runs_through_the_one_seam_and_is_logged() {
+        // FR-12.1 (Story 4.1): the scan's literature search cannot skip
+        // the log — one `search.run` lands inside the run, attributed to
+        // the run, caused by the mission, and the disclosure fold sees it.
+        let db = test_db();
+        let mission = create_mission(&db, "daily-00:00", 500).await;
+        let shift = fake_shift(&db);
+        let records = shift.tick(now_local()).await.unwrap();
+        assert_eq!(records.len(), 1);
+        let searches = events_of(&db, crate::domain::search::SEARCH_RUN).await;
+        assert_eq!(searches.len(), 1, "the scan searched exactly once");
+        let ev = &searches[0];
+        // the PRISMA record: the mission's question, the database, the count
+        assert_eq!(ev.payload["query"], mission.payload["question"]);
+        assert_eq!(ev.payload["database"], json!("arxiv"));
+        let count = ev.payload["result_count"].as_u64().unwrap();
+        assert_eq!(ev.payload["null_result"], json!(count == 0));
+        // attributed to the run (AD-2), caused by the mission
+        let run_id = ev.payload["run_id"].as_str().unwrap().to_string();
+        assert_eq!(run_id, records[0].run_id);
+        assert_eq!(ev.actor, Actor::Agent { run_id });
+        assert!(ev.causes.contains(&mission.id));
+        // the disclosure fold discloses it for the mission
+        let events = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).events_all().unwrap()
+        };
+        let disclosure =
+            crate::domain::search::search_disclosure(&events, Some(mission.id)).unwrap();
+        assert_eq!(disclosure.total, 1);
+        assert_eq!(disclosure.rows[0].database, "arxiv");
+        assert_eq!(disclosure.rows[0].run_id.as_deref(), Some(records[0].run_id.as_str()));
     }
 
     #[tokio::test]

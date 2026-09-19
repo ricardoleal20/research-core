@@ -17,6 +17,8 @@ use crate::evidence_commands::list_evidence_inner;
 use crate::eventstore::EventStore;
 use crate::nightshift::morning_digest;
 use crate::proposals_commands::list_proposals_inner;
+use crate::domain::search::SearchDisclosure;
+use crate::search_commands::search_disclosure_inner;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -54,6 +56,11 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             get(mission_proposals),
         )
         .route("/api/missions/{mission_id}/jobs", get(mission_jobs))
+        .route(
+            "/api/missions/{mission_id}/search-disclosure",
+            get(mission_search_disclosure),
+        )
+        .route("/api/search-disclosure", get(search_disclosure_all))
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
         .route("/api/host-allowlist", get(host_allowlist))
@@ -108,6 +115,35 @@ async fn hypothesis_evidence(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let c = state.db.0.lock().await;
     list_evidence_inner(&c, hypothesis_id)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The search disclosure of one mission (Story 4.1, FR-12.1 — read-only
+/// per AD-14; running a search stays on the Tauri command path): every
+/// search's PRISMA row, null results rendered as rows, never as "nothing
+/// happened". An unknown mission is an honest empty disclosure.
+async fn mission_search_disclosure(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<SearchDisclosure>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    search_disclosure_inner(&c, Some(mission_id))
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The workspace-wide search disclosure (Story 4.1, FR-12.1 — read-only):
+/// every search every mission's runs and the user performed, at the log's
+/// current head.
+async fn search_disclosure_all(
+    State(state): State<ServerState>,
+) -> Result<Json<SearchDisclosure>, StatusCode> {
+    let c = state.db.0.lock().await;
+    search_disclosure_inner(&c, None)
         .map(Json)
         .map_err(|_| internal())
 }
@@ -505,6 +541,99 @@ mod tests {
         assert_eq!(claims.len(), 1);
         assert!(claims[0].pinned);
         assert_eq!(claims[0].pin.as_ref().unwrap().assessing_model, "GLM-5.3");
+    }
+
+    #[tokio::test]
+    async fn get_api_search_disclosure_serves_the_prisma_rows() {
+        // Story 4.1 (FR-12.1): the served browser view replays the
+        // identical disclosure the desktop webview does — null results
+        // as rows, never as "nothing happened".
+        let db = test_db();
+        let mission_id = {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does sparse attention hold at 32k?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A blind rater agrees.".into(),
+                        autonomy: Autonomy::Watch,
+                        spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
+                        roles: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            // one search with results, one null — through the ONE seam
+            crate::domain::search::run_search(
+                &store,
+                &crate::domain::search::SearchParams {
+                    query: "sparse attention".into(),
+                    database: "arxiv".into(),
+                    filters: Default::default(),
+                    order: None,
+                    first_page: true,
+                    mission_id: Some(mission.id),
+                    run_id: Some("nightshift-32k".into()),
+                },
+            )
+            .unwrap();
+            crate::domain::search::run_search(
+                &store,
+                &crate::domain::search::SearchParams {
+                    query: "qqqq zzzz".into(),
+                    database: "web".into(),
+                    filters: Default::default(),
+                    order: None,
+                    first_page: true,
+                    mission_id: Some(mission.id),
+                    run_id: Some("nightshift-32k".into()),
+                },
+            )
+            .unwrap();
+            mission.id
+        };
+        // mission-scoped: both searches, the null one visible and counted
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/missions/{mission_id}/search-disclosure"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let disclosure: SearchDisclosure = body_json(res.into_body()).await;
+        assert_eq!(disclosure.total, 2);
+        assert_eq!(disclosure.null_result_count, 1);
+        assert_eq!(disclosure.rows[0].database, "arxiv");
+        assert!(!disclosure.rows[0].null_result);
+        assert!(disclosure.rows[1].null_result);
+        assert_eq!(disclosure.rows[1].result_count, 0);
+        // workspace-wide sees the same searches
+        let res = app(db)
+            .oneshot(
+                Request::get("/api/search-disclosure")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let all: SearchDisclosure = body_json(res.into_body()).await;
+        assert_eq!(all.total, 2);
+        // a malformed mission id is a 400, never a 500
+        let res = app(test_db())
+            .oneshot(
+                Request::get("/api/missions/not-a-uuid/search-disclosure")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
