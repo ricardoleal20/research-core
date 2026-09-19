@@ -1407,16 +1407,21 @@ export const mockApi = {
     const cp = mockCheckpoints.find((c) => c.id === checkpointId);
     if (!cp) throw new Error(`not_found: no checkpoint with id \`${checkpointId}\``);
     const { events, proposals: orphans } = orphanedFor(cp);
-    // execute: restore the snapshot, mark the orphans as superseded history
+    // keep the orphaned proposal OBJECTS: after the restore the mock arrays
+    // hold only the checkpoint state — the orphans re-enter as superseded
+    // history (never hidden, EXPERIENCE.md)
+    const orphanObjects = proposals.filter((p) => p.seq > cp.seq && !p.orphanedByRollback);
+    // execute: restore the board + missions to the checkpoint state...
     restoreSnapshot(cp.snapshot);
-    for (const p of proposals) {
-      if (p.seq > cp.seq && !p.orphanedByRollback) {
-        mockEventSeq += 1;
-        p.status = "superseded";
-        p.orphanedByRollback = true;
-        p.rolledBackSeq = mockEventSeq;
-        p.decided = null;
-      }
+    // ...and the orphaned proposals land in the quarantine as SUPERSEDED:
+    // excluded from every projection, listed as history
+    for (const p of orphanObjects) {
+      mockEventSeq += 1;
+      p.status = "superseded";
+      p.orphanedByRollback = true;
+      p.rolledBackSeq = mockEventSeq;
+      p.decided = null; // the merge never happened in the restored read model
+      proposals.push(p);
     }
     mockEventSeq += 1;
     const record: RollbackRecord = {
