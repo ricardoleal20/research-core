@@ -196,6 +196,11 @@ fn run_event_mission(event: &StoredEvent) -> Option<Uuid> {
 /// newest-first (ties by mission seq), plus the dead-run alerts. Corrupt
 /// payloads fail loudly (the missions fold's contract), never silently.
 pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<MorningDigest, EventError> {
+    // The shared fold cursor (AD-1, Story 2.6): the digest renders the LIVE
+    // read model — a rolled-back night never happened for the morning
+    // report; post-rollback runs render.
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
     let missions = MissionsProjection::fold(events)?;
     let proposals = ProposalsProjection::fold(events)?;
     let window_start = now - Duration::hours(DIGEST_WINDOW_HOURS);

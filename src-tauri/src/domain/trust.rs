@@ -358,6 +358,10 @@ impl TrustConfig {
 /// (scope, scope_id) wins; the runtime is killed while `runtime.killed` is
 /// the latest runtime-state event by seq.
 pub fn trust_config(events: &[StoredEvent]) -> TrustConfig {
+    // The shared fold cursor (AD-1, Story 2.6): a rolled-back kill switch or
+    // dial change never happened for the read model.
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
     let mut config = TrustConfig::default();
     for event in events {
         match event.kind.as_str() {
@@ -486,8 +490,11 @@ pub struct InFlight {
     pub target_cents: HashMap<String, u64>,
 }
 
-/// Pure fold of recorded spend per scope (AD-10).
+/// Pure fold of recorded spend per scope (AD-10). Rollback-aware through
+/// the shared fold cursor (Story 2.6): orphaned spend never counted.
 pub fn spend_ledger(events: &[StoredEvent]) -> SpendLedger {
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
     let mut ledger = SpendLedger::default();
     let mut last_run_seq: i64 = 0;
     for event in events {

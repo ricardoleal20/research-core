@@ -253,6 +253,12 @@ pub fn render_receipt(
     events: &[StoredEvent],
     run_id: &str,
 ) -> Result<Option<RunReceipt>, EventError> {
+    // The shared fold cursor (AD-1, Story 2.6): the receipt folds the LIVE
+    // events — a run orphaned by a rollback has no receipt to replay (its
+    // run.started is superseded history), and a live run's receipt drops
+    // orphaned rows. Re-query still replays; it replays the read model.
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
     // The anchor: the run's started event.
     let Some(started) = events
         .iter()

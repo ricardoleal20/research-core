@@ -332,6 +332,10 @@ pub struct EvidenceProjection;
 
 impl EvidenceProjection {
     pub fn fold(events: &[StoredEvent]) -> Result<Vec<Claim>, EventError> {
+        // The shared fold cursor (AD-1, Story 2.6): fold the live events —
+        // a rolled-back pin or claim never happened for the read model.
+        let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+        let events = &cursor.live_owned(events);
         let mut claims: Vec<Claim> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
         for event in events {

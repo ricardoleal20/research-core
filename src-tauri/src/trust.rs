@@ -351,6 +351,10 @@ pub struct TrustStatus {
 pub fn trust_status(
     events: &[crate::eventstore::StoredEvent],
 ) -> Result<TrustStatus, EventError> {
+    // The shared fold cursor (AD-1, Story 2.6): the trust center renders the
+    // live read model — a rolled-back kill switch never killed anything.
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
     let config = trust_config(events);
     let ledger = spend_ledger(events);
     let missions = MissionsProjection::fold(events)?;

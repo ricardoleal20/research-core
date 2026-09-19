@@ -324,6 +324,11 @@ pub struct HypothesesProjection;
 
 impl HypothesesProjection {
     pub fn fold(events: &[StoredEvent]) -> Result<Vec<Hypothesis>, EventError> {
+        // The shared fold cursor (AD-1, Story 2.6): fold the live events —
+        // after a rollback the board reflects the checkpoint state and
+        // continues with post-rollback events.
+        let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+        let events = &cursor.live_owned(events);
         let mut hyps: Vec<Hypothesis> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
         // Quarantine index (AD-3): hypothesis-targeting proposals by event

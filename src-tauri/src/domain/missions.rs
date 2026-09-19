@@ -404,6 +404,11 @@ pub struct MissionsProjection;
 
 impl MissionsProjection {
     pub fn fold(events: &[StoredEvent]) -> Result<Vec<Mission>, EventError> {
+        // The shared fold cursor (AD-1, Story 2.6): fold the live events —
+        // rollbacks orphan their suffix; the read model returns to the
+        // checkpoint state and continues after the rollback action.
+        let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+        let events = &cursor.live_owned(events);
         let mut missions: Vec<Mission> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
         for event in events {
@@ -464,7 +469,12 @@ impl MissionsProjection {
 
     /// The run list of one mission (FR-1.3): every event referencing it, in
     /// `seq` order, excluding the creation event itself. Pure — no IO.
+    /// Rollback-aware through the shared fold cursor (Story 2.6): orphaned
+    /// events leave the run list — they are superseded history, listable
+    /// through the checkpoint read model, never here.
     pub fn runs_for(events: &[StoredEvent], mission_id: Uuid) -> Vec<MissionRun> {
+        let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+        let events = &cursor.live_owned(events);
         events
             .iter()
             .filter(|event| event.id != mission_id && references(event, mission_id))

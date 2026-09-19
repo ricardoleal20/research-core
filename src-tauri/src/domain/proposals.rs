@@ -300,6 +300,16 @@ pub struct Proposal {
     pub decided: Option<DecisionStamp>,
     /// The proposal whose merge superseded this one.
     pub superseded_by: Option<Uuid>,
+    /// True when a rollback orphaned this proposal's creation (AD-1, Story
+    /// 2.6): it renders as SUPERSEDED history in the quarantine view —
+    /// excluded from every projection, never hidden (EXPERIENCE.md) — and
+    /// can never be merged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orphaned_by_rollback: bool,
+    /// The seq of the `checkpoint.rolled_back` event that orphaned it — the
+    /// "superseded by rollback e-{seq}" stamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rolled_back_seq: Option<i64>,
 }
 
 /// Everything that can go wrong proposing, approving, or rejecting — typed,
@@ -375,6 +385,13 @@ pub struct ProposalsProjection;
 
 impl ProposalsProjection {
     pub fn fold(events: &[StoredEvent]) -> Result<Vec<Proposal>, EventError> {
+        // The shared fold cursor (AD-1, Story 2.6): fold the live events —
+        // the prefix up to each rollback's target, skipping the orphaned
+        // suffix, continuing after the rollback action. Orphaned proposals
+        // are re-listed below as superseded history, never hidden.
+        let raw = events;
+        let cursor = crate::domain::checkpoints::FoldCursor::over(raw);
+        let events = &cursor.live_owned(raw);
         let mut proposals: Vec<Proposal> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
         // target enrichment: hypothesis creation events by id
@@ -429,6 +446,8 @@ impl ProposalsProjection {
                         status: ProposalStatus::Pending,
                         decided: None,
                         superseded_by: None,
+                        orphaned_by_rollback: false,
+                        rolled_back_seq: None,
                     });
                 }
                 MERGE_APPROVED => {
@@ -536,6 +555,70 @@ impl ProposalsProjection {
                     p.basis_stale = current > p.basis_seq;
                 }
             }
+        }
+        // Orphaned proposals (AD-1, Story 2.6): a rollback excluded their
+        // creation from the live fold — they return here as SUPERSEDED
+        // history, listable in the quarantine view, never hidden
+        // (EXPERIENCE.md), and never mergeable (no live merge.approved can
+        // reference them: the approve path folds this same read model).
+        if cursor.orphaned(raw).any(|e| e.kind == PROPOSAL_CREATED) {
+            // labels from the RAW log: an orphaned proposal may target a
+            // hypothesis whose own creation was orphaned — the name still
+            // resolves for the history view.
+            let mut raw_mission: HashMap<Uuid, Uuid> = HashMap::new();
+            let mut raw_labels: HashMap<Uuid, (i64, String)> = HashMap::new();
+            for event in raw.iter() {
+                if event.kind == crate::domain::hypotheses::HYPOTHESIS_CREATED {
+                    if let Ok(payload) = serde_json::from_value::<
+                        crate::domain::hypotheses::HypothesisCreatedPayload,
+                    >(event.payload.clone())
+                    {
+                        raw_mission.insert(event.id, payload.mission_id);
+                        raw_labels.insert(event.id, (event.seq, payload.statement));
+                    }
+                }
+            }
+            for event in cursor.orphaned(raw) {
+                if event.kind != PROPOSAL_CREATED {
+                    continue;
+                }
+                let payload: ProposalCreatedPayload = serde_json::from_value(
+                    event.payload.clone(),
+                )
+                .map_err(|e| {
+                    EventError::Invalid(format!(
+                        "corrupt {PROPOSAL_CREATED} payload at seq {}: {e}",
+                        event.seq
+                    ))
+                })?;
+                let Actor::Agent { run_id } = &event.actor else {
+                    return Err(EventError::Invalid(format!(
+                        "corrupt {PROPOSAL_CREATED} at seq {}: a proposal is an agent-actor \
+                         event — the user path applies changes directly, never through here",
+                        event.seq
+                    )));
+                };
+                proposals.push(Proposal {
+                    id: event.id,
+                    seq: event.seq,
+                    ts: event.ts,
+                    run_id: run_id.clone(),
+                    mission_id: raw_mission.get(&payload.target_entity).copied(),
+                    target_label: raw_labels.get(&payload.target_entity).map(|(_, s)| s.clone()),
+                    target_seq: raw_labels.get(&payload.target_entity).map(|(s, _)| *s),
+                    target_entity: payload.target_entity,
+                    proposed_kind: payload.proposed_kind,
+                    proposed_payload: payload.proposed_payload,
+                    basis_seq: payload.basis_seq,
+                    basis_stale: false,
+                    status: ProposalStatus::Superseded,
+                    decided: None,
+                    superseded_by: None,
+                    orphaned_by_rollback: true,
+                    rolled_back_seq: cursor.rolled_back_at(event.seq),
+                });
+            }
+            proposals.sort_by_key(|p| p.seq); // creation seq order, history included
         }
         Ok(proposals)
     }

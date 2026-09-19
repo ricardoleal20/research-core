@@ -380,7 +380,11 @@ pub fn ceiling_reached(events: &[StoredEvent], mission_id: Uuid) -> bool {
 /// cost-ceiling-stopped > stopped > failed — a criterion met over a reached
 /// ceiling still completes).
 pub fn evaluate_terminals(store: &EventStore<'_>) -> Result<Vec<StoredEvent>, EventError> {
-    let events = store.events_all()?;
+    let raw = store.events_all()?;
+    // The shared fold cursor (AD-1, Story 2.6): the evaluator reads the LIVE
+    // read model — a rolled-back run or spend never decided anything.
+    let cursor = crate::domain::checkpoints::FoldCursor::over(&raw);
+    let events = cursor.live_owned(&raw);
     let missions = MissionsProjection::fold(&events)?;
     let board = HypothesesProjection::fold(&events)?;
     let mut appended = Vec::new();
