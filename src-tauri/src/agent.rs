@@ -26,13 +26,29 @@ pub struct AgentConfig {
 pub fn load_config(conn: &rusqlite::Connection) -> AgentConfig {
     AgentConfig {
         base_url: db::get_setting(conn, "base_url"),
-        api_key: db::get_setting(conn, "api_key"),
+        api_key: load_api_key(conn),
         model: db::get_setting(conn, "model"),
         agent_path: db::get_setting(conn, "agent_path"),
         llm_mode: db::get_setting(conn, "llm_mode"),
         llm_cli: db::get_setting(conn, "llm_cli"),
         llm_cli_model: db::get_setting(conn, "llm_cli_model"),
     }
+}
+
+/// API keys live in the OS keychain after the one-time migration (AD-16);
+/// the legacy `settings.api_key` row remains as the fallback for keys that
+/// could not be moved.
+fn load_api_key(conn: &rusqlite::Connection) -> String {
+    let provider = db::get_setting(conn, "provider");
+    let account = crate::eventstore::migration::keychain_account(&provider);
+    if let Ok(entry) = keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account) {
+        if let Ok(key) = entry.get_password() {
+            if !key.trim().is_empty() {
+                return key;
+            }
+        }
+    }
+    db::get_setting(conn, "api_key")
 }
 
 /// Resolve the effective mode. Empty/legacy settings fall back to the original

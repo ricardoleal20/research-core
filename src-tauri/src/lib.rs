@@ -3,6 +3,8 @@ mod commands;
 mod db;
 mod mcp;
 
+pub mod eventstore;
+
 use db::Db;
 use mcp::McpRegistry;
 use tauri::Manager;
