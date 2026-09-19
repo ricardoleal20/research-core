@@ -201,6 +201,7 @@ export const mockApi = {
   // settings
   getSettings: async () => { await delay(); return { ...settings }; },
   updateSetting: async (key: string, value: string) => { settings[key] = value; },
+  setProviderKey: async (key: string) => { settings.api_key = key; },
 
   // logging + paths
   appLog: async () => {},

@@ -229,18 +229,19 @@ export function renderWizard(app: HTMLElement, key: string, onDone: () => void) 
       await api.updateSetting("llm_cli", cmd);
       await api.updateSetting("llm_cli_model", model);
       await api.updateSetting("provider", "");
-      await api.updateSetting("api_key", "");
+      await api.setProviderKey(""); // clear any stored credential
     } else if (mode === "provider") {
       const key = ($("#wiz-prov-key", host) as HTMLInputElement)?.value.trim() || "";
       const model = ($("#wiz-prov-model", host) as HTMLInputElement)?.value.trim() || "";
       if (!key) throw new Error("Falta la API key");
       await api.updateSetting("llm_mode", "provider");
+      await api.updateSetting("provider", "openrouter");
       await api.updateSetting("base_url", "https://openrouter.ai/api/v1");
-      await api.updateSetting("api_key", key);
+      await api.setProviderKey(key); // keys live in the OS keychain, never the DB
       await api.updateSetting("model", model);
     } else {
       await api.updateSetting("llm_mode", "simulate");
-      await api.updateSetting("api_key", "");
+      await api.setProviderKey(""); // clear any stored credential
       await api.updateSetting("base_url", "");
     }
   }

@@ -132,10 +132,10 @@ const DICT: Record<string, Record<Lang, string>> = {
   "prov.baseUrl": { es: "Base URL", en: "Base URL", pt: "Base URL", fr: "Base URL" },
   "prov.apiKey": { es: "API Key", en: "API Key", pt: "API Key", fr: "API Key" },
   "prov.note": {
-    es: "La clave se guarda localmente en SQLite; solo se envía al proveedor configurado.",
-    en: "The key is stored locally in SQLite; it is only sent to the configured provider.",
-    pt: "A chave é guardada localmente no SQLite; só é enviada para o fornecedor configurado.",
-    fr: "La clé est stockée localement dans SQLite ; elle n'est envoyée qu'au fournisseur configuré.",
+    es: "La clave se guarda en el llavero del sistema (keychain), nunca en la base de datos; solo se envía al proveedor configurado.",
+    en: "The key is stored in the OS keychain — never in the database — and is only sent to the configured provider.",
+    pt: "A chave é guardada no chaveiro do sistema (keychain), nunca na base de dados; só é enviada ao fornecedor configurado.",
+    fr: "La clé est conservée dans le trousseau du système (keychain), jamais dans la base de données ; elle n'est envoyée qu'au fournisseur configuré.",
   },
 
   // mcp card

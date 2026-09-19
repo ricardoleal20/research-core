@@ -173,7 +173,7 @@ function cardIa() {
     <div class="card-head"><div class="card-title">${ico.brain} ${t("prov.title")}</div></div>
     <div class="field-row">
       <div class="field"><label>${t("prov.provider")}</label><select id="set-provider">
-        ${["openai-compatible|OpenAI-compatible","openai|OpenAI","anthropic|Anthropic","local|Local (Ollama)"]
+        ${["openai-compatible|OpenAI-compatible","openai|OpenAI","anthropic|Anthropic","google|Google (Gemini)","openrouter|OpenRouter","local|Local (Ollama)"]
           .map(o=>{const[v,l]=o.split("|");return `<option value="${v}" ${settings.provider===v?"selected":""}>${l}</option>`}).join("")}
       </select></div>
       <div class="field"><label>${t("prov.model")}</label><input id="set-model" type="text" class="mono" value="${esc(settings.model)}" placeholder="gpt-4o-mini"></div>
@@ -416,7 +416,10 @@ const SAVE_DELAY = 1100; // ms — artificial "Guardando…" feedback
 
 async function save() {
   const btn = $("#aj-save") as HTMLButtonElement;
-  const fields = ["provider", "model", "base_url", "api_key", "agent_path", "user_name", "lock_policy"];
+  const fields = ["provider", "model", "base_url", "agent_path", "user_name", "lock_policy"];
+  // The API key lives in the OS keychain: a non-empty input stores it there
+  // (account = provider); an empty input leaves the stored credential as-is.
+  const newKey = val("set-api_key").trim();
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.classList.add("is-saving");
@@ -426,6 +429,7 @@ async function save() {
     settings.lock_idle_min = settings.lock_policy === "idle" ? val("set-lock_idle_min") : "";
     const write = async () => {
       for (const [k, v] of Object.entries(settings)) await api.updateSetting(k, v);
+      if (newKey) await api.setProviderKey(newKey);
       state.settings = { ...settings };
     };
     await Promise.all([write(), delay(SAVE_DELAY)]);

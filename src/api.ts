@@ -142,6 +142,7 @@ export const api = mockActive ? browserApi : {
   // settings
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   updateSetting: (key: string, value: string) => invoke<void>("update_setting", { key, value }),
+  setProviderKey: (key: string) => invoke<void>("set_provider_key", { key }),
 
   // logging + paths
   appLog: (message: string) => invoke<void>("app_log", { message }).catch(() => {}),
