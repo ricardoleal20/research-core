@@ -594,6 +594,19 @@ const DICT: Record<string, Record<Lang, string>> = {
   "ev.artifactPh": { es: "p. ej. runs/007/table-3.csv", en: "e.g. runs/007/table-3.csv", pt: "ex. runs/007/table-3.csv", fr: "ex. runs/007/table-3.csv" },
   "ev.contentQuoted": { es: "Contenido anclado", en: "Anchored content", pt: "Conteúdo ancorado", fr: "Contenu ancré" },
 
+  // pin verification (FR-14.1, Story 4.2): the machine axis — verified by
+  // code, never by a model's word; distinct from the agent-assessed
+  // confidence (FR-3.6). Status never reads color alone: label + icon.
+  "ev.verified": { es: "verificado por código", en: "verified by code", pt: "verificado por código", fr: "vérifié par code" },
+  "ev.verificationFailed": { es: "verificación fallida", en: "verification failed", pt: "verificação falhou", fr: "échec de vérification" },
+  "ev.stale": { es: "obsoleta", en: "stale", pt: "obsoleta", fr: "périmée" },
+  "ev.unverified": { es: "sin verificar", en: "unverified", pt: "não verificado", fr: "non vérifié" },
+  "ev.verify": { es: "Verificar", en: "Verify", pt: "Verificar", fr: "Vérifier" },
+  "ev.reverify": { es: "Reverificar", en: "Re-verify", pt: "Reverificar", fr: "Revérifier" },
+  "ev.verifying": { es: "Verificando…", en: "Verifying…", pt: "A verificar…", fr: "Vérification…" },
+  "ev.verifyError": { es: "No se pudo verificar: ", en: "Could not verify: ", pt: "Não foi possível verificar: ", fr: "Impossible de vérifier : " },
+  "ev.verifSource": { es: "Fuente consultada: ", en: "Source consulted: ", pt: "Fonte consultada: ", fr: "Source consultée : " },
+
   // board at a glance (FR-2.4, Story 1.8): all hypotheses, all states,
   // one view — with the checkpoint control in its header.
   "board.title": { es: "El tablero de un vistazo", en: "The board at a glance", pt: "O quadro num relance", fr: "Le tableau en un coup d'œil" },

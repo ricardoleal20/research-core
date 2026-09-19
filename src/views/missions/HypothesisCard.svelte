@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "../../api";
   import { t } from "../../i18n";
-  import type { Claim, Hypothesis, HypothesisStatus, PinKind, RelationChip, RelationKind, Ref } from "../../types";
+  import type { Claim, Hypothesis, HypothesisStatus, PinKind, PinVerification, RelationChip, RelationKind, Ref } from "../../types";
 
   // Hypothesis card (DESIGN.md components.hypothesis-card): statement,
   // lifecycle chip top-right, relation chips inline, audit-stamp strip in
@@ -249,6 +249,45 @@
     return "#BE123C";
   }
 
+  // ---- Pin verification (FR-14.1, Story 4.2) ----
+  // The machine axis: `run_pin_verification` re-checks every pin of this
+  // hypothesis against its source with NO LLM call; the read model then
+  // carries the latest status on each pin. Read-model only (AD-8): the
+  // action invokes the command and re-reads from the log. Failures mark
+  // the pin visibly and never delete it — re-verify is always offered.
+
+  let verifying = $state(false);
+
+  async function verifyPins() {
+    verifying = true;
+    try {
+      await api.runPinVerification(hypothesis.id);
+      evidenceError = "";
+      await loadEvidence();
+    } catch (e) {
+      evidenceError = t("ev.verifyError") + e;
+    } finally {
+      verifying = false;
+    }
+  }
+
+  /** The verification chip's label — the machine axis's own vocabulary,
+   *  never the confidence's: "verified by code" is existence by code, not
+   *  a model's judgment (FR-3.6 separation). */
+  function verifLabel(v: PinVerification): string {
+    if (v.status === "verified") return t("ev.verified");
+    if (v.status === "failed") return t("ev.verificationFailed");
+    return t("ev.stale");
+  }
+
+  /** The chip's tooltip: the label always renders (status is never color
+   *  alone); the tooltip adds the machine detail code + the consulted
+   *  source — code form, bilingual-safe. */
+  function verifTitle(v: PinVerification | null): string {
+    if (!v) return t("ev.unverified");
+    return `${verifLabel(v)} · ${v.detail} · ${t("ev.verifSource")}${v.source}`;
+  }
+
   const pct = (c: number) => `${Math.round(c * 100)}%`;
 </script>
 
@@ -345,6 +384,53 @@
                 <span class="hc-pin-digest mono" title={pin.digest}>
                   {t("ev.digest")} {pin.digest}
                 </span>
+                <!-- Verification chip (FR-14.1, Story 4.2): the machine
+                     axis — label + icon, never color alone; a separate
+                     field from the confidence dot above ("verified" never
+                     drives the model's assessment). null = unverified. -->
+                <span
+                  class="hc-verif hc-verif--{pin.verification?.status ?? 'unverified'}"
+                  title={verifTitle(pin.verification)}
+                >
+                  {#if pin.verification?.status === "verified"}
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <path
+                        d="M3 8.5 6.5 12 13 4.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  {:else if pin.verification?.status === "failed"}
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <path
+                        d="M4 4l8 8M12 4l-8 8"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                      />
+                    </svg>
+                  {:else}
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2" />
+                    </svg>
+                  {/if}
+                  {pin.verification ? verifLabel(pin.verification) : t("ev.unverified")}
+                </span>
+                <!-- The re-verifiable affordance: every pin can be
+                     (re-)verified by code — a stale or failed result is
+                     never a dead end. -->
+                <button
+                  class="hc-verif-btn"
+                  type="button"
+                  onclick={verifyPins}
+                  disabled={verifying}
+                >
+                  {verifying ? t("ev.verifying") : pin.verification ? t("ev.reverify") : t("ev.verify")}
+                </button>
               </div>
               <blockquote class="hc-excerpt" title={t("ev.contentQuoted")}>
                 {pin.excerpt}
@@ -380,6 +466,52 @@
                 <span class="hc-pin-digest mono" title={pin.digest}>
                   {t("ev.digest")} {pin.digest}
                 </span>
+                <!-- Verification chip (FR-14.1, Story 4.2): the machine
+                     axis — same anatomy as the numerical pin above; a
+                     separate field from the confidence dot ("verified"
+                     never drives the model's assessment). -->
+                <span
+                  class="hc-verif hc-verif--{pin.verification?.status ?? 'unverified'}"
+                  title={verifTitle(pin.verification)}
+                >
+                  {#if pin.verification?.status === "verified"}
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <path
+                        d="M3 8.5 6.5 12 13 4.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  {:else if pin.verification?.status === "failed"}
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <path
+                        d="M4 4l8 8M12 4l-8 8"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                      />
+                    </svg>
+                  {:else}
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2" />
+                    </svg>
+                  {/if}
+                  {pin.verification ? verifLabel(pin.verification) : t("ev.unverified")}
+                </span>
+                <!-- The re-verifiable affordance — same action as the
+                     numerical pin. -->
+                <button
+                  class="hc-verif-btn"
+                  type="button"
+                  onclick={verifyPins}
+                  disabled={verifying}
+                >
+                  {verifying ? t("ev.verifying") : pin.verification ? t("ev.reverify") : t("ev.verify")}
+                </button>
               </div>
               <blockquote class="hc-excerpt" title={t("ev.excerptQuoted")}>
                 {pin.excerpt}
@@ -775,6 +907,61 @@
     border-left-color: rgba(48, 113, 181, 0.35);
     padding-left: 10px;
     white-space: pre-wrap;
+  }
+
+  /* Verification chip (FR-14.1, Story 4.2): the machine axis — pill with
+     label + icon, per-status ink + soft background. Status never reads
+     color alone: the label always renders. */
+  .hc-verif {
+    --ink: #52525b;
+    --soft: #f4f4f5;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    background: var(--soft);
+    border-radius: 9999px;
+    padding: 2px 9px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
+    white-space: nowrap;
+  }
+  .hc-verif svg {
+    flex-shrink: 0;
+  }
+  .hc-verif--verified {
+    --ink: #047857;
+    --soft: #ecfdf5;
+  }
+  .hc-verif--failed {
+    --ink: #be123c;
+    --soft: #fff1f2;
+  }
+  .hc-verif--stale {
+    --ink: #b45309;
+    --soft: #fef3c7;
+  }
+  .hc-verif-btn {
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--rc-accent);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 3px 9px;
+    min-height: 26px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .hc-verif-btn:hover:not(:disabled) {
+    background: var(--rc-accent-soft);
+  }
+  .hc-verif-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   /* Pin-to-citation form: ref picker, excerpt confirmation, confidence +

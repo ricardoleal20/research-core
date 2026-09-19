@@ -236,6 +236,22 @@ export type PinKind = "citation" | "numerical";
 // digest of that content (computed at construction — never trusted from
 // callers), and the agent-assessed confidence attributed to the assessing
 // model (FR-3.6) — never "verified".
+// The LATEST machine verification of one pin (Story 4.2, AD-15): a
+// projection from `evidence.verified` events (actor=system/verifier, never
+// an LLM). `status` is the display vocabulary — verified | failed come from
+// the event; stale is fold-derived (the result predates the current pin,
+// re-verifiable). null = unverified — a state entirely distinct from the
+// agent-assessed confidence: verification is existence by code, confidence
+// is a named model's judgment (FR-3.6).
+export type VerificationStatus = "verified" | "failed" | "stale";
+
+export interface PinVerification {
+  status: VerificationStatus;
+  detail: string; // machine code: excerpt_matched / digest_ok / not_found / artifact_changed / artifact_missing / fetch_error / no_source
+  source: string; // what was consulted: arxiv:<id>, a URL, or an artifact ref
+  ts: string;
+}
+
 export interface EvidencePin {
   seq: number; // the evidence.pinned event's seq (latest per claim wins)
   ts: string;
@@ -249,6 +265,7 @@ export interface EvidencePin {
   confidence: number; // 0.0–1.0, agent-assessed
   assessingModel: string; // e.g. "GLM-5.3" — the confidence's attribution
   refLabel: string | null; // author-year from the library (citation pins only)
+  verification: PinVerification | null; // latest machine verification; null = unverified
 }
 
 export interface Claim {

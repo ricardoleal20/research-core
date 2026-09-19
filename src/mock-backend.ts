@@ -271,6 +271,31 @@ async function sha256Hex(text: string): Promise<string> {
 const claims: Claim[] = [];
 let claimSeq = 0;
 
+// Story 4.2 mock corpus: the fetchable sources the mock verifier re-reads —
+// arXiv abstracts keyed by arXiv id (the demo refs are all arXiv) and
+// numerical artifacts keyed by artifact ref. Mirrors the core: the check is
+// code, not an LLM call.
+const mockSources: Record<string, string> = {
+  "1706.03762":
+    "Attention Is All You Need. The dominant sequence transduction models are based on recurrent neural networks. We propose the Transformer, a new simple network architecture based solely on attention mechanisms, dispensing with recurrence entirely.",
+  "1409.0473":
+    "Neural Machine Translation by Jointly Learning to Align and Translate. We propose an extension to the encoder-decoder model which learns to align and translate jointly.",
+  "2001.08361":
+    "Scaling Laws for Neural Language Models. We study empirical scaling laws for language model performance on the cross-entropy loss.",
+  "2303.18223":
+    "A Survey on Large Language Models. This paper presents a comprehensive survey on recent advances in large language models.",
+};
+const mockArtifacts: Record<string, string> = {
+  "runs/007/table-3.csv": "accuracy: 0.912, ±0.006, n=5 seeds",
+};
+
+/** Whitespace-normalized containment — the documented citation check the
+ *  core implements: collapse whitespace runs in both, then contains. */
+function excerptAppears(excerpt: string, fetched: string): boolean {
+  const norm = (s: string) => s.split(/\s+/).filter(Boolean).join(" ");
+  return norm(fetched).includes(norm(excerpt));
+}
+
 // In-memory proposals (mirrors the event-sourced core, Story 2.2): agent
 // steps emit quarantined proposals — excluded from the board until merged;
 // the basis is validated at merge time (basis_stale unless forced), and a
@@ -450,6 +475,9 @@ function mockApply(p: Proposal, decidedSeq: number): void {
       confidence: pin.confidence,
       assessingModel: pin.assessing_model,
       refLabel: null,
+      // The merge applies a fresh pin — unverified until the verifier runs
+      // (Story 4.2); a previous pin's verification never carries over.
+      verification: null,
     };
     return;
   }
@@ -1364,8 +1392,12 @@ export const mockApi = {
       throw new Error("evidence.assessing_model must not be empty — confidence is attributed to the assessing model, never anonymous (FR-3.6)");
     }
     // The digest is computed here, from the excerpt — never trusted from
-    // the caller (AD-5).
+    // the caller (AD-5). Re-pinning: a previous verification never carries
+    // over to the new excerpt — it stays visible as stale (Story 4.2).
     const digest = await sha256Hex(excerpt);
+    const carriedStale = claim.pin?.verification
+      ? { ...claim.pin.verification, status: "stale" as const }
+      : null;
     claimSeq += 1;
     claim.pinned = true;
     claim.pin = {
@@ -1381,6 +1413,7 @@ export const mockApi = {
       confidence,
       assessingModel: assessingModel.trim(),
       refLabel: `${ref.authors} ${ref.year}`,
+      verification: carriedStale,
     };
     return { ...claim };
   },
@@ -1412,6 +1445,9 @@ export const mockApi = {
       throw new Error("evidence.assessing_model must not be empty — confidence is attributed to the assessing model, never anonymous (FR-3.6)");
     }
     const digest = await sha256Hex(content);
+    const carriedStale = claim.pin?.verification
+      ? { ...claim.pin.verification, status: "stale" as const }
+      : null;
     claimSeq += 1;
     claim.pinned = true;
     claim.pin = {
@@ -1427,6 +1463,7 @@ export const mockApi = {
       confidence,
       assessingModel: assessingModel.trim(),
       refLabel: null,
+      verification: carriedStale,
     };
     return { ...claim };
   },
@@ -1434,6 +1471,65 @@ export const mockApi = {
     await delay();
     return claims
       .filter((c) => c.hypothesisId === hypothesisId)
+      .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
+  },
+  // Pin verification (Story 4.2, FR-14.1): the mock mirrors the core's
+  // no-LLM check — re-read each pin's source from the seeded corpus and
+  // set the latest verification on the pin. Failures mark visibly and
+  // never delete the pin; re-verification overwrites (latest wins).
+  runPinVerification: async (hypothesisId: string | null) => {
+    await delay();
+    for (const claim of claims) {
+      if (hypothesisId && claim.hypothesisId !== hypothesisId) continue;
+      const pin = claim.pin;
+      if (!claim.pinned || !pin) continue; // unpinned — nothing to verify
+      let status: "verified" | "failed";
+      let detail: string;
+      let source: string;
+      if (pin.kind === "citation") {
+        const ref = mockRefs.find((r) => r.id === pin.refId);
+        // Source resolution mirrors the core: the arXiv id from the DOI or
+        // URL when there is one, else the ref's URL.
+        const doiArxiv = ref?.doi.match(/^10\.48550\/arXiv\.(.+)$/)?.[1] ?? "";
+        const urlArxiv = ref?.url.match(/arxiv\.org\/(?:abs|pdf)\/([^/.]+)/)?.[1] ?? "";
+        const arxivId = doiArxiv || urlArxiv;
+        if (arxivId) {
+          source = `arxiv:${arxivId}`;
+          const text = mockSources[arxivId];
+          detail = text === undefined ? "fetch_error" : excerptAppears(pin.excerpt, text) ? "excerpt_matched" : "not_found";
+          status = detail === "excerpt_matched" ? "verified" : "failed";
+        } else if (ref?.url) {
+          source = ref.url;
+          // The mock has no corpus for non-arXiv URLs — an honest fetch
+          // error, like the core against an unreachable source.
+          detail = "fetch_error";
+          status = "failed";
+        } else {
+          source = pin.refId ?? "";
+          detail = "no_source";
+          status = "failed";
+        }
+      } else {
+        source = pin.artifactRef ?? "";
+        const content = mockArtifacts[source];
+        if (content === undefined) {
+          detail = "artifact_missing";
+          status = "failed";
+        } else if ((await sha256Hex(content)) === pin.digest) {
+          detail = "digest_ok";
+          status = "verified";
+        } else if (excerptAppears(pin.excerpt, content)) {
+          detail = "excerpt_matched";
+          status = "verified";
+        } else {
+          detail = "artifact_changed";
+          status = "failed";
+        }
+      }
+      pin.verification = { status, detail, source, ts: nowISO() };
+    }
+    return claims
+      .filter((c) => !hypothesisId || c.hypothesisId === hypothesisId)
       .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
   },
 

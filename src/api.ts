@@ -236,6 +236,18 @@ const browserApi = {
     }
     return mockApi.pinClaimToNumerical(claimId, hypothesisId, artifactRef, content, confidence, assessingModel);
   },
+  // Pin verification (Story 4.2, FR-14.1): a mutation — the served browser
+  // view refuses it; the read-only verification status rides the evidence
+  // read (`/api/hypotheses/:id/evidence`).
+  runPinVerification: async (hypothesisId: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run verification from the desktop app / " +
+          "Vista de solo lectura — ejecuta la verificación desde la app de escritorio"
+      );
+    }
+    return mockApi.runPinVerification(hypothesisId);
+  },
   // Onboarding (Story 1.9, FR-8.1): the first-value flow is a mutation —
   // the served browser view refuses it like every other write.
   runFirstValue: async (url: string) => {
@@ -581,6 +593,12 @@ export const api = mockActive ? browserApi : {
     }),
   listEvidence: (hypothesisId: string) =>
     invoke<Claim[]>("list_evidence", { hypothesisId }),
+  // Pin verification (Story 4.2, FR-14.1): re-check every pin of the scope
+  // against its source with NO LLM call — one evidence.verified event per
+  // pin (actor=system/verifier); the returned claims carry the latest
+  // verification on every pin.
+  runPinVerification: (hypothesisId: string | null) =>
+    invoke<Claim[]>("run_pin_verification", { hypothesisId }),
 
   // morning digest (event-sourced, Story 2.3): the Night Shift result —
   // the manual trigger runs every active mission's scan now; schedule
