@@ -848,3 +848,77 @@ export interface ComputeTargetView {
   seq?: number | null;
   ts?: string | null;
 }
+
+// ---- Readiness gate (Story 4.3, FR-13.1/13.2 — the final PRD story) ----
+
+// The gate's verdict: derived, never stored. `ready` renders
+// "preprint-ready"; `not_ready` renders its blockers. The three-state
+// presentation (not ready / near / ready) derives on the read side from
+// blockers + infos: near = 0 blockers but ≥1 advisory info row — states,
+// never scores (FR-13.1).
+export type ReadinessVerdict = "ready" | "not_ready";
+
+// One blocking or advisory item. Every item references EXACTLY ONE specific
+// board object (FR-13.1): the claim (CLAIMS-{seq}), the hypothesis (H-{seq}
+// with its lifecycle + the ties that make it load-bearing), or the search
+// log row (#{seq} — the search.run event IS the disclosure, FR-12.1).
+export type ReadinessItemKind =
+  | "unpinned_claim" // a claim with no evidence.pinned event (FR-3.4)
+  | "load_bearing_unresolved" // things rest on it; still proposed/testing
+  | "load_bearing_refuted" // things rest on it; refuted
+  | "unreckoned_null_result" // null search; its mission still unresolved
+  | "pin_verification_failed" // INFO: pinned, but the machine check failed
+  | "merge_queue_pending"; // INFO: quarantine is not board state (AD-3)
+
+// One typed relation tie on a load-blocking hypothesis: the kind, the other
+// endpoint's H-{n}, and whether it reads incoming ("contradicted-by H-3")
+// or outgoing ("contradicts H-3") on this hypothesis.
+export interface ReadinessRelationTie {
+  kind: RelationKind;
+  otherSeq: number;
+  incoming: boolean;
+}
+
+export interface ReadinessItem {
+  kind: ReadinessItemKind;
+  claimId: string | null; // the blocking claim's id (CLAIMS-{claimSeq})
+  claimSeq: number | null;
+  hypothesisId: string | null; // the load-bearing hypothesis (H-{hypothesisSeq})
+  hypothesisSeq: number | null;
+  hypothesisStatus: HypothesisStatus | null;
+  searchSeq: number | null; // the null search's log row (#{searchSeq})
+  missionId: string | null;
+  claimTies: number[]; // CLAIMS-{n} resting on the hypothesis
+  relationTies: ReadinessRelationTie[];
+  pendingCount: number; // the merge-queue info row's count
+}
+
+// One evidence-trail row — the clean board's justification: what was
+// checked, the counts, and the objects that satisfied it (EXPERIENCE.md
+// Flow 2: "every cleared item still listed beside the object that
+// satisfied it"). Four rows, matching the readiness frame.
+export type ReadinessTrailKind =
+  | "claims_pinned" // N/N claims pinned (+ how many machine-verified)
+  | "hypotheses_resolved" // N/N resolved (supported or refuted)
+  | "nulls_disclosed" // N/N null-result searches reckoned with
+  | "merge_queue"; // pending count; cites the last decided proposal when clean
+
+export interface ReadinessTrailRow {
+  kind: ReadinessTrailKind;
+  total: number; // what the check covered (0 for the merge-queue row)
+  clean: number; // what passed (0 for the merge-queue row)
+  verified: number; // claims row only: pins with a verified machine check
+  pending: number; // merge-queue row only: pending proposals in scope
+  refs: string[]; // the objects the row cites: "CLAIMS-2", "H-4", "#12", "pr-1042"
+}
+
+// The readiness report of one scope (a mission, or the whole workspace):
+// a PURE derived view over the log — blockers, advisory infos, and the
+// trail. No readiness state exists anywhere; asking again re-folds.
+export interface ReadinessReport {
+  scope: string | null; // the mission id the report ran for; null = workspace
+  verdict: ReadinessVerdict;
+  blockers: ReadinessItem[];
+  infos: ReadinessItem[];
+  trail: ReadinessTrailRow[];
+}

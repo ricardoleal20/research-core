@@ -1060,7 +1060,143 @@ const DICT: Record<string, Record<Lang, string>> = {
     es: "Exportar con la revisión", en: "Export alongside the review",
     pt: "Exportar com a revisão", fr: "Exporter avec la revue",
   },
-};
+  // readiness gate (Story 4.3, FR-13 — the final PRD story): the preprint
+  // tier, derived from board state — no scores, only the specific objects
+  // that block (or the trail that clears)
+  "rd.title": { es: "Preparación", en: "Readiness", pt: "Preparação", fr: "Préparation" },
+  "rd.report": { es: "Informe de preparación", en: "Readiness Report", pt: "Relatório de preparação", fr: "Rapport de préparation" },
+  "rd.derived": { es: "Derivado del estado del tablero", en: "Derived from board state", pt: "Derivado do estado do quadro", fr: "Dérivé de l'état du tableau" },
+  "rd.question": { es: "¿Listo para preprint?", en: "Preprint-ready?", pt: "Pronto para preprint?", fr: "Prêt pour le preprint ?" },
+  "rd.preprintReady": { es: "Listo para preprint", en: "Preprint-ready", pt: "Pronto para preprint", fr: "Prêt pour le preprint" },
+  "rd.notReady": { es: "no listo", en: "not ready", pt: "não pronto", fr: "pas prêt" },
+  "rd.near": { es: "cerca", en: "near", pt: "perto", fr: "proche" },
+  "rd.ready": { es: "listo", en: "ready", pt: "pronto", fr: "prêt" },
+  "rd.scope": { es: "Alcance", en: "Scope", pt: "Âmbito", fr: "Périmètre" },
+  "rd.scope.workspace": { es: "Todo el espacio de trabajo", en: "Whole workspace", pt: "Todo o espaço de trabalho", fr: "Tout l'espace de travail" },
+  "rd.loadError": { es: "No se pudo leer el informe: ", en: "Could not read the report: ", pt: "Não foi possível ler o relatório: ", fr: "Impossible de lire le rapport : " },
+  "rd.blockers": { es: "Elementos que bloquean", en: "Blocking items", pt: "Elementos que bloqueiam", fr: "Éléments bloquants" },
+  "rd.blockersNone": {
+    es: "Nada bloquea este tablero — el rastro de evidencia justifica el veredicto.",
+    en: "Nothing blocks this board — the evidence trail justifies the verdict.",
+    pt: "Nada bloqueia este quadro — o rastro de evidência justifica o veredicto.",
+    fr: "Rien ne bloque ce tableau — la traîne de preuves justifie le verdict.",
+  },
+  "rd.infos": { es: "Avisos", en: "Advisory", pt: "Avisos", fr: "Avis" },
+  "rd.trail": { es: "Rastro de evidencia", en: "Evidence trail", pt: "Rastro de evidência", fr: "Traîne de preuves" },
+  "rd.b.unpinned": {
+    es: "{count} afirmaciones sin ancla",
+    en: "{count} unpinned claims",
+    pt: "{count} alegações sem âncora",
+    fr: "{count} affirmations sans ancre",
+  },
+  "rd.b.unpinned.d": {
+    es: "Afirmaciones sin evidencia adjunta bloquean la compuerta.",
+    en: "Claims without attached evidence block the gate.",
+    pt: "Alegações sem evidência anexada bloqueiam a comporta.",
+    fr: "Les affirmations sans preuve attachée bloquent la porte.",
+  },
+  "rd.b.loadUnresolved": {
+    es: "Hipótesis estructural sin resolver",
+    en: "Load-bearing hypothesis unresolved",
+    pt: "Hipótese estrutural por resolver",
+    fr: "Hypothèse structurelle non résolue",
+  },
+  "rd.b.loadUnresolved.d": {
+    es: "H-{seq} sigue en {status}; lo que descansa en ella descansa en una pregunta abierta.",
+    en: "H-{seq} is still {status}; what rests on it rests on an open question.",
+    pt: "H-{seq} segue em {status}; o que repousa nela repousa numa pergunta aberta.",
+    fr: "H-{seq} est encore {status} ; ce qui repose sur elle repose sur une question ouverte.",
+  },
+  "rd.b.loadRefuted": {
+    es: "Hipótesis estructural refutada",
+    en: "Load-bearing hypothesis refuted",
+    pt: "Hipótese estrutural refutada",
+    fr: "Hypothèse structurelle réfutée",
+  },
+  "rd.b.loadRefuted.d": {
+    es: "H-{seq} está refutada; lo que descansa en ella descansa en una rama muerta.",
+    en: "H-{seq} is refuted; what rests on it rests on a dead limb.",
+    pt: "H-{seq} está refutada; o que repousa nela repousa num ramo morto.",
+    fr: "H-{seq} est réfutée ; ce qui repose sur elle repose sur une branche morte.",
+  },
+  "rd.b.null": {
+    es: "Resultados nulos sin atender",
+    en: "Unreckoned null results",
+    pt: "Resultados nulos por atender",
+    fr: "Résultats nuls non réglés",
+  },
+  "rd.b.null.d": {
+    es: "La búsqueda del registro #{seq} no encontró nada y la misión aún no responde.",
+    en: "The search at log #{seq} found nothing, and the mission has not answered it yet.",
+    pt: "A busca do registro #{seq} não encontrou nada e a missão ainda não respondeu.",
+    fr: "La recherche du journal #{seq} n'a rien trouvé et la mission n'a pas encore répondu.",
+  },
+  "rd.i.verificationFailed": {
+    es: "Anclada pero sin respaldo verificado",
+    en: "Pinned but unsupported by verified evidence",
+    pt: "Ancorada mas sem respaldo verificado",
+    fr: "Ancrée mais sans soutien vérifié",
+  },
+  "rd.i.verificationFailed.d": {
+    es: "La verificación automática de CLAIMS-{seq} falló — el ancla existe; el respaldo, no.",
+    en: "CLAIMS-{seq}'s machine verification failed — the pin exists; the backing does not.",
+    pt: "A verificação automática de CLAIMS-{seq} falhou — a âncora existe; o respaldo, não.",
+    fr: "La vérification automatique de CLAIMS-{seq} a échoué — l'ancre existe ; le soutien, non.",
+  },
+  "rd.i.mergeQueue": {
+    es: "Cola de fusión: {count} en espera",
+    en: "Merge queue: {count} pending",
+    pt: "Fila de fusão: {count} em espera",
+    fr: "File de fusion : {count} en attente",
+  },
+  "rd.i.mergeQueue.d": {
+    es: "Las propuestas en cuarentena no son estado del tablero (AD-3) — no bloquean, pero no deberían sorprender.",
+    en: "Quarantined proposals are not board state (AD-3) — they do not block, but should not surprise.",
+    pt: "Propostas em quarentena não são estado do quadro (AD-3) — não bloqueiam, mas não devem surpreender.",
+    fr: "Les propositions en quarantaine ne sont pas l'état du tableau (AD-3) — elles ne bloquent pas, mais ne devraient pas surprendre.",
+  },
+  "rd.t.claims": {
+    es: "{clean}/{total} afirmaciones ancladas · {verified} verificadas",
+    en: "{clean}/{total} claims pinned · {verified} verified",
+    pt: "{clean}/{total} alegações ancoradas · {verified} verificadas",
+    fr: "{clean}/{total} affirmations ancrées · {verified} vérifiées",
+  },
+  "rd.t.hyps": {
+    es: "{clean}/{total} hipótesis resueltas",
+    en: "{clean}/{total} hypotheses resolved",
+    pt: "{clean}/{total} hipóteses resolvidas",
+    fr: "{clean}/{total} hypothèses résolues",
+  },
+  "rd.t.nulls": {
+    es: "{clean}/{total} resultados nulos atendidos",
+    en: "{clean}/{total} null results reckoned",
+    pt: "{clean}/{total} resultados nulos atendidos",
+    fr: "{clean}/{total} résultats nuls réglés",
+  },
+  "rd.t.queue.empty": {
+    es: "Cola de fusión vacía",
+    en: "Merge queue empty",
+    pt: "Fila de fusão vazia",
+    fr: "File de fusion vide",
+  },
+  "rd.t.queue.pending": {
+    es: "Cola de fusión: {count} en espera",
+    en: "Merge queue: {count} pending",
+    pt: "Fila de fusão: {count} em espera",
+    fr: "File de fusion : {count} en attente",
+  },
+  "rd.ties.claims": {
+    es: "{count} afirmaciones descansan en ella",
+    en: "{count} claims rest on it",
+    pt: "{count} alegações repousam nela",
+    fr: "{count} affirmations reposent sur elle",
+  },
+  "rd.trailNote": {
+    es: "Cada fila cita los objetos que la satisfacen — una lista de hechos defendible línea por línea.",
+    en: "Each row cites the objects that satisfied it — a checklist of facts, defensible line by line.",
+    pt: "Cada linha cita os objetos que a satisfazem — uma lista de fatos defensível linha por linha.",
+    fr: "Chaque ligne cite les objets qui la satisfont — une liste de faits défendables ligne par ligne.",
+  },};
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];
 

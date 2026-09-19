@@ -10,6 +10,7 @@
     RollbackOutcome,
   } from "../../types";
   import HypothesisCard from "./HypothesisCard.svelte";
+  import ReadinessReport from "./ReadinessReport.svelte";
 
   // The board at a glance (FR-2.4, Story 1.8): ALL hypotheses and their
   // states in one view — a board-level grid, not per-mission sections
@@ -63,6 +64,10 @@
   // The last executed outcome — the post-rollback note (superseded history
   // lives in the quarantine view; this names what just happened).
   let lastOutcome = $state<RollbackOutcome | null>(null);
+
+  // Readiness report (Story 4.3, FR-13): the preprint-tier gate, opened
+  // from the board header — a derived view, re-folded on every revision.
+  let readinessOpen = $state(false);
 
   const filtered = $derived(
     entries === null
@@ -202,6 +207,16 @@
       >
         {t("cp.title")}
       </button>
+      <!-- Readiness gate (FR-13, Story 4.3): the board header's entry to
+           the preprint-tier report — what blocks, item by object. -->
+      <button
+        class="glance-cp-btn"
+        type="button"
+        aria-expanded={readinessOpen}
+        onclick={() => (readinessOpen = !readinessOpen)}
+      >
+        {t("rd.title")}
+      </button>
     </div>
   </header>
 
@@ -334,6 +349,15 @@
         {/if}
       {/if}
     </div>
+  {/if}
+
+  {#if readinessOpen}
+    <!-- The readiness panel (FR-13.1/13.2): derived from board state, no
+         scores — every blocking item references its specific board object;
+         a clean board shows the trail that justifies it. Re-folds on every
+         board revision (a merge, a rollback — the same signal the grid
+         re-folds on). -->
+    <ReadinessReport {missions} revision={revision} />
   {/if}
 
   {#if loadError}

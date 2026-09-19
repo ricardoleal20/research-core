@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -540,6 +540,11 @@ export const api = mockActive ? browserApi : {
     }),
   getSearchDisclosure: (missionId: string | null) =>
     invoke<SearchDisclosure>("get_search_disclosure", { missionId }),
+  // Readiness gate (Story 4.3, FR-13): the preprint-tier report — a pure
+  // fold over the log (replay = re-query); missionId scopes it to one
+  // mission's board, null asks the whole workspace
+  getReadinessReport: (missionId: string | null) =>
+    invoke<ReadinessReport>("get_readiness_report", { missionId }),
   // agent steps (Story 2.1): one role step through the provider layer —
   // spend recorded role-tagged, result returned to the caller
   runAgentStep: (missionId: string, role: string, task: string) =>

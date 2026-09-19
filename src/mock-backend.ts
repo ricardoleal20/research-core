@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -702,6 +702,209 @@ const seededSearches: SearchDisclosureRow[] = [
   },
 ];
 
+// Readiness gate (mirrors the event-sourced core, Story 4.3, FR-13): the
+// seeded board the dev browser's readiness panel renders — TWO seeds, the
+// frame's two variants:
+//
+// - m21-seed (NOT READY): H-31 still testing, contradicted-by the supported
+//   H-32, carrying the frame's three unpinned claims (CLAIMS-2/5/9) — plus
+//   the honest null search #156 above, unreckoned while H-31 stays open.
+//   The workspace report aggregates these blockers.
+// - m24-seed (CLEAN): H-33 supported with two pinned + machine-verified
+//   claims — `mockApi.getReadinessReport("m24-seed")` serves the
+//   preprint-ready variant with the four-row evidence trail.
+//
+// The derivation below mirrors the core's fold over the seeded + live
+// board (replay = re-query): same blocker categories, same
+// info-not-blocker decisions (verified-failed pins, merge-queue pending),
+// same trail rows — no scores, only specifics.
+const seededReadinessHypotheses: Hypothesis[] = [
+  {
+    id: "h31-seed", seq: 31, ts: "2026-09-18T22:04:00Z",
+    statement: "Retrieval grounding reduces hallucinated citations in long-form generation",
+    missionId: "m21-seed", status: "testing",
+    relations: [
+      { seq: 45, kind: "contradicts", direction: "incoming", otherId: "h32-seed", otherSeq: 32,
+        otherStatement: "Grounded generation still hallucinates under distribution shift" },
+    ],
+    audit: { seq: 44, ts: "2026-09-19T02:50:00Z", actor: "user", basis: "Trial 2 ran; the citations improved but two claims stay unanchored." },
+  },
+  {
+    id: "h32-seed", seq: 32, ts: "2026-09-18T22:06:00Z",
+    statement: "Grounded generation still hallucinates under distribution shift",
+    missionId: "m21-seed", status: "supported",
+    relations: [
+      { seq: 45, kind: "contradicts", direction: "outgoing", otherId: "h31-seed", otherSeq: 31,
+        otherStatement: "Retrieval grounding reduces hallucinated citations in long-form generation" },
+    ],
+    audit: { seq: 47, ts: "2026-09-19T03:01:00Z", actor: "user", basis: "The contradiction held across both trials." },
+  },
+  {
+    id: "h33-seed", seq: 33, ts: "2026-09-18T21:40:00Z",
+    statement: "Linear-complexity attention stays competitive at long context",
+    missionId: "m24-seed", status: "supported",
+    relations: [],
+    audit: { seq: 46, ts: "2026-09-19T01:52:00Z", actor: "user", basis: "The pinned runs held across five seeds." },
+  },
+];
+
+// A static verified pin (the digest is inert seed data — the mock never
+// re-computes it; the core's constructor guarantees it by construction).
+const verifiedPin = (seq: number, claimId: string, hypothesisId: string, refId: string, excerpt: string): EvidencePin => ({
+  seq, ts: "2026-09-19T01:50:00Z", claimId, hypothesisId, kind: "citation",
+  refId, artifactRef: null, excerpt,
+  digest: "3f2a91c477b14c5e9a208d41c2b6a0f33f2a91c477b14c5e9a208d41c2b6a0f3",
+  confidence: 0.82, assessingModel: "GLM-5.3", refLabel: "Beltagy et al. 2020",
+  verification: { status: "verified", detail: "excerpt_matched", source: "arxiv:2004.05150", ts: "2026-09-19T02:00:00Z" },
+});
+
+const seededReadinessClaims: Claim[] = [
+  // the frame's three unpinned claims on H-31 (CLAIMS-2/5/9 chips)
+  { id: "cl2-seed", seq: 2, ts: "2026-09-18T22:10:00Z", hypothesisId: "h31-seed",
+    text: "Grounded citations are copied verbatim 91% of the time",
+    sourceMessageId: null, pinned: false, pin: null },
+  { id: "cl5-seed", seq: 5, ts: "2026-09-18T22:14:00Z", hypothesisId: "h31-seed",
+    text: "Hallucination rate drops below 4% with retrieval grounding",
+    sourceMessageId: null, pinned: false, pin: null },
+  { id: "cl9-seed", seq: 9, ts: "2026-09-18T22:19:00Z", hypothesisId: "h31-seed",
+    text: "Grounding costs under 12% extra latency at 32k context",
+    sourceMessageId: null, pinned: false, pin: null },
+  // the clean mission's pinned + verified claims
+  { id: "cl41-seed", seq: 41, ts: "2026-09-19T01:44:00Z", hypothesisId: "h33-seed",
+    text: "Sparse attention matches full attention at 32k context",
+    sourceMessageId: null, pinned: true, pin: verifiedPin(60, "cl41-seed", "h33-seed", "ref-sparse", "Sparse attention matches full attention at 32k context, within 0.3 BLEU.") },
+  { id: "cl42-seed", seq: 42, ts: "2026-09-19T01:47:00Z", hypothesisId: "h33-seed",
+    text: "Memory grows linearly, not quadratically, with context",
+    sourceMessageId: null, pinned: true, pin: verifiedPin(61, "cl42-seed", "h33-seed", "ref-sparse", "Memory grows linearly, not quadratically, with context length.") },
+];
+
+/** The mock readiness fold (mirrors the core's pure derivation): blockers
+ *  each referencing their specific board object, verified-failed pins and
+ *  merge-queue pending as info rows (never blockers), the four-row trail. */
+function mockReadinessReport(missionId: string | null): ReadinessReport {
+  const hyps = [...seededReadinessHypotheses, ...hypotheses];
+  const allClaims = [...seededReadinessClaims, ...claims];
+  const hypById = new Map(hyps.map((h) => [h.id, h]));
+  const inScopeHyps = hyps.filter((h) => !missionId || h.missionId === missionId);
+  const inScopeClaims = allClaims.filter((c) => {
+    const h = hypById.get(c.hypothesisId);
+    return h !== undefined && (!missionId || h.missionId === missionId);
+  });
+  const inScopeSearches = [...seededSearches, ...liveSearches]
+    .filter((r) => !missionId || r.missionId === missionId)
+    .sort((a, b) => a.seq - b.seq);
+
+  const blockers: ReadinessItem[] = [];
+  const infos: ReadinessItem[] = [];
+
+  // 1. unpinned claims — one blocker per claim, referencing it + its hypothesis
+  for (const c of inScopeClaims.filter((c) => !c.pinned)) {
+    blockers.push({
+      kind: "unpinned_claim", claimId: c.id, claimSeq: c.seq,
+      hypothesisId: c.hypothesisId, hypothesisSeq: hypById.get(c.hypothesisId)?.seq ?? null,
+      hypothesisStatus: null, searchSeq: null, missionId: null,
+      claimTies: [], relationTies: [], pendingCount: 0,
+    });
+  }
+
+  // 2. load-bearing unresolved / refuted hypotheses (claims or relations on them)
+  for (const h of inScopeHyps) {
+    const claimTies = inScopeClaims.filter((c) => c.hypothesisId === h.id).map((c) => c.seq);
+    const relationTies = h.relations.map((r) => ({
+      kind: r.kind, otherSeq: r.otherSeq, incoming: r.direction === "incoming",
+    }));
+    if (claimTies.length === 0 && relationTies.length === 0) continue;
+    if (h.status === "proposed" || h.status === "testing" || h.status === "revised") {
+      if (h.status !== "revised") {
+        blockers.push({
+          kind: "load_bearing_unresolved", claimId: null, claimSeq: null,
+          hypothesisId: h.id, hypothesisSeq: h.seq, hypothesisStatus: h.status,
+          searchSeq: null, missionId: h.missionId, claimTies, relationTies, pendingCount: 0,
+        });
+      }
+    } else if (h.status === "refuted") {
+      blockers.push({
+        kind: "load_bearing_refuted", claimId: null, claimSeq: null,
+        hypothesisId: h.id, hypothesisSeq: h.seq, hypothesisStatus: h.status,
+        searchSeq: null, missionId: h.missionId, claimTies, relationTies, pendingCount: 0,
+      });
+    }
+  }
+
+  // 3. unreckoned null results — a null search blocks while its mission
+  //    still carries unresolved hypotheses (the row IS the disclosure; the
+  //    reckoning is the board's)
+  const unreckoned: number[] = [];
+  for (const r of inScopeSearches.filter((r) => r.nullResult)) {
+    const missionUnresolved = r.missionId !== null
+      && hyps.some((h) => h.missionId === r.missionId
+        && (h.status === "proposed" || h.status === "testing" || h.status === "revised"));
+    if (missionUnresolved) {
+      unreckoned.push(r.seq);
+      blockers.push({
+        kind: "unreckoned_null_result", claimId: null, claimSeq: null,
+        hypothesisId: null, hypothesisSeq: null, hypothesisStatus: null,
+        searchSeq: r.seq, missionId: r.missionId, claimTies: [], relationTies: [], pendingCount: 0,
+      });
+    }
+  }
+
+  // infos (never blockers): verified-failed pins + merge-queue pending
+  for (const c of inScopeClaims.filter((c) => c.pinned && c.pin?.verification?.status === "failed")) {
+    infos.push({
+      kind: "pin_verification_failed", claimId: c.id, claimSeq: c.seq,
+      hypothesisId: c.hypothesisId, hypothesisSeq: hypById.get(c.hypothesisId)?.seq ?? null,
+      hypothesisStatus: null, searchSeq: null, missionId: null,
+      claimTies: [], relationTies: [], pendingCount: 0,
+    });
+  }
+  const pendingProposals = proposals.filter((p) =>
+    p.status === "pending" && (!missionId || p.missionId === missionId));
+  if (pendingProposals.length > 0) {
+    infos.push({
+      kind: "merge_queue_pending", claimId: null, claimSeq: null,
+      hypothesisId: null, hypothesisSeq: null, hypothesisStatus: null,
+      searchSeq: null, missionId: missionId, claimTies: [], relationTies: [],
+      pendingCount: pendingProposals.length,
+    });
+  }
+
+  // the trail: what was checked, the counts, the objects
+  const pinnedClaims = inScopeClaims.filter((c) => c.pinned);
+  const resolvedHyps = inScopeHyps.filter((h) => h.status === "supported" || h.status === "refuted");
+  const nullRows = inScopeSearches.filter((r) => r.nullResult);
+  const decided = proposals
+    .filter((p) => p.decided !== null)
+    .sort((a, b) => (b.decided?.seq ?? b.seq) - (a.decided?.seq ?? a.seq));
+  const trail: ReadinessTrailRow[] = [
+    {
+      kind: "claims_pinned", total: inScopeClaims.length, clean: pinnedClaims.length,
+      verified: pinnedClaims.filter((c) => c.pin?.verification?.status === "verified").length,
+      pending: 0, refs: pinnedClaims.map((c) => `CLAIMS-${c.seq}`),
+    },
+    {
+      kind: "hypotheses_resolved", total: inScopeHyps.length, clean: resolvedHyps.length,
+      verified: 0, pending: 0, refs: resolvedHyps.map((h) => `H-${h.seq}`),
+    },
+    {
+      kind: "nulls_disclosed", total: nullRows.length, clean: nullRows.length - unreckoned.length,
+      verified: 0, pending: 0, refs: nullRows.map((r) => `#${r.seq}`),
+    },
+    {
+      kind: "merge_queue", total: 0, clean: 0, verified: 0, pending: pendingProposals.length,
+      refs: pendingProposals.length > 0
+        ? pendingProposals.map((p) => `pr-${p.seq}`)
+        : decided.slice(0, 1).map((p) => `pr-${p.seq}`),
+    },
+  ];
+
+  return {
+    scope: missionId,
+    verdict: blockers.length === 0 ? "ready" : "not_ready",
+    blockers, infos, trail,
+  };
+}
+
 /** The mock corpus (mirrors the core's simulated arXiv corpus): a query
  *  with no substantive token (≥ 4 chars, not a stopword) matches nothing
  *  — an honest null result, logged identically. */
@@ -1242,6 +1445,14 @@ export const mockApi = {
       total: rows.length,
       nullResultCount: rows.filter((r) => r.nullResult).length,
     };
+  },
+  // Readiness gate (Story 4.3, FR-13.1/13.2): the preprint-tier report —
+  // the same pure derivation the core folds (replay = re-query). The
+  // workspace report aggregates the seeded dirty board; the seeded clean
+  // mission serves the preprint-ready variant.
+  getReadinessReport: async (missionId: string | null): Promise<ReadinessReport> => {
+    await delay();
+    return mockReadinessReport(missionId);
   },
   // agent steps (Story 2.1): one role step through the mock provider — the
   // dev browser answers with the simulated voice, no spend. Story 2.2: the
