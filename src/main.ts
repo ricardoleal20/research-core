@@ -30,7 +30,10 @@ export const state: {
 } = {
   projects: [],
   active: null,
-  tab: "investigacion",
+  // The missions home is the home of the app (Story 1.4): day one opens on
+  // the question box — progressive disclosure keeps everything else closed
+  // until the user's research opens it (FR-1.4, FR-8.2).
+  tab: "misiones",
   settings: {},
   onboarded: false,
   mcpInitShown: false,

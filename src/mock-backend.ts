@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, Autonomy } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -64,6 +64,8 @@ const nowISO = () => "2025-09-01T12:00:00Z";
 // In-memory missions so the question box → mission composer flow works in-browser.
 const missions: Mission[] = [];
 let missionSeq = 0;
+// In-memory run lists per mission id (empty until events would reference them).
+const missionRuns: Record<string, MissionRun[]> = {};
 
 const agents: Agent[] = [
   { id: "a1", key: "rigor", name: "Rigor", description: "Detecta fallos metodológicos y lógicos.", icon: "brain", enabled: 1, kind: "judge" },
@@ -187,11 +189,15 @@ export const mockApi = {
       successCriterion: m.successCriterion,
       autonomy: m.autonomy,
       spendCeilingCents: m.spendCeilingCents,
+      status: "active",
+      spendCents: 0,
+      spendState: "ok",
     };
     missions.push(mission);
     return mission;
   },
   listMissions: async () => { await delay(); return [...missions]; },
+  getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
 
   // danger zone
   resetDatabase: async () => { await delay(); },

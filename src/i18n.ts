@@ -179,6 +179,43 @@ const DICT: Record<string, Record<Lang, string>> = {
   "missions.missionOf": { es: "misión", en: "mission", pt: "missão", fr: "mission" },
   "missions.createError": { es: "No se pudo crear la misión: ", en: "Could not create the mission: ", pt: "Não foi possível criar a missão: ", fr: "Impossible de créer la mission : " },
   "missions.loadError": { es: "No se pudieron cargar las misiones: ", en: "Could not load missions: ", pt: "Não foi possível carregar as missões: ", fr: "Impossible de charger les missions : " },
+
+  // missions home — Story 1.4 (progressive disclosure, status, spend, runs)
+  "missions.empty": {
+    es: "Tu primera misión empieza con una pregunta",
+    en: "Your first mission starts with a question",
+    pt: "A tua primeira missão começa com uma pergunta",
+    fr: "Ta première mission commence par une question",
+  },
+  "missions.emptyHint": {
+    es: "Escríbela arriba y conviértela en misión. Nada más que hacer por ahora.",
+    en: "Type it above and turn it into a mission. Nothing else to do for now.",
+    pt: "Escreve-a acima e converte-a em missão. Nada mais a fazer por agora.",
+    fr: "Écris-la ci-dessus et convertis-la en mission. Rien d'autre à faire pour l'instant.",
+  },
+  "missions.status.active": { es: "Activa", en: "Active", pt: "Ativa", fr: "Active" },
+  "missions.status.awaiting_review": { es: "En revisión", en: "Awaiting review", pt: "Em revisão", fr: "En révision" },
+  "missions.status.completed": { es: "Completada", en: "Completed", pt: "Concluída", fr: "Terminée" },
+  "missions.status.stopped": { es: "Detenida", en: "Stopped", pt: "Parada", fr: "Arrêtée" },
+  "missions.status.failed": { es: "Fallida", en: "Failed", pt: "Falhada", fr: "Échouée" },
+  "missions.spend": { es: "Gasto", en: "Spend", pt: "Gasto", fr: "Dépense" },
+  "missions.spendOf": { es: "de", en: "of", pt: "de", fr: "sur" },
+  "missions.spendBlocked": {
+    es: "Techo alcanzado — el despacho se rehúsa",
+    en: "Ceiling reached — dispatch refused",
+    pt: "Teto atingido — o despacho é recusado",
+    fr: "Plafond atteint — déclenchement refusé",
+  },
+  "missions.runs": { es: "Ejecuciones", en: "Runs", pt: "Execuções", fr: "Exécutions" },
+  "missions.showRuns": { es: "Ver ejecuciones", en: "Show runs", pt: "Ver execuções", fr: "Voir les exécutions" },
+  "missions.hideRuns": { es: "Ocultar ejecuciones", en: "Hide runs", pt: "Ocultar execuções", fr: "Masquer les exécutions" },
+  "missions.runsEmpty": {
+    es: "Aún no hay ejecuciones para esta misión.",
+    en: "No runs for this mission yet.",
+    pt: "Ainda não há execuções para esta missão.",
+    fr: "Pas encore d'exécutions pour cette mission.",
+  },
+  "missions.loadRunsError": { es: "No se pudieron cargar las ejecuciones: ", en: "Could not load runs: ", pt: "Não foi possível carregar as execuções: ", fr: "Impossible de charger les exécutions : " },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

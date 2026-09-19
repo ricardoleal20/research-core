@@ -1,10 +1,56 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, Autonomy } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
-// When the Tauri runtime is absent (plain browser via `vite`), fall back to an
-// in-memory mock so the UI can boot and be iterated on without the Rust backend.
-export const api = mockActive ? mockApi : {
+// A type alias (not an interface) so it stays assignable to Tauri's
+// `InvokeArgs` (Record<string, unknown>) via the implicit index signature.
+export type CreateMissionInput = {
+  question: string;
+  stopCondition: string;
+  successCriterion: string;
+  autonomy: Autonomy;
+  spendCeilingCents: number;
+};
+
+// Plain-browser transport (AD-7): when this page is served by the in-process
+// server embedded in the desktop app, missions reads go to the same-origin
+// read-only API over the shared core — the same data the desktop webview
+// renders, one writer (AD-14). When no server answers (pure `vite` dev), the
+// in-memory mock responds as before. The server exposes no mutations in v1:
+// creating a mission from the served browser view is refused with a clear
+// message — mutations stay on the Tauri command path.
+const servedByCore: Promise<boolean> = fetch("/api/missions")
+  .then((r) => r.ok)
+  .catch(() => false);
+
+async function httpJson<T>(path: string): Promise<T> {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json() as Promise<T>;
+}
+
+const browserApi = {
+  ...mockApi,
+  listMissions: async () =>
+    (await servedByCore) ? httpJson<Mission[]>("/api/missions") : mockApi.listMissions(),
+  getMissionRuns: async (missionId: string) =>
+    (await servedByCore)
+      ? httpJson<MissionRun[]>(`/api/missions/${missionId}/runs`)
+      : mockApi.getMissionRuns(missionId),
+  createMission: async (m: CreateMissionInput) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — launch missions from the desktop app / " +
+          "Vista de solo lectura — lanza misiones desde la app de escritorio"
+      );
+    }
+    return mockApi.createMission(m);
+  },
+};
+
+// When the Tauri runtime is absent (plain browser via `vite`), the browser
+// transport above takes over; inside the Tauri app, the real `invoke` calls.
+export const api = mockActive ? browserApi : {
   // projects
   listProjects: () => invoke<Project[]>("list_projects"),
   getActiveProject: () => invoke<Project | null>("get_active_project"),
@@ -77,9 +123,10 @@ export const api = mockActive ? mockApi : {
   testCli: (command: string) => invoke<{ command: string; path: string | null }>("test_cli", { command }),
 
   // missions (event-sourced: create appends mission.created, list folds the projection)
-  createMission: (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number }) =>
+  createMission: (m: CreateMissionInput) =>
     invoke<Mission>("create_mission", m),
   listMissions: () => invoke<Mission[]>("list_missions"),
+  getMissionRuns: (missionId: string) => invoke<MissionRun[]>("get_mission_runs", { missionId }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

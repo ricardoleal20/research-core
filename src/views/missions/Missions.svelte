@@ -7,6 +7,7 @@
   // Read-model only (AD-8): `missions` holds exactly what commands returned;
   // every change flows through create_mission / list_missions.
   let missions = $state<Mission[]>([]);
+  let loaded = $state(false);
   let loadError = $state("");
 
   // Question box
@@ -39,6 +40,7 @@
   async function load() {
     try {
       missions = await api.listMissions();
+      loaded = true;
       loadError = "";
     } catch (e) {
       loadError = t("missions.loadError") + e;
@@ -109,6 +111,18 @@
 
   {#if loadError}
     <p class="error" role="alert">{loadError}</p>
+  {/if}
+
+  <!-- Progressive disclosure (FR-1.4, EXPERIENCE.md ladder layer 0): on a
+       fresh workspace the view is the question box and its empty state —
+       nothing else. Mission cards, spend meters, and runs appear only when
+       the log actually holds missions; no layer reveals itself before the
+       user's research opens it. -->
+  {#if loaded && missions.length === 0}
+    <section class="empty-state" aria-label={t("missions.empty")}>
+      <p class="empty-title">{t("missions.empty")}</p>
+      <p class="empty-hint">{t("missions.emptyHint")}</p>
+    </section>
   {/if}
 
   {#if composing}
@@ -480,6 +494,28 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+
+  /* Day-one empty state (ladder layer 0): quiet, centered, mission
+     vocabulary only — no boards, targets, or publication layers. */
+  .empty-state {
+    text-align: center;
+    padding: 40px 16px 24px;
+  }
+  .empty-title {
+    font-family: "Instrument Serif", Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: clamp(22px, 2.6vw, 30px);
+    line-height: 1.2;
+    margin: 0 0 10px;
+    color: var(--rc-ink);
+  }
+  .empty-hint {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--rc-ink-muted);
   }
 
   .error {

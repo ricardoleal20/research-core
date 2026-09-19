@@ -1,22 +1,69 @@
 <script lang="ts">
-  import type { Mission } from "../../types";
+  import type { Mission, MissionRun } from "../../types";
   import { t } from "../../i18n";
+  import { api } from "../../api";
 
   let { mission }: { mission: Mission } = $props();
+
+  // Runs drill-down (FR-1.3): loaded lazily on first expand; the full
+  // receipts timeline is a later story — this is the basic run list.
+  let runsOpen = $state(false);
+  let runs = $state<MissionRun[] | null>(null);
+  let runsError = $state("");
 
   const ceiling = $derived(`$${(mission.spendCeilingCents / 100).toFixed(2)}`);
   const autonomyLabel = $derived(t(`missions.autonomy.${mission.autonomy}`));
   const created = $derived(new Date(mission.ts).toLocaleString());
+  const statusLabel = $derived(t(`missions.status.${mission.status}`));
+
+  // DESIGN.md mission lifecycle tokens; awaiting-review reuses the amber
+  // review hue (no dedicated token exists yet).
+  const statusColor: Record<Mission["status"], string> = {
+    active: "#3071B5",
+    awaiting_review: "#B45309",
+    completed: "#047857",
+    stopped: "#334155",
+    failed: "#BE123C",
+  };
+
+  // DESIGN.md components.spend-meter: thin track, fill colored by state,
+  // amounts in mono tabular. Never color alone — amounts always render too.
+  const spendLabel = $derived(`$${(mission.spendCents / 100).toFixed(2)}`);
+  const spendPct = $derived(
+    mission.spendCeilingCents > 0
+      ? Math.min(100, Math.round((mission.spendCents / mission.spendCeilingCents) * 100))
+      : mission.spendCents > 0
+        ? 100
+        : 0
+  );
+  const spendFill: Record<Mission["spendState"], string> = {
+    ok: "#047857", // spend-ok
+    near: "#B45309", // spend-near
+    blocked: "#BE123C", // spend-blocked
+  };
+
+  async function toggleRuns() {
+    runsOpen = !runsOpen;
+    if (runsOpen && runs === null) {
+      try {
+        runs = await api.getMissionRuns(mission.id);
+        runsError = "";
+      } catch (e) {
+        runsError = t("missions.loadRunsError") + e;
+      }
+    }
+  }
 </script>
 
-<!-- Mission card (DESIGN.md components.mission-card): card anatomy, status
-     kicker, question in heading-3, stop condition + success criterion, mono
-     meta row. Status is never color alone — the kicker carries text. -->
+<!-- Mission card (DESIGN.md components.mission-card): status kicker, question
+     in heading-3, stop condition + success criterion, thin spend meter, mono
+     meta row, and the runs drill-down. Status is never color alone — the
+     kicker carries text. -->
 <article class="mission-card">
   <header class="mc-head">
-    <span class="mc-kicker">
+    <span class="mc-kicker" style={`--status:${statusColor[mission.status]}`}>
       <span class="mc-dot" aria-hidden="true"></span>
-      {t("missions.active")}
+      {statusLabel}
     </span>
     <span class="mc-seq mono">seq {mission.seq}</span>
   </header>
@@ -31,23 +78,76 @@
       <dd>{mission.successCriterion}</dd>
     </div>
   </dl>
+
+  <!-- Spend meter: honest by construction — the blocked label says exactly
+       what happened (ceiling reached, dispatch refused), nothing loud. -->
+  <div class="mc-spend">
+    <div
+      class="spend-meter"
+      role="meter"
+      aria-valuemin={0}
+      aria-valuemax={mission.spendCeilingCents}
+      aria-valuenow={mission.spendCents}
+      aria-label={t("missions.spend")}
+    >
+      <div
+        class="spend-fill"
+        class:blocked={mission.spendState === "blocked"}
+        style={`width:${spendPct}%;background:${spendFill[mission.spendState]}`}
+      ></div>
+    </div>
+    <span class="spend-amounts mono">
+      {spendLabel} {t("missions.spendOf")} {ceiling}
+    </span>
+    {#if mission.spendState === "blocked"}
+      <span class="spend-blocked-label">{t("missions.spendBlocked")}</span>
+    {/if}
+  </div>
+
   <footer class="mc-meta mono">
     <span>{autonomyLabel}</span>
     <span aria-hidden="true">·</span>
-    <span>{ceiling}</span>
-    <span aria-hidden="true">·</span>
     <span>{created}</span>
+    <span class="mc-spacer"></span>
+    <button class="mc-runs-toggle" type="button" onclick={toggleRuns} aria-expanded={runsOpen}>
+      {runsOpen ? t("missions.hideRuns") : t("missions.showRuns")}
+    </button>
   </footer>
+
+  {#if runsOpen}
+    <div class="mc-runs">
+      {#if runsError}
+        <p class="mc-runs-error" role="alert">{runsError}</p>
+      {:else if runs === null}
+        <p class="mc-runs-empty">…</p>
+      {:else if runs.length === 0}
+        <p class="mc-runs-empty">{t("missions.runsEmpty")}</p>
+      {:else}
+        <ul class="mc-run-list">
+          {#each runs as run (run.id)}
+            <li class="mc-run">
+              <span class="mc-run-seq mono">seq {run.seq}</span>
+              <span class="mc-run-kind mono">{run.kind}</span>
+              <span class="mc-run-actor">{run.actor}</span>
+              <span class="mc-run-ts">{new Date(run.ts).toLocaleString()}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/if}
 </article>
 
 <style>
   .mission-card {
     --rc-surface: #ffffff;
+    --rc-surface-2: #f4f4f6;
     --rc-ink: #151519;
     --rc-ink-muted: #71717a;
     --rc-border: #eaeaec;
     --rc-accent: #3071b5;
     --rc-accent-soft: rgba(48, 113, 181, 0.1);
+    --rc-danger-ink: #be123c;
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
     border-radius: 14px;
@@ -63,6 +163,9 @@
     box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.08);
     border-color: var(--rc-accent);
   }
+  .mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
   .mc-head {
     display: flex;
     align-items: center;
@@ -70,6 +173,7 @@
     gap: 12px;
   }
   .mc-kicker {
+    /* status color flows from the mission lifecycle token via --status */
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -77,17 +181,17 @@
     font-weight: 500;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--rc-accent);
-    background: var(--rc-accent-soft);
+    color: var(--status);
+    background: color-mix(in srgb, var(--status) 10%, transparent);
     border-radius: 9999px;
     padding: 2px 10px;
-    box-shadow: inset 0 0 0 1px rgba(48, 113, 181, 0.2);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status) 25%, transparent);
   }
   .mc-dot {
     width: 7px;
     height: 7px;
     border-radius: 9999px;
-    background: var(--rc-accent);
+    background: var(--status);
   }
   .mc-seq {
     font-size: 12px;
@@ -121,6 +225,40 @@
     line-height: 1.55;
     color: var(--rc-ink);
   }
+
+  /* Spend meter (DESIGN.md components.spend-meter): thin track surface-2,
+     state-colored fill, mono tabular amounts. */
+  .mc-spend {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .spend-meter {
+    flex: 1 1 120px;
+    min-width: 80px;
+    height: 4px;
+    border-radius: 9999px;
+    background: var(--rc-surface-2);
+    overflow: hidden;
+  }
+  .spend-fill {
+    height: 100%;
+    border-radius: 9999px;
+    transition: width 0.3s ease;
+  }
+  .spend-amounts {
+    font-size: 12.5px;
+    color: var(--rc-ink-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .spend-blocked-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--rc-danger-ink);
+  }
+
   .mc-meta {
     display: flex;
     align-items: center;
@@ -131,7 +269,77 @@
     border-top: 1px solid var(--rc-border);
     padding-top: 12px;
   }
-  .mono {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+  .mc-spacer {
+    flex: 1;
+  }
+  .mc-runs-toggle {
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--rc-accent);
+    background: transparent;
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .mc-runs-toggle:hover {
+    background: var(--rc-accent-soft);
+  }
+  .mc-runs-toggle:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
+  }
+
+  /* Runs drill-down: mono receipt voice, seq order, quiet. */
+  .mc-runs {
+    border-top: 1px solid var(--rc-border);
+    padding-top: 12px;
+  }
+  .mc-run-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mc-run {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 12px;
+    align-items: baseline;
+    font-size: 12.5px;
+  }
+  .mc-run-seq,
+  .mc-run-kind {
+    color: var(--rc-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .mc-run-actor {
+    color: var(--rc-ink-muted);
+  }
+  .mc-run-ts {
+    color: var(--rc-ink-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .mc-runs-empty,
+  .mc-runs-error {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--rc-ink-muted);
+  }
+  .mc-runs-error {
+    color: var(--rc-danger-ink);
+  }
+
+  @media (max-width: 640px) {
+    .mc-run {
+      grid-template-columns: auto 1fr;
+    }
+    .mc-run-ts {
+      grid-column: 2;
+    }
   }
 </style>

@@ -126,6 +126,12 @@ export interface McpServer {
 // Missions (event-sourced read model, camelCase wire form per Tauri 2)
 export type Autonomy = "watch" | "suggest" | "act_with_receipts";
 
+export type MissionStatus = "active" | "awaiting_review" | "completed" | "stopped" | "failed";
+
+// DESIGN.md components.spend-meter: ok under 80% of ceiling, near at 80%+,
+// blocked at/over the hard ceiling (dispatch refused past it, AD-10).
+export type SpendState = "ok" | "near" | "blocked";
+
 export interface Mission {
   id: string; // the mission.created event id
   seq: number; // store-assigned seq of the creation event
@@ -135,4 +141,17 @@ export interface Mission {
   successCriterion: string;
   autonomy: Autonomy;
   spendCeilingCents: number;
+  status: MissionStatus; // derived by the fold from events referencing the mission
+  spendCents: number; // total spend.recorded cost against the ceiling
+  spendState: SpendState; // the spend meter's state
+}
+
+// One entry of a mission's run list (FR-1.3): any log event referencing the
+// mission — the basic drill-down the missions home renders.
+export interface MissionRun {
+  seq: number;
+  id: string;
+  ts: string;
+  kind: string; // raw event kind, rendered in mono (receipt voice)
+  actor: string; // "user" | "agent" | "system:<component>"
 }
