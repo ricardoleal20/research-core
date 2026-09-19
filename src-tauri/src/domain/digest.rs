@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::missions::{MissionStatus, MissionsProjection};
-use crate::domain::nightshift::{DEAD_RUN_REASON, RUN_FAILED, RUN_FINISHED, RUN_STARTED};
+use crate::domain::nightshift::{RUN_FAILED, RUN_FINISHED, RUN_STARTED};
 use crate::domain::proposals::{ProposalStatus, ProposalsProjection};
+use crate::domain::telemetry::{connection_health, RUN_DEAD};
 use crate::eventstore::{EventError, StoredEvent};
 
 /// The digest rows cap (FR-4.4): a >10-run night truncates newest-first.
@@ -102,9 +103,9 @@ impl DigestRow {
     }
 }
 
-/// The dead-man-switch alert row (FR-9.1 hook): a run that died with a
-/// stale heartbeat — rendered distinct from (and counted separately of) the
-/// digest rows.
+/// The dead-man-switch alert row (FR-9.1/FR-4.3, Story 2.6): a run the
+/// telemetry reaper detected as silently dead — rendered distinct from (and
+/// counted separately of) the digest rows, from the `run.dead` alert event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DigestAlert {
@@ -119,8 +120,22 @@ pub struct DigestAlert {
     pub receipt_seq: i64,
 }
 
+/// A connection alert row (FR-9.1, Story 2.6): a research connection
+/// (Zotero, arXiv, Semantic Scholar) whose latest state is DOWN — rendered
+/// with label + icon, never color alone (DESIGN.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionAlert {
+    pub connection: String,
+    /// The latest failure's error code, in code form (bilingual-safe).
+    pub error_code: String,
+    /// When the connection went down.
+    pub failed_ts: DateTime<Utc>,
+}
+
 /// The morning digest read model (FR-4.4): the night's outcome badge, the
-/// spend-vs-ceiling line, ≤10 rows, and the alert rows.
+/// spend-vs-ceiling line, ≤10 rows, the dead-run alert rows, and the
+/// connection alert rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MorningDigest {
@@ -131,9 +146,11 @@ pub struct MorningDigest {
     pub ceiling_cents: u64,
     /// ≤10 rows, newest night first (stable order).
     pub rows: Vec<DigestRow>,
-    /// Dead-run alert rows — present but separate (Story 2.6 wires the
-    /// detection; these render from the stale-heartbeat case).
+    /// Dead-run alert rows — present but separate (Story 2.6's dead-man
+    /// switch; these render from the `run.dead` events).
     pub alerts: Vec<DigestAlert>,
+    /// Connection alert rows — the research connections currently down.
+    pub connection_alerts: Vec<ConnectionAlert>,
 }
 
 /// One mission's night, tallied while folding the window.
@@ -205,19 +222,14 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
     let proposals = ProposalsProjection::fold(events)?;
     let window_start = now - Duration::hours(DIGEST_WINDOW_HOURS);
 
-    // Dead runs in the window (FR-9.1 seam): a run.failed carrying the
-    // stale-heartbeat reason — the alert rows render from these.
+    // Dead runs in the window (FR-9.1/FR-4.3, Story 2.6): the `run.dead`
+    // alert events — the dead-man switch's detections. The terminal
+    // run.failed(silently_dead) that follows each one lands as the row's
+    // honest failure; the ALERT row renders from the detection itself.
     let mut dead: std::collections::HashMap<String, DigestAlert> =
         std::collections::HashMap::new();
     for event in events {
-        if event.ts <= window_start || event.ts > now || event.kind != RUN_FAILED {
-            continue;
-        }
-        let reason = event
-            .payload
-            .get("reason")
-            .and_then(serde_json::Value::as_str);
-        if reason != Some(DEAD_RUN_REASON) {
+        if event.ts <= window_start || event.ts > now || event.kind != RUN_DEAD {
             continue;
         }
         let Some(run_id) = event
@@ -229,7 +241,7 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
         };
         let heartbeat_ts = event
             .payload
-            .get("heartbeat_ts")
+            .get("last_heartbeat_ts")
             .and_then(serde_json::Value::as_str)
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&Utc))
@@ -351,6 +363,19 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
         _ => DigestOutcome::AllFinished,
     };
 
+    // Connection alert rows (FR-9.1, Story 2.6): the research connections
+    // currently DOWN — the latest failure per connection, label + icon in
+    // the UI, never color alone.
+    let connection_alerts: Vec<ConnectionAlert> = connection_health(events)
+        .into_iter()
+        .filter(|h| !h.up)
+        .map(|h| ConnectionAlert {
+            connection: h.connection,
+            error_code: h.last_error_code.unwrap_or_else(|| "unknown".into()),
+            failed_ts: h.last_error_ts.unwrap_or(now),
+        })
+        .collect();
+
     Ok(MorningDigest {
         generated_at: now,
         outcome,
@@ -358,6 +383,7 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
         ceiling_cents: total_ceiling,
         rows,
         alerts,
+        connection_alerts,
     })
 }
 
@@ -502,10 +528,23 @@ mod tests {
             NewEvent::run_started("ns-17", mission.id, "daily-03:00", SCAN_STEP).unwrap(),
             night(now, 390),
         );
+        // Story 2.6's dead-man switch: the run.dead alert event, then the
+        // terminal run.failed(silently_dead) — no run ends silently
         let died_at = night(now, 361);
         append_at(
             &store,
-            NewEvent::run_failed("ns-17", mission.id, DEAD_RUN_REASON, died_at).unwrap(),
+            NewEvent::run_dead("ns-17", mission.id, died_at, 30).unwrap(),
+            night(now, 360),
+        );
+        append_at(
+            &store,
+            NewEvent::run_failed(
+                "ns-17",
+                mission.id,
+                crate::domain::telemetry::SILENTLY_DEAD_REASON,
+                died_at,
+            )
+            .unwrap(),
             night(now, 360),
         );
 
@@ -519,7 +558,43 @@ mod tests {
         assert_eq!(alert.receipt_seq, started.seq);
         // the dead run ALSO produces its honest digest row
         assert_eq!(digest.rows.len(), 1);
-        assert_eq!(digest.rows[0].failure_reason.as_deref(), Some(DEAD_RUN_REASON));
+        assert_eq!(
+            digest.rows[0].failure_reason.as_deref(),
+            Some(crate::domain::telemetry::SILENTLY_DEAD_REASON)
+        );
+    }
+
+    #[test]
+    fn a_down_connection_renders_an_alert_row_and_a_restored_one_does_not() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let now = Utc.with_ymd_and_hms(2026, 9, 19, 9, 4, 0).unwrap();
+        append_at(
+            &store,
+            NewEvent::connection_failed("zotero", "unreachable").unwrap(),
+            night(now, 90),
+        );
+        append_at(
+            &store,
+            NewEvent::connection_failed("arxiv", "timeout").unwrap(),
+            night(now, 80),
+        );
+        append_at(
+            &store,
+            NewEvent::connection_restored("arxiv").unwrap(),
+            night(now, 30),
+        );
+
+        let digest = render_digest(&store.events_all().unwrap(), now).unwrap();
+        // only the still-down connection alerts; the healed one does not
+        assert_eq!(digest.connection_alerts.len(), 1);
+        let alert = &digest.connection_alerts[0];
+        assert_eq!(alert.connection, "zotero");
+        assert_eq!(alert.error_code, "unreachable");
+        assert_eq!(alert.failed_ts, night(now, 90));
+        // no runs, no dead-run alerts — the connection row stands alone
+        assert!(digest.rows.is_empty());
+        assert!(digest.alerts.is_empty());
     }
 
     #[test]

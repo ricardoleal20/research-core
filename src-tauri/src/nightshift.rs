@@ -1,11 +1,13 @@
 // Night Shift scheduler (FR-4.1/4.2/4.3, Story 2.3): the overnight worker.
-// On each tick it (1) reaps runs whose heartbeat went stale as honest
-// `stale_heartbeat` failures (the FR-9.1 dead-man seam — Story 2.6 builds
-// full detection), (2) runs every ACTIVE mission whose daily schedule is due
-// and has not run yet today — one literature-scan step through the provider
-// layer (AD-9), its output emitted as PROPOSALS through the Story 2.2
-// quarantine seam (FR-4.2: nothing mutates the board unattended), and (3)
-// evaluates every mission's terminators (AD-12) — so no mission rests
+// On each tick it (1) probes the research connections and records
+// connection.failed/restored transitions (FR-9.1 telemetry, Story 2.6), (2)
+// reaps runs whose last heartbeat went past the dead-run threshold as
+// `run.dead` alerts followed by honest `silently_dead` terminals (FR-9.1 —
+// no run ends silently), (3) runs every ACTIVE mission whose daily schedule
+// is due and has not run yet today — one literature-scan step through the
+// provider layer (AD-9), its output emitted as PROPOSALS through the Story
+// 2.2 quarantine seam (FR-4.2: nothing mutates the board unattended), and
+// (4) evaluates every mission's terminators (AD-12) — so no mission rests
 // without a terminal state once the evaluator can decide, including
 // missions changed by the user since the last tick.
 //
@@ -20,16 +22,39 @@ use crate::domain::missions::{
     Mission, MissionStatus, MissionsProjection, Schedule, ROLE_DRAFTER,
 };
 use crate::domain::nightshift::{
-    evaluate_terminals, DEAD_RUN_AFTER_MINUTES, DEAD_RUN_REASON, RUN_FAILED, RUN_FINISHED,
-    RUN_STARTED, SCAN_STEP,
+    evaluate_terminals, RUN_FAILED, RUN_FINISHED, RUN_STARTED, SCAN_STEP,
+};
+use crate::domain::telemetry::{
+    record_probe, PROBED_CONNECTIONS, RUN_HEARTBEAT, SILENTLY_DEAD_REASON,
 };
 use crate::eventstore::{EventStore, NewEvent, StoredEvent};
 use crate::runtime::AgentRuntime;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// One connection probe's future — the health prober's shape (FR-9.1):
+/// `Ok(())` = reachable, `Err(code)` = a code-form failure reason
+/// (bilingual-safe by construction, EXPERIENCE.md).
+pub type ProbeFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+/// The injectable health prober (same seam shape as the runtime's resolver):
+/// the production prober exercises the real research connections; tests
+/// inject deterministic outcomes.
+pub type Prober = Arc<dyn Fn(&str) -> ProbeFuture + Send + Sync>;
+
+/// The default prober: the three research connectors (Zotero, arXiv,
+/// Semantic Scholar) over the mcp.rs REST/connector probes — any HTTP
+/// answer means alive; a timeout or network error is a failure code.
+fn default_prober() -> Prober {
+    Arc::new(|name: &str| {
+        let name = name.to_string();
+        Box::pin(async move { crate::mcp::probe_connection(&name).await })
+    })
+}
 
 /// Everything that can go wrong at the scheduler level — typed, never a bare
 /// string. Run failures are NOT here: they are honest `run.failed` events.
@@ -60,30 +85,51 @@ pub struct RunRecord {
 pub struct NightShift {
     db: Db,
     runtime: AgentRuntime,
+    /// The connection health prober (FR-9.1, Story 2.6) — injectable so the
+    /// tick's telemetry tests never touch the network.
+    prober: Prober,
 }
 
 impl NightShift {
     pub fn new(db: Db) -> Self {
-        Self { db: db.clone(), runtime: AgentRuntime::new(db) }
+        Self {
+            db: db.clone(),
+            runtime: AgentRuntime::new(db),
+            prober: default_prober(),
+        }
     }
 
     /// Test seam (test builds only — no dead code in release): a scheduler whose runtime resolves adapters through the
     /// injected resolver (same shape as `AgentRuntime`'s).
     #[cfg(test)]
     pub(crate) fn with_resolver(db: Db, resolver: crate::runtime::RoleResolver) -> Self {
-        Self { db: db.clone(), runtime: AgentRuntime::with_resolver(db, resolver) }
+        Self::with_resolver_and_prober(db, resolver, default_prober())
     }
 
-    /// One scheduled tick at `now` (local time): reap dead runs, run every
-    /// due mission, then evaluate all terminators (the AD-12 catch-up —
-    /// user-driven board changes get decided within a tick of landing).
-    /// A killed runtime refuses the tick entirely (AD-15e): no reap, no
-    /// scans, no evaluation — every dispatch is refused while `runtime.killed`
-    /// is the latest runtime-state event by seq.
+    /// Test seam (test builds only): a scheduler with BOTH the runtime's
+    /// resolver and the telemetry prober injected — deterministic scans and
+    /// deterministic connection probes.
+    #[cfg(test)]
+    pub(crate) fn with_resolver_and_prober(
+        db: Db,
+        resolver: crate::runtime::RoleResolver,
+        prober: Prober,
+    ) -> Self {
+        Self { db: db.clone(), runtime: AgentRuntime::with_resolver(db, resolver), prober }
+    }
+
+    /// One scheduled tick at `now` (local time): probe the research
+    /// connections, reap dead runs, run every due mission, then evaluate
+    /// all terminators (the AD-12 catch-up — user-driven board changes get
+    /// decided within a tick of landing). A killed runtime refuses the tick
+    /// entirely (AD-15e): no probes, no reap, no scans, no evaluation —
+    /// every dispatch is refused while `runtime.killed` is the latest
+    /// runtime-state event by seq.
     pub async fn tick(&self, now: DateTime<Local>) -> Result<Vec<RunRecord>, NightShiftError> {
         if self.runtime_killed().await? {
             return Err(NightShiftError::Killed);
         }
+        self.probe_connections().await?;
         self.reap_dead_runs(now.with_timezone(&Utc)).await?;
         let missions = self.fold_missions().await?;
         let mut records = Vec::new();
@@ -143,36 +189,73 @@ impl NightShift {
         Ok(schedule_due(&mission.schedule, last_run, now))
     }
 
-    /// Reap runs whose heartbeat went stale: a `run.started` with no terminal
-    /// run event older than the dead-run window becomes an honest
-    /// `stale_heartbeat` failure (FR-9.1 seam — the digest's alert row
-    /// renders from these; Story 2.6 builds the full switch).
+    /// Probe the research connections (FR-9.1, Story 2.6) and record the
+    /// state transitions — `connection.failed` when one dies,
+    /// `connection.restored` when it heals. Transitions only: a 60s cadence
+    /// never floods the log.
+    async fn probe_connections(&self) -> Result<Vec<StoredEvent>, NightShiftError> {
+        let mut appended = Vec::new();
+        for name in PROBED_CONNECTIONS {
+            let result = (self.prober)(name).await;
+            let error_code = result.err().unwrap_or_default();
+            let conn = self.db.0.lock().await;
+            let store = EventStore::new(&conn);
+            if let Some(event) = record_probe(&store, name, error_code.is_empty(), &error_code)? {
+                appended.push(event);
+            }
+        }
+        Ok(appended)
+    }
+
+    /// Reap runs whose last heartbeat went past the dead-run threshold
+    /// (FR-9.1, Story 2.6 — the dead-man switch): a `run.started` with no
+    /// terminal run event whose last `run.heartbeat` (falling back to its
+    /// start, the pre-2.6 seam) is older than the threshold is silently
+    /// dead — the runtime appends `run.dead` (the alert event, telemetry
+    /// actor, last heartbeat + threshold) and THEN the terminal
+    /// `run.failed(silently_dead)`, so every run reaches a terminal state
+    /// with a timestamp and a reason. The threshold defaults to 30 minutes
+    /// (2× the 15-minute scan cadence) and stays configurable here.
     async fn reap_dead_runs(&self, now: DateTime<Utc>) -> Result<Vec<StoredEvent>, NightShiftError> {
+        let threshold = crate::domain::telemetry::DEAD_RUN_THRESHOLD_MINUTES;
         let stale = {
             let conn = self.db.0.lock().await;
             let events = EventStore::new(&conn).events_all()?;
+            let cursor = crate::domain::checkpoints::FoldCursor::over(&events);
+            let live: Vec<StoredEvent> = cursor.live_owned(&events);
             let mut terminal_runs: HashSet<String> = HashSet::new();
-            for event in &events {
-                if matches!(event.kind.as_str(), RUN_FINISHED | RUN_FAILED) {
-                    if let Some(rid) = event.payload.get("run_id").and_then(|v| v.as_str()) {
+            let mut last_beat: HashMap<String, DateTime<Utc>> = HashMap::new();
+            for event in &live {
+                let Some(rid) = event.payload.get("run_id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                match event.kind.as_str() {
+                    RUN_FINISHED | RUN_FAILED => {
                         terminal_runs.insert(rid.to_string());
                     }
+                    RUN_HEARTBEAT => {
+                        let beat = last_beat.entry(rid.to_string()).or_insert(event.ts);
+                        if event.ts > *beat {
+                            *beat = event.ts;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            let cutoff = now - Duration::minutes(DEAD_RUN_AFTER_MINUTES);
-            let stale: Vec<StoredEvent> = events
-                .iter()
+            let cutoff = now - Duration::minutes(threshold);
+            live.iter()
                 .filter(|e| {
                     e.kind == RUN_STARTED
-                        && e.ts < cutoff
                         && e.payload
                             .get("run_id")
                             .and_then(|v| v.as_str())
-                            .is_some_and(|rid| !terminal_runs.contains(rid))
+                            .is_some_and(|rid| {
+                                !terminal_runs.contains(rid)
+                                    && last_beat.get(rid).unwrap_or(&e.ts) < &cutoff
+                            })
                 })
                 .cloned()
-                .collect();
-            stale
+                .collect::<Vec<StoredEvent>>()
         };
         let mut reaped = Vec::new();
         for started in stale {
@@ -191,13 +274,24 @@ impl NightShift {
             else {
                 continue;
             };
-            // The heartbeat the run died at: its start — v1 runs report no
-            // intermediate heartbeats (the telemetry seam lands with 2.6).
-            let heartbeat = started.ts;
+            // The heartbeat the run died at: its last run.heartbeat — or its
+            // start, when it never managed one (the pre-2.6 seam).
+            let heartbeat = {
+                let conn = self.db.0.lock().await;
+                let events = EventStore::new(&conn).events_all()?;
+                crate::domain::telemetry::last_heartbeats(&events)
+                    .get(&run_id)
+                    .copied()
+                    .unwrap_or(started.ts)
+            };
             let conn = self.db.0.lock().await;
             let store = EventStore::new(&conn);
-            if let Some(ev) = NewEvent::run_failed(&run_id, mission_id, DEAD_RUN_REASON, heartbeat)
-                .ok()
+            // the alert event first (FR-4.3 amended)...
+            if let Ok(ev) = NewEvent::run_dead(&run_id, mission_id, heartbeat, threshold) {
+                reaped.push(store.append(ev)?);
+            }
+            // ...then the terminal: no run ends silently (FR-9.1)
+            if let Ok(ev) = NewEvent::run_failed(&run_id, mission_id, SILENTLY_DEAD_REASON, heartbeat)
             {
                 reaped.push(store.append(ev)?);
             }
@@ -221,14 +315,26 @@ impl NightShift {
                 &mission.schedule,
                 SCAN_STEP,
             );
-            if let Err(e) = opened.and_then(|ev| store.append(ev)) {
-                return RunRecord {
-                    mission_id: mission.id,
-                    run_id,
-                    finished: false,
-                    detail: format!("store_error: {e}"),
-                    proposals: 0,
-                };
+            let started = match opened.and_then(|ev| store.append(ev)) {
+                Ok(started) => started,
+                Err(e) => {
+                    return RunRecord {
+                        mission_id: mission.id,
+                        run_id,
+                        finished: false,
+                        detail: format!("store_error: {e}"),
+                        proposals: 0,
+                    }
+                }
+            };
+            // First heartbeat (FR-9.1, Story 2.6): the run is alive and
+            // working. Best-effort — a heartbeat that cannot land does not
+            // fail the run; the terminal event (or the reaper) still names
+            // how it ended.
+            if let Ok(beat) =
+                NewEvent::run_heartbeat(&run_id, mission.id, started.seq, started.ts)
+            {
+                let _ = store.append(beat);
             }
         }
         let task = format!(
@@ -243,6 +349,15 @@ impl NightShift {
                 {
                     let conn = self.db.0.lock().await;
                     let store = EventStore::new(&conn);
+                    // Second heartbeat (FR-9.1): the step came back — the
+                    // run is alive right up to its terminal event.
+                    if let Ok(head) = store.head_seq() {
+                        if let Ok(beat) =
+                            NewEvent::run_heartbeat(&run_id, mission.id, head, Utc::now())
+                        {
+                            let _ = store.append(beat);
+                        }
+                    }
                     let closed = NewEvent::run_finished(&run_id, mission.id, &verdict, proposals);
                     // the run finished; if its receipt cannot land, surface
                     // that honestly in the record
@@ -518,19 +633,30 @@ mod tests {
     }
 
     fn fake_shift(db: &Db) -> NightShift {
-        NightShift::with_resolver(db.clone(), fake_resolver)
+        NightShift::with_resolver_and_prober(db.clone(), fake_resolver, ok_prober())
     }
 
     /// A resolver whose every adapter call fails at the provider boundary —
     /// the failed-run path, end to end.
     fn failing_shift(db: &Db) -> NightShift {
-        NightShift::with_resolver(db.clone(), |_db, _conn, _role| {
-            Err(ProviderError::Api {
-                name: "test".into(),
-                status: 503,
-                body: "connection refused by test".into(),
-            })
-        })
+        NightShift::with_resolver_and_prober(
+            db.clone(),
+            |_db, _conn, _role| {
+                Err(ProviderError::Api {
+                    name: "test".into(),
+                    status: 503,
+                    body: "connection refused by test".into(),
+                })
+            },
+            ok_prober(),
+        )
+    }
+
+    /// The telemetry test prober (Story 2.6): every connection answers Ok —
+    /// the tick's probe pass records nothing. Connection-failure tests
+    /// inject their own.
+    fn ok_prober() -> Prober {
+        Arc::new(|_name: &str| Box::pin(async { Ok(()) }))
     }
 
     /// A schedule whose local time has already passed today — the tick test
@@ -675,16 +801,124 @@ mod tests {
         // the tick reaps; whether today's scheduled scan also fires does
         // not affect the assertions (the dead run already counts as today's)
         shift.tick(now_local()).await.unwrap();
+        // FR-9.1 (Story 2.6): the dead-man switch appends the run.dead ALERT
+        // event (telemetry actor, last heartbeat + threshold) and then the
+        // terminal run.failed(silently_dead) — the run ends with a timestamp
+        // and a reason, never silently
+        let dead = events_of(&db, crate::domain::telemetry::RUN_DEAD).await;
+        assert_eq!(dead.len(), 1, "the dead run is detected");
+        assert_eq!(dead[0].payload["run_id"], json!("nightshift-dead"));
+        assert_eq!(
+            dead[0].actor,
+            crate::eventstore::Actor::System {
+                component: crate::eventstore::SystemComponent::Telemetry
+            }
+        );
+        assert_eq!(
+            dead[0].payload["last_heartbeat_ts"],
+            serde_json::to_value(started.ts).unwrap(),
+            "no heartbeat landed — the run's start is the heartbeat it died at"
+        );
+        assert_eq!(dead[0].payload["threshold_minutes"], json!(30));
         let failures = events_of(&db, RUN_FAILED).await;
-        assert_eq!(failures.len(), 1, "the dead run is reaped");
-        assert_eq!(failures[0].payload["reason"], json!(DEAD_RUN_REASON));
+        assert_eq!(failures.len(), 1, "the dead run reaches its terminal");
+        assert_eq!(failures[0].payload["reason"], json!("silently_dead"));
         assert_eq!(failures[0].payload["run_id"], json!("nightshift-dead"));
-        // the digest renders the dead-man alert row (FR-9.1 hook)
+        // the digest renders the dead-man alert row (FR-9.1)
         let digest = morning_digest(&db).await.unwrap();
         assert_eq!(digest.alerts.len(), 1);
         assert_eq!(digest.alerts[0].run_id, "nightshift-dead");
         assert_eq!(digest.alerts[0].mission_id, mission.id);
+        assert_eq!(digest.alerts[0].heartbeat_ts, started.ts);
         assert_eq!(digest.alerts[0].receipt_seq, started.seq);
+    }
+
+    #[tokio::test]
+    async fn a_live_heartbeat_keeps_a_long_run_alive_and_unreaped() {
+        let db = test_db();
+        let mission = create_mission(&db, "daily-03:00", 500).await;
+        // a run started 2 hours ago whose last heartbeat landed minutes ago
+        // — alive (threshold: 30 min), the dead-man switch must NOT fire
+        let started_at = Utc::now() - Duration::hours(2);
+        let beat_at = Utc::now() - Duration::minutes(5);
+        {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            let mut event = NewEvent::run_started("nightshift-alive", mission.id, "daily-03:00", SCAN_STEP)
+                .unwrap();
+            event.ts = started_at;
+            let started = store.append(event).unwrap();
+            let mut beat =
+                NewEvent::run_heartbeat("nightshift-alive", mission.id, started.seq, started.ts)
+                    .unwrap();
+            beat.ts = beat_at;
+            store.append(beat).unwrap();
+        }
+        let shift = fake_shift(&db);
+        shift.tick(now_local()).await.unwrap();
+        assert!(
+            events_of(&db, crate::domain::telemetry::RUN_DEAD).await.is_empty(),
+            "a heartbeating run is alive — no dead-run alert"
+        );
+        let dead_failures: Vec<_> = events_of(&db, RUN_FAILED)
+            .await
+            .into_iter()
+            .filter(|e| e.payload["reason"] == json!("silently_dead"))
+            .collect();
+        assert!(dead_failures.is_empty(), "no silently-dead terminal for a live run");
+    }
+
+    #[tokio::test]
+    async fn the_tick_probes_connections_and_alerts_then_restores() {
+        let db = test_db();
+        create_mission(&db, "off", 500).await; // nothing runs — probes only
+        // a prober with zotero down, everything else up
+        let zotero_down: Prober = Arc::new(|name: &str| {
+            let name = name.to_string();
+            Box::pin(async move {
+                if name == "zotero" {
+                    Err("unreachable".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let shift =
+            NightShift::with_resolver_and_prober(db.clone(), fake_resolver, zotero_down);
+        shift.tick(now_local()).await.unwrap();
+        let failed = events_of(&db, crate::domain::telemetry::CONNECTION_FAILED).await;
+        assert_eq!(failed.len(), 1, "the down connection alerts — once, not per probe");
+        assert_eq!(failed[0].payload["connection"], json!("zotero"));
+        assert_eq!(failed[0].payload["error_code"], json!("unreachable"));
+        // a second tick with the same outage records NOTHING (transitions only)
+        shift.tick(now_local()).await.unwrap();
+        assert_eq!(
+            events_of(&db, crate::domain::telemetry::CONNECTION_FAILED).await.len(),
+            1
+        );
+        // the digest renders the connection alert row (FR-9.1, label + icon)
+        let digest = morning_digest(&db).await.unwrap();
+        assert_eq!(digest.connection_alerts.len(), 1);
+        assert_eq!(digest.connection_alerts[0].connection, "zotero");
+        assert_eq!(digest.connection_alerts[0].error_code, "unreachable");
+        // the trust center's health line reflects it too (the trust status
+        // fold carries the connections)
+        let health = {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            crate::domain::telemetry::connection_health(&events)
+        };
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].connection, "zotero");
+        assert!(!health[0].up);
+        // recovery: the restore lands and the alert clears
+        let healed = fake_shift(&db);
+        healed.tick(now_local()).await.unwrap();
+        let restored = events_of(&db, crate::domain::telemetry::CONNECTION_RESTORED).await;
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].payload["connection"], json!("zotero"));
+        let digest = morning_digest(&db).await.unwrap();
+        assert!(digest.connection_alerts.is_empty(), "a healed connection does not alert");
     }
 
     #[tokio::test]

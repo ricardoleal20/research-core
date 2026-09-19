@@ -3,9 +3,10 @@
 // the AD-12 mission terminal evaluator. Run lifecycle events are appended by
 // the scheduler (`actor=system (scheduler)`, AD-15's closed enumeration); the
 // digest is delivered even when a run fails, so `run.failed` carries its
-// reason in code form plus the run's last heartbeat timestamp (the FR-9.1
-// dead-man-switch seam — a run that died with a stale heartbeat renders the
-// digest's alert row; Story 2.6 builds full detection).
+// reason in code form plus the run's last heartbeat timestamp. Story 2.6
+// completes the FR-9.1 dead-man switch: the reaper appends telemetry's
+// `run.dead` alert and then the terminal `run.failed(silently_dead)`, so a
+// run that dies silently is detected, alerted, and terminal — never lost.
 //
 // AD-12 (amended Story 2.3 AC): after every mission-scoped event the runtime
 // evaluates the mission's stop condition and success criterion and appends
@@ -27,15 +28,12 @@ pub const RUN_STARTED: &str = "run.started";
 pub const RUN_FINISHED: &str = "run.finished";
 pub const RUN_FAILED: &str = "run.failed";
 
-/// The run.failed reason that marks a run as dead with a stale heartbeat —
-/// the digest renders its dead-man-switch alert row from this case (FR-9.1
-/// hook; Story 2.6 builds the detection, here the seam renders).
-pub const DEAD_RUN_REASON: &str = "stale_heartbeat";
-
-/// A run is reaped as dead (stale heartbeat) when its `run.started` has no
-/// terminal run event and is older than this window — the minimal honest
-/// dead-run detection the digest's alert row renders from.
-pub const DEAD_RUN_AFTER_MINUTES: i64 = 30;
+/// The run.failed reason that marks a run the dead-man switch reaped as
+/// silently dead, and the threshold window that decides it (FR-9.1/FR-4.3,
+/// Story 2.6): owned by the telemetry domain — `run.dead` is the alert
+/// event, this reason's `run.failed` is the terminal that follows it, so
+/// every run reaches a terminal state with a timestamp and a reason.
+pub use super::telemetry::{DEAD_RUN_THRESHOLD_MINUTES, SILENTLY_DEAD_REASON};
 
 /// The one step a v1 Night Shift run executes (FR-4.1): a literature scan
 /// over the mission's question and board through the provider layer.
@@ -500,9 +498,9 @@ mod tests {
         assert_eq!(finished.payload["proposals"], json!(2));
 
         let hb = Utc.with_ymd_and_hms(2026, 9, 18, 2, 31, 0).unwrap();
-        let failed = NewEvent::run_failed("ns-2", mission_id, DEAD_RUN_REASON, hb).unwrap();
+        let failed = NewEvent::run_failed("ns-2", mission_id, SILENTLY_DEAD_REASON, hb).unwrap();
         assert_eq!(failed.kind, RUN_FAILED);
-        assert_eq!(failed.payload["reason"], json!(DEAD_RUN_REASON));
+        assert_eq!(failed.payload["reason"], json!(SILENTLY_DEAD_REASON));
         assert_eq!(failed.payload["heartbeat_ts"], serde_json::to_value(hb).unwrap());
     }
 

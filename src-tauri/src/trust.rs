@@ -345,6 +345,11 @@ pub struct TrustStatus {
     pub targets: Vec<TargetMeter>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run: Option<LastRunSpend>,
+    /// The research connections' health (FR-9.1, Story 2.6): the trust
+    /// center's health line — latest failure per connection with label +
+    /// icon, never color alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<crate::domain::telemetry::ConnectionHealth>,
 }
 
 /// Fold the trust status (the read model, AD-8 — pure over the log).
@@ -460,6 +465,7 @@ pub fn trust_status(
         missions: mission_meters,
         targets,
         last_run,
+        connections: crate::domain::telemetry::connection_health(events),
     })
 }
 
