@@ -275,6 +275,25 @@ pub async fn arxiv_search(query: &str, max: u32) -> Result<Vec<SearchResult>, St
     Ok(parse_arxiv_atom(&text))
 }
 
+/// Fetch one paper's metadata by arXiv id via the public export API (the
+/// onboarding paste flow, Story 1.9). A data fetch, not an LLM call — so it
+/// lives here in the research-adapters module rather than behind the provider
+/// layer (AD-9 governs LLM calls only). `Ok(None)` = the id exists on no
+/// paper.
+pub async fn arxiv_fetch(arxiv_id: &str) -> Result<Option<SearchResult>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("research-core/0.1")
+        .timeout(std::time::Duration::from_secs(20))
+        .build().map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://export.arxiv.org/api/query?id_list={}",
+        urlencoding::encode(arxiv_id)
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(parse_arxiv_atom(&text).into_iter().next())
+}
+
 fn parse_arxiv_atom(xml: &str) -> Vec<SearchResult> {
     let mut out = Vec::new();
     for entry in xml.split("<entry>").skip(1) {

@@ -5,6 +5,7 @@ mod evidence_commands;
 mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
+mod onboarding_commands;
 mod server;
 
 pub mod adapters;
@@ -165,6 +166,8 @@ pub fn run() {
             evidence_commands::pin_claim_to_citation,
             evidence_commands::pin_claim_to_numerical,
             evidence_commands::list_evidence,
+            onboarding_commands::run_first_value,
+            onboarding_commands::run_first_value_from_ref,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

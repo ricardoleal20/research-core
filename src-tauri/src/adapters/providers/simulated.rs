@@ -30,6 +30,16 @@ pub const FOCUS_MARKER: &str = "Foco de la revisión: «";
 pub const REFS_LIST_MARKER: &str = "Referencias disponibles:\n";
 /// … and ends here.
 pub const REFS_LIST_END: &str = "\nRedacta";
+/// Marks the hypothesis-candidates generator system prompt (onboarding,
+/// Story 1.9). The paper title sits between `PAPER_TITLE_MARKER` and the
+/// closing "»"; the output language follows `LANG_MARKER`.
+pub const CANDIDATES_MARKER: &str = "Eres el generador de candidatos de hipótesis";
+/// The paper title sits between this marker and `PAPER_TITLE_END`.
+pub const PAPER_TITLE_MARKER: &str = "Artículo: «";
+/// … and ends here.
+pub const PAPER_TITLE_END: &str = "»";
+/// Followed by the output language code ("es" | "en").
+pub const LANG_MARKER: &str = "Idioma de salida: ";
 
 pub struct Simulated;
 
@@ -54,6 +64,8 @@ impl ProviderClient for Simulated {
                 .unwrap_or_default();
             let content = if system.contains(REVIEW_MARKER) {
                 review_json(system)
+            } else if system.contains(CANDIDATES_MARKER) {
+                candidates_json(system)
             } else {
                 assistant_reply(&last_user, refs_from_system(system))
             };
@@ -153,6 +165,43 @@ fn judges_from_prompt(system: &str) -> Vec<String> {
         .collect()
 }
 
+/// The simulated hypothesis candidates (onboarding, Story 1.9), as the JSON
+/// the generator prompt asks providers for — reconstructed from the prompt's
+/// markers (paper title, output language). Sensible in both languages:
+/// falsifiable statements about the paper, not placeholders.
+pub fn candidates_json(system: &str) -> String {
+    let title = system
+        .split_once(PAPER_TITLE_MARKER)
+        .and_then(|(_, rest)| rest.split_once(PAPER_TITLE_END))
+        .map(|(t, _)| t.trim())
+        .filter(|t| !t.is_empty())
+        .unwrap_or("el artículo");
+    let lang = after_marker(system, LANG_MARKER)
+        .map(|s| {
+            s.trim()
+                .trim_end_matches('.')
+                .split_whitespace()
+                .next()
+                .unwrap_or("es")
+                .to_string()
+        })
+        .unwrap_or_else(|| "es".into());
+    let candidates: Vec<serde_json::Value> = if lang == "en" {
+        vec![
+            json!({ "statement": format!("The central result of «{title}» replicates under independent evaluation"), "confidence": 0.78 }),
+            json!({ "statement": format!("The method of «{title}» outperforms the baselines it is compared against"), "confidence": 0.71 }),
+            json!({ "statement": format!("The claims of «{title}» hold only within the regimes its authors evaluate"), "confidence": 0.65 }),
+        ]
+    } else {
+        vec![
+            json!({ "statement": format!("El resultado central de «{title}» se replica bajo una evaluación independiente"), "confidence": 0.78 }),
+            json!({ "statement": format!("El método de «{title}» supera a los baselines con los que se compara"), "confidence": 0.71 }),
+            json!({ "statement": format!("Las afirmaciones de «{title}» solo se sostienen dentro de los regímenes que sus autores evalúan"), "confidence": 0.65 }),
+        ]
+    };
+    json!({ "candidates": candidates }).to_string()
+}
+
 fn after_marker<'a>(s: &'a str, marker: &str) -> Option<&'a str> {
     s.split_once(marker).map(|(_, rest)| rest)
 }
@@ -238,5 +287,30 @@ mod tests {
         );
         assert_eq!(refs_from_system(&system), "- Ref A (x, 2020) — V");
         assert_eq!(refs_from_system("sin marcador"), "");
+    }
+
+    #[test]
+    fn candidates_json_derives_sensible_candidates_from_the_paper() {
+        // Spanish (the app's default language): topic-aware falsifiable statements.
+        let system = format!(
+            "{CANDIDATES_MARKER} de Research Core. JSON. {PAPER_TITLE_MARKER}Attention Is All You Need{PAPER_TITLE_END}. {LANG_MARKER}es."
+        );
+        let v: serde_json::Value = serde_json::from_str(&candidates_json(&system)).unwrap();
+        let cands = v["candidates"].as_array().unwrap();
+        assert_eq!(cands.len(), 3);
+        for c in cands {
+            assert!(c["statement"].as_str().unwrap().contains("Attention Is All You Need"));
+            let conf = c["confidence"].as_f64().unwrap();
+            assert!((0.0..=1.0).contains(&conf));
+        }
+        // English output follows the language marker.
+        let system = format!(
+            "{CANDIDATES_MARKER} de Research Core. JSON. {PAPER_TITLE_MARKER}Attention Is All You Need{PAPER_TITLE_END}. {LANG_MARKER}en."
+        );
+        let v: serde_json::Value = serde_json::from_str(&candidates_json(&system)).unwrap();
+        assert!(v["candidates"][0]["statement"]
+            .as_str()
+            .unwrap()
+            .starts_with("The central result"));
     }
 }
