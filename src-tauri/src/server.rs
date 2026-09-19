@@ -10,8 +10,10 @@ use crate::db::Db;
 use crate::domain::evidence::Claim;
 use crate::domain::hypotheses::{Hypothesis, HypothesesProjection};
 use crate::domain::missions::{Mission, MissionRun, MissionsProjection};
+use crate::domain::proposals::Proposal;
 use crate::evidence_commands::list_evidence_inner;
 use crate::eventstore::EventStore;
+use crate::proposals_commands::list_proposals_inner;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -38,6 +40,11 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         .route(
             "/api/hypotheses/{hypothesis_id}/evidence",
             get(hypothesis_evidence),
+        )
+        .route("/api/proposals", get(all_proposals))
+        .route(
+            "/api/missions/{mission_id}/proposals",
+            get(mission_proposals),
         )
         .with_state(ServerState { db })
         // The same built Svelte UI the desktop webview loads (frontend dist).
@@ -90,6 +97,29 @@ async fn hypothesis_evidence(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let c = state.db.0.lock().await;
     list_evidence_inner(&c, hypothesis_id)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The quarantine read model, all missions (Story 2.2, read-only per AD-14
+/// — merging and rejecting stay on the Tauri command path).
+async fn all_proposals(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<Proposal>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    list_proposals_inner(&c, None).map(Json).map_err(|_| internal())
+}
+
+/// The quarantine read model of one mission (Story 2.2, read-only).
+async fn mission_proposals(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<Vec<Proposal>>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    list_proposals_inner(&c, Some(mission_id))
         .map(Json)
         .map_err(|_| internal())
 }
@@ -349,6 +379,77 @@ mod tests {
         assert_eq!(claims.len(), 1);
         assert!(claims[0].pinned);
         assert_eq!(claims[0].pin.as_ref().unwrap().assessing_model, "GLM-5.3");
+    }
+
+    #[tokio::test]
+    async fn get_api_proposals_lists_the_quarantine_read_only() {
+        let db = test_db();
+        let mission_id = {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Watch,
+                    spend_ceiling_cents: 500,
+                    roles: vec![],
+                })
+                .unwrap())
+                .unwrap();
+            let hyp = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            crate::domain::proposals::propose_transition(
+                &store,
+                "run-7",
+                hyp.id,
+                crate::domain::hypotheses::HypothesisStatus::Testing,
+                "run 7 suggests testing",
+            )
+            .unwrap();
+            mission.id
+        };
+        // all proposals
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/proposals").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let proposals: Vec<Proposal> = body_json(res.into_body()).await;
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].status, crate::domain::proposals::ProposalStatus::Pending);
+        assert_eq!(proposals[0].mission_id, Some(mission_id));
+        assert_eq!(proposals[0].run_id, "run-7");
+        // mission-scoped
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/missions/{mission_id}/proposals"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let scoped: Vec<Proposal> = body_json(res.into_body()).await;
+        assert_eq!(scoped.len(), 1);
+        // a non-uuid mission id is a 400
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/missions/not-a-uuid/proposals")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // single writer (AD-14): merging stays on the Tauri command path
+        let res = app(db)
+            .oneshot(Request::post("/api/proposals").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

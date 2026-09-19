@@ -6,6 +6,7 @@ mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
 mod onboarding_commands;
+mod proposals_commands;
 mod runtime;
 mod server;
 
@@ -168,6 +169,9 @@ pub fn run() {
             evidence_commands::pin_claim_to_citation,
             evidence_commands::pin_claim_to_numerical,
             evidence_commands::list_evidence,
+            proposals_commands::list_proposals,
+            proposals_commands::approve_proposal,
+            proposals_commands::reject_proposal,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
         ])

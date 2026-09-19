@@ -10,10 +10,11 @@ use crate::adapters::providers::{
     ChatRequest, Message, ProviderError, ProviderLayer, ProviderSettings,
 };
 use crate::db::Db;
-use crate::domain::hypotheses::{Hypothesis, HypothesesProjection};
+use crate::domain::hypotheses::{Hypothesis, HypothesisStatus, HypothesesProjection};
 use crate::domain::missions::{
-    Mission, MissionsProjection, RoleConfig, ROLE_CRITIC, ROLE_DRAFTER,
+    Mission, MissionsProjection, RoleConfig, MISSION_CREATED, ROLE_CRITIC, ROLE_DRAFTER,
 };
+use crate::domain::proposals::{self, Proposal};
 use crate::eventstore::EventStore;
 use serde::Serialize;
 use uuid::Uuid;
@@ -54,10 +55,20 @@ pub enum RuntimeError {
     NotFound(Uuid),
     #[error("not_found: mission `{mission_id}` has no role named `{role}` — expected drafter | critic")]
     UnknownRole { mission_id: Uuid, role: String },
+    #[error("not_found: hypothesis `{hypothesis_id}` is not on mission `{mission_id}`")]
+    HypothesisNotOnMission { hypothesis_id: Uuid, mission_id: Uuid },
+    #[error("unknown_status: `{0}` — expected proposed | testing | supported | refuted | revised")]
+    UnknownStatus(String),
     #[error("task must not be empty — an agent step needs something to do")]
     EmptyTask,
+    #[error("proposal basis must not be empty — every proposal names its basis")]
+    EmptyBasis,
+    #[error("run id must not be empty — a proposal names its proposing run")]
+    EmptyRunId,
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    #[error(transparent)]
+    Proposal(#[from] proposals::ProposalError),
     #[error(transparent)]
     Store(#[from] crate::eventstore::EventError),
 }
@@ -130,6 +141,57 @@ impl AgentRuntime {
             model: config.model.clone(),
             content: resp.content,
         })
+    }
+
+    /// The quarantine seam (AD-3, Story 2.2): the one way an agent-actor
+    /// change enters the log — as a `proposal.created` event, EXCLUDED from
+    /// projections until a human merges it. Story 2.1's `run_step` produces
+    /// the step's content; this seam turns an intended hypothesis
+    /// transition into the proposal, with the from-status and basis derived
+    /// from the current fold (never asserted by the caller). Future stories
+    /// connect the model's emitted intent to this seam directly; it stays
+    /// explicit so nothing dispatches into quarantine by accident.
+    pub async fn propose_transition(
+        &self,
+        mission_id: Uuid,
+        hypothesis_id: Uuid,
+        to: &str,
+        basis_note: &str,
+        run_id: &str,
+    ) -> Result<Proposal, RuntimeError> {
+        let to = HypothesisStatus::parse(to)
+            .ok_or_else(|| RuntimeError::UnknownStatus(to.to_string()))?;
+        if basis_note.trim().is_empty() {
+            return Err(RuntimeError::EmptyBasis);
+        }
+        if run_id.trim().is_empty() {
+            return Err(RuntimeError::EmptyRunId);
+        }
+        let conn = self.db.0.lock().await;
+        let store = EventStore::new(&conn);
+        let events = store.events_all()?;
+        // The mission must exist and the hypothesis must belong to it — a
+        // proposal never targets another mission's board.
+        if !events
+            .iter()
+            .any(|e| e.id == mission_id && e.kind == MISSION_CREATED)
+        {
+            return Err(RuntimeError::NotFound(mission_id));
+        }
+        let hyps = HypothesesProjection::fold_for(&events, mission_id)?;
+        if !hyps.iter().any(|h| h.id == hypothesis_id) {
+            return Err(RuntimeError::HypothesisNotOnMission {
+                hypothesis_id,
+                mission_id,
+            });
+        }
+        Ok(proposals::propose_transition(
+            &store,
+            run_id,
+            hypothesis_id,
+            to,
+            basis_note,
+        )?)
     }
 }
 
@@ -481,5 +543,117 @@ mod tests {
         assert!(err.to_string().contains("no role named `judge`"), "unexpected: {err}");
         // nothing was spent on refused steps
         assert!(spend_events(&db).await.is_empty());
+    }
+
+    // ---- The quarantine seam (AD-3, Story 2.2) ----
+
+    /// The loop the product is built on (AD-3): an agent step proposes a
+    /// hypothesis transition through the seam — the proposal is EXCLUDED
+    /// from the board until a human merges it, and the merge is what
+    /// applies the change. Nothing an agent does touches the board directly.
+    #[tokio::test]
+    async fn an_agent_step_proposal_flows_through_quarantine_to_the_board() {
+        let db = test_db();
+        let mission = create_mission(
+            &db,
+            vec![
+                RoleConfig::drafter("simulated", "simulated"),
+                RoleConfig::critic("simulated", "simulated"),
+            ],
+        )
+        .await;
+        // the step: the drafter runs (simulated — no spend), its run id names
+        // the proposal's actor
+        let runtime = AgentRuntime::new(db.clone());
+        let step = runtime
+            .run_step(mission.id, ROLE_DRAFTER, "Evalúa la hipótesis central y propone el siguiente paso.")
+            .await
+            .unwrap();
+        let run_id = format!("{}:{}", step.provider, step.role);
+        // the board grows a hypothesis to target
+        let hyp = {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            store
+                .append(NewEvent::hypothesis_created("El método reduce citas alucinadas.", mission.id).unwrap())
+                .unwrap()
+        };
+        // the seam: the step's intended transition becomes a proposal —
+        // excluded from the board (AD-3)
+        let proposal = runtime
+            .propose_transition(mission.id, hyp.id, "testing", "el crítico pidió una corrida de prueba", &run_id)
+            .await
+            .unwrap();
+        assert_eq!(proposal.run_id, run_id);
+        assert_eq!(proposal.status, crate::domain::proposals::ProposalStatus::Pending);
+        {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            let board = HypothesesProjection::fold(&events).unwrap();
+            assert_eq!(board[0].status, crate::domain::hypotheses::HypothesisStatus::Proposed,
+                "a pending proposal never touches the board");
+        }
+        // the human merges: the change applies at the approval
+        let outcome = {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            crate::domain::proposals::approve(&store, proposal.id, false).unwrap()
+        };
+        assert_eq!(outcome.proposal.status, crate::domain::proposals::ProposalStatus::Merged);
+        {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            let board = HypothesesProjection::fold(&events).unwrap();
+            assert_eq!(board[0].status, crate::domain::hypotheses::HypothesisStatus::Testing,
+                "the merge is what applied the change");
+        }
+    }
+
+    #[tokio::test]
+    async fn propose_transition_fails_loudly_on_bad_input() {
+        let db = test_db();
+        let mission = create_mission(&db, vec![]).await;
+        let runtime = AgentRuntime::new(db.clone());
+        let hyp = {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            store
+                .append(NewEvent::hypothesis_created("H.", mission.id).unwrap())
+                .unwrap()
+        };
+        // unknown target status
+        let err = runtime
+            .propose_transition(mission.id, hyp.id, "archived", "basis", "run-1")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown_status"), "unexpected: {err}");
+        // empty basis / run id
+        let err = runtime
+            .propose_transition(mission.id, hyp.id, "testing", "  ", "run-1")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("basis"), "unexpected: {err}");
+        let err = runtime
+            .propose_transition(mission.id, hyp.id, "testing", "basis", "  ")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("run id"), "unexpected: {err}");
+        // hypothesis not on this mission
+        let other = Uuid::new_v4();
+        let err = runtime
+            .propose_transition(mission.id, other, "testing", "basis", "run-1")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not on mission"), "unexpected: {err}");
+        // unknown mission
+        let err = runtime
+            .propose_transition(Uuid::new_v4(), hyp.id, "testing", "basis", "run-1")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not_found"), "unexpected: {err}");
+        // nothing was appended on refused proposals
+        let conn = db.0.lock().await;
+        let events = EventStore::new(&conn).events_all().unwrap();
+        assert!(!events.iter().any(|e| e.kind == "proposal.created"));
     }
 }

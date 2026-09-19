@@ -757,7 +757,7 @@ mod tests {
     use crate::domain::hypotheses::HypothesisStatus::{
         Proposed, Supported, Testing,
     };
-    use crate::domain::missions::{Autonomy, MissionCreatedPayload, MISSION_CREATED};
+    use crate::domain::missions::{Autonomy, MissionCreatedPayload};
     use crate::eventstore::EventStore;
     use rusqlite::Connection;
     use serde_json::json;
