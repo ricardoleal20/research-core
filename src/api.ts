@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -161,6 +161,35 @@ const browserApi = {
     }
     return mockApi.runAgentStep(missionId, role, task);
   },
+  // Proposals (Story 2.2, AD-3/AD-13): reads go to the same-origin
+  // read-only API over the shared core; merging and rejecting are
+  // mutations — the served browser view refuses them.
+  listProposals: async (missionId: string | null) => {
+    if (await servedByCore) {
+      return missionId
+        ? httpJson<Proposal[]>(`/api/missions/${missionId}/proposals`)
+        : httpJson<Proposal[]>("/api/proposals");
+    }
+    return mockApi.listProposals(missionId);
+  },
+  approveProposal: async (_proposalId: string, _force: boolean) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — review proposals from the desktop app / " +
+          "Vista de solo lectura — revisa las propuestas desde la app de escritorio"
+      );
+    }
+    return mockApi.approveProposal(_proposalId, _force);
+  },
+  rejectProposal: async (_proposalId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — review proposals from the desktop app / " +
+          "Vista de solo lectura — revisa las propuestas desde la app de escritorio"
+      );
+    }
+    return mockApi.rejectProposal(_proposalId);
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -296,6 +325,16 @@ export const api = mockActive ? browserApi : {
     }),
   listEvidence: (hypothesisId: string) =>
     invoke<Claim[]>("list_evidence", { hypothesisId }),
+
+  // proposals (event-sourced, Story 2.2: agent changes land as quarantined
+  // proposals — excluded from projections until a human merges them, AD-3;
+  // the basis is validated at merge time, AD-13)
+  listProposals: (missionId: string | null) =>
+    invoke<Proposal[]>("list_proposals", { missionId }),
+  approveProposal: (proposalId: string, force: boolean) =>
+    invoke<ApproveOutcome>("approve_proposal", { proposalId, force }),
+  rejectProposal: (proposalId: string) =>
+    invoke<Proposal>("reject_proposal", { proposalId }),
 
   // onboarding — the sixty-second first value (Story 1.9, FR-8.1): one
   // arXiv paste (or one library ref via the Zotero connector stub) becomes a

@@ -260,6 +260,52 @@ export interface Claim {
   pin: EvidencePin | null;
 }
 
+// Proposals / quarantine (event-sourced read model, Story 2.2, AD-3/AD-13):
+// an agent-intended change, EXCLUDED from projections until a human merges
+// it. The lifecycle is pending → merged | rejected | superseded | voided —
+// a decided proposal can never be decided again.
+export type ProposalStatus = "pending" | "merged" | "rejected" | "superseded" | "voided";
+
+// The receipt stamp of the event that decided a proposal.
+export interface ProposalDecision {
+  seq: number;
+  ts: string;
+  actor: string; // "user" | "agent:<run_id>" | "system:<component>"
+}
+
+// The proposed change — closed vocabulary v1: hypothesis status transitions
+// (the intended event's payload, already validated by its own constructor).
+export interface ProposedTransition {
+  from: HypothesisStatus;
+  to: HypothesisStatus;
+  basis: string; // the agent's justification for the change
+}
+
+export interface Proposal {
+  id: string; // the proposal.created event id
+  seq: number;
+  ts: string;
+  runId: string; // the proposing agent run
+  missionId: string | null; // the target hypothesis's mission; null for unknown targets
+  targetEntity: string; // the hypothesis the proposal intends to change
+  targetLabel: string | null; // the hypothesis statement — the card's label
+  targetSeq: number | null; // the H-n label seq
+  proposedKind: string; // "hypothesis.status_changed"
+  proposedPayload: ProposedTransition;
+  basisSeq: number; // the seq of the entity state the proposal derives from (AD-13)
+  basisStale: boolean; // pending: entity advanced past the basis (warning variant); merged: the forced-past-stale marker
+  status: ProposalStatus;
+  decided: ProposalDecision | null;
+  supersededBy: string | null; // the proposal whose merge superseded this one
+}
+
+// What a merge produced: the merged proposal and the pending siblings the
+// merge superseded (surfaced so nothing disappears quietly).
+export interface ApproveOutcome {
+  proposal: Proposal;
+  superseded: Proposal[];
+}
+
 // Onboarding — the sixty-second first value (Story 1.9, FR-8.1): one pasted
 // arXiv URL (or one library ref through the Zotero connector stub) becomes a
 // starter mission plus three hypothesis candidates, through the provider

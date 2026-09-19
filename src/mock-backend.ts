@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -104,6 +104,53 @@ async function sha256Hex(text: string): Promise<string> {
 // digest computed here, never accepted from the caller.
 const claims: Claim[] = [];
 let claimSeq = 0;
+
+// In-memory proposals (mirrors the event-sourced core, Story 2.2): agent
+// steps emit quarantined proposals — excluded from the board until merged;
+// the basis is validated at merge time (basis_stale unless forced), and a
+// decided proposal can never be decided again.
+const proposals: Proposal[] = [];
+let proposalSeq = 0;
+let mockEventSeq = 0;
+
+/** The mock's entity-current-seq: the hypothesis's last mutation — its
+ *  audit stamp seq (creation, user transition, or applied merge). */
+const hypothesisCurrentSeq = (h: Hypothesis): number => h.audit.seq;
+
+/** Mirror of the core's propose seam: derive from/basis from the current
+ *  mock state — never asserted by the caller. */
+function mockPropose(h: Hypothesis, to: HypothesisStatus, basis: string, runId: string): Proposal {
+  proposalSeq += 1;
+  mockEventSeq += 1;
+  const p: Proposal = {
+    id: "pr" + proposalSeq + "-" + Date.now(),
+    seq: mockEventSeq,
+    ts: nowISO(),
+    runId,
+    missionId: h.missionId,
+    targetEntity: h.id,
+    targetLabel: h.statement,
+    targetSeq: h.seq,
+    proposedKind: "hypothesis.status_changed",
+    proposedPayload: { from: h.status, to, basis },
+    basisSeq: hypothesisCurrentSeq(h),
+    basisStale: false,
+    status: "pending",
+    decided: null,
+    supersededBy: null,
+  };
+  proposals.push(p);
+  return p;
+}
+
+/** Apply a merged proposal to the mock board — the merge is what applies
+ *  the change (the fold's approval-order application, mirrored). */
+function mockApply(p: Proposal, decidedSeq: number): void {
+  const h = hypotheses.find((x) => x.id === p.targetEntity);
+  if (!h) return;
+  h.status = p.proposedPayload.to;
+  h.audit = { seq: decidedSeq, ts: nowISO(), actor: "agent", basis: p.proposedPayload.basis };
+}
 
 /** Upsert a relation chip onto one endpoint (latest event per endpoint
  *  pair wins — editing a relation appends, mirroring the core's fold). */
@@ -470,7 +517,10 @@ export const mockApi = {
   listMissions: async () => { await delay(); return [...missions]; },
   getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
   // agent steps (Story 2.1): one role step through the mock provider — the
-  // dev browser answers with the simulated voice, no spend.
+  // dev browser answers with the simulated voice, no spend. Story 2.2: the
+  // drafter's step also EMITS a quarantined proposal for the mission's first
+  // hypothesis (the AD-3 loop, mirrored — nothing touches the board until a
+  // human merges).
   runAgentStep: async (missionId: string, role: string, task: string): Promise<AgentStepResult> => {
     await delay(150);
     const mission = missions.find((x) => x.id === missionId);
@@ -478,6 +528,19 @@ export const mockApi = {
     if (!task.trim()) throw new Error("task must not be empty — an agent step needs something to do");
     const config = mission.roles.find((r) => r.name === role);
     if (!config) throw new Error(`not_found: mission \`${missionId}\` has no role named \`${role}\` — expected drafter | critic`);
+    if (config.name === "drafter") {
+      const target = hypotheses.find(
+        (h) => h.missionId === missionId && allowedNext[h.status].length > 0,
+      );
+      if (target) {
+        mockPropose(
+          target,
+          allowedNext[target.status][0],
+          task.trim(),
+          `${config.provider}:${config.name}`,
+        );
+      }
+    }
     return {
       missionId,
       role: config.name,
@@ -673,6 +736,84 @@ export const mockApi = {
     return claims
       .filter((c) => c.hypothesisId === hypothesisId)
       .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
+  },
+
+  // proposals (Story 2.2, AD-3/AD-13) — mirrors the typed core: pending
+  // proposals are excluded from the board until a human merges them; the
+  // basis is validated at merge time (basis_stale: unless forced, and a
+  // forced merge records the marker); conflicting same-basis pending
+  // siblings are superseded; a decided proposal can never merge again.
+  listProposals: async (missionId: string | null) => {
+    await delay();
+    return proposals
+      .filter((p) => !missionId || p.missionId === missionId)
+      .map((p) => ({
+        ...p,
+        proposedPayload: { ...p.proposedPayload },
+        decided: p.decided ? { ...p.decided } : null,
+      }));
+  },
+  approveProposal: async (proposalId: string, force: boolean): Promise<ApproveOutcome> => {
+    await delay();
+    const p = proposals.find((x) => x.id === proposalId);
+    if (!p) throw new Error(`not_found: no proposal with id \`${proposalId}\``);
+    if (p.status !== "pending") {
+      throw new Error(
+        `not_pending: proposal \`${proposalId}\` is \`${p.status}\`, not pending — a decided proposal can never be merged again (AD-13)`,
+      );
+    }
+    const target = hypotheses.find((h) => h.id === p.targetEntity);
+    if (!target) {
+      throw new Error(`not_found: proposal \`${proposalId}\` targets no known entity in the log`);
+    }
+    const current = hypothesisCurrentSeq(target);
+    const stale = current > p.basisSeq;
+    if (stale && !force) {
+      throw new Error(
+        `basis_stale: proposal \`${proposalId}\` was derived from seq ${p.basisSeq} but the entity has advanced to seq ${current} — force-approve (force: true) to merge past it; the basis-stale marker will be recorded and surfaced`,
+      );
+    }
+    mockEventSeq += 1;
+    const decidedSeq = mockEventSeq;
+    p.status = "merged";
+    p.basisStale = stale;
+    p.decided = { seq: decidedSeq, ts: nowISO(), actor: "user" };
+    mockApply(p, decidedSeq);
+    // conflicting pending siblings: same target, same kind, same basis
+    const superseded: Proposal[] = [];
+    for (const sib of proposals) {
+      if (
+        sib.id !== p.id &&
+        sib.status === "pending" &&
+        sib.targetEntity === p.targetEntity &&
+        sib.proposedKind === p.proposedKind &&
+        sib.basisSeq === p.basisSeq
+      ) {
+        mockEventSeq += 1;
+        sib.status = "superseded";
+        sib.supersededBy = p.id;
+        sib.decided = { seq: mockEventSeq, ts: nowISO(), actor: "user" };
+        superseded.push({ ...sib, decided: { ...sib.decided! } });
+      }
+    }
+    return {
+      proposal: { ...p, proposedPayload: { ...p.proposedPayload }, decided: { ...p.decided! } },
+      superseded,
+    };
+  },
+  rejectProposal: async (proposalId: string): Promise<Proposal> => {
+    await delay();
+    const p = proposals.find((x) => x.id === proposalId);
+    if (!p) throw new Error(`not_found: no proposal with id \`${proposalId}\``);
+    if (p.status !== "pending") {
+      throw new Error(
+        `not_pending: proposal \`${proposalId}\` is \`${p.status}\`, not pending — a decided proposal can never be decided again (AD-13)`,
+      );
+    }
+    mockEventSeq += 1;
+    p.status = "rejected";
+    p.decided = { seq: mockEventSeq, ts: nowISO(), actor: "user" };
+    return { ...p, proposedPayload: { ...p.proposedPayload }, decided: { ...p.decided! } };
   },
 
   // onboarding (Story 1.9) — the arXiv paste door and the Zotero library

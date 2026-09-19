@@ -5,12 +5,18 @@
   import BoardGlance from "./BoardGlance.svelte";
   import MissionCard from "./MissionCard.svelte";
   import Onboarding from "./Onboarding.svelte";
+  import QuarantineReview from "./QuarantineReview.svelte";
 
   // Read-model only (AD-8): `missions` holds exactly what commands returned;
   // every change flows through create_mission / list_missions.
   let missions = $state<Mission[]>([]);
   let loaded = $state(false);
   let loadError = $state("");
+
+  // Board revision (Story 2.2): bumped when a quarantine decision applies a
+  // change — BoardGlance re-folds off this signal (its mission set is
+  // unchanged by a merge, the hypotheses are not).
+  let boardRevision = $state(0);
 
   // Question box
   let question = $state("");
@@ -295,7 +301,11 @@
          states in one view, above the per-mission sections — the board
          surface, with the checkpoint control in its header (Story 2.6's
          entry point). -->
-    <BoardGlance missions={newestFirst} />
+    <BoardGlance missions={newestFirst} revision={boardRevision} />
+    <!-- Quarantine review (Story 2.2, AD-3): agent proposals wait between
+         the board and the missions — a merge here is what applies a change,
+         so the board re-folds after every decision. -->
+    <QuarantineReview ondecided={() => (boardRevision += 1)} />
     <section class="missions-list" aria-label={t("missions.title")}>
       {#each newestFirst as mission (mission.id)}
         <MissionCard {mission} />

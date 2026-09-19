@@ -8,8 +8,10 @@
   // states in one view — a board-level grid, not per-mission sections
   // (those stay on each mission card). Read-model only (AD-8): the grid
   // holds exactly what list_hypotheses folded per mission; every mutation
-  // inside a card re-folds via `refresh`.
-  let { missions }: { missions: Mission[] } = $props();
+  // inside a card re-folds via `refresh`. `revision` (Story 2.2): bumped by
+  // the quarantine surface when a merge applies a change — the mission set
+  // is unchanged, the hypotheses are not.
+  let { missions, revision }: { missions: Mission[]; revision: number } = $props();
 
   // One grid entry: the hypothesis plus the mission it belongs to (the
   // mission label renders on the card so the flat grid stays navigable).
@@ -46,8 +48,10 @@
   );
 
   $effect(() => {
-    // Re-fold whenever the mission set changes (a new mission appears).
+    // Re-fold whenever the mission set changes (a new mission appears) or a
+    // quarantine decision applied a change (the revision bump).
     void missions;
+    void revision;
     load();
   });
 

@@ -354,6 +354,71 @@ const DICT: Record<string, Record<Lang, string>> = {
   "cp.title": { es: "Puntos de control", en: "Checkpoints", pt: "Pontos de controlo", fr: "Points de contrôle" },
   "cp.empty": { es: "Aún no hay puntos de control.", en: "No checkpoints yet.", pt: "Ainda não há pontos de controlo.", fr: "Pas encore de points de contrôle." },
 
+  // quarantine review (Story 2.2, AD-3/AD-13): agent proposals wait here —
+  // nothing changes until a human merges; the basis-stale warning variant;
+  // decided proposals stay visible with their receipt stamps.
+  "quarantine.title": { es: "Revisión pendiente", en: "Pending review", pt: "Revisão pendente", fr: "Révision en attente" },
+  "quarantine.sub": {
+    es: "Las propuestas del agente esperan aquí — nada cambia hasta que las fusiones.",
+    en: "Agent proposals wait here — nothing changes until you merge them.",
+    pt: "As propostas do agente esperam aqui — nada muda até as fundires.",
+    fr: "Les propositions de l'agent attendent ici — rien ne change tant que vous ne les fusionnez pas.",
+  },
+  "quarantine.empty": {
+    es: "Sin propuestas en espera — los cambios del agente aparecerán aquí.",
+    en: "No proposals waiting — agent changes will appear here.",
+    pt: "Sem propostas em espera — as mudanças do agente aparecerão aqui.",
+    fr: "Aucune proposition en attente — les changements de l'agent apparaîtront ici.",
+  },
+  "quarantine.pending": { es: "pendientes", en: "pending", pt: "pendentes", fr: "en attente" },
+  "quarantine.history": { es: "Historial", en: "History", pt: "Histórico", fr: "Historique" },
+  "quarantine.historyEmpty": {
+    es: "Nada decidido aún.",
+    en: "Nothing decided yet.",
+    pt: "Nada decidido ainda.",
+    fr: "Rien de décidé pour l'instant.",
+  },
+  "quarantine.proposes": { es: "propone", en: "proposes", pt: "propõe", fr: "propose" },
+  "quarantine.change": { es: "cambio de estado", en: "status change", pt: "mudança de estado", fr: "changement d'état" },
+  "quarantine.basis": { es: "base", en: "basis", pt: "base", fr: "base" },
+  "quarantine.run": { es: "run", en: "run", pt: "run", fr: "run" },
+  "quarantine.basisStale": {
+    es: "La entidad cambió desde esta propuesta",
+    en: "Entity changed since this proposal was made",
+    pt: "A entidade mudou desde esta proposta",
+    fr: "L'entité a changé depuis cette proposition",
+  },
+  "quarantine.approve": { es: "Aprobar", en: "Approve", pt: "Aprovar", fr: "Approuver" },
+  "quarantine.forceApprove": { es: "Aprobar de todos modos", en: "Force approve", pt: "Aprovar mesmo assim", fr: "Approuver quand même" },
+  "quarantine.reject": { es: "Rechazar", en: "Reject", pt: "Rejeitar", fr: "Rejeter" },
+  "quarantine.approving": { es: "Aprobando…", en: "Approving…", pt: "A aprovar…", fr: "Approbation…" },
+  "quarantine.rejecting": { es: "Rechazando…", en: "Rejecting…", pt: "A rejeitar…", fr: "Rejet…" },
+  "quarantine.actionError": {
+    es: "No se pudo decidir la propuesta: ",
+    en: "Could not decide the proposal: ",
+    pt: "Não foi possível decidir a proposta: ",
+    fr: "Impossible de décider la proposition : ",
+  },
+  "quarantine.loadError": {
+    es: "No se pudieron cargar las propuestas: ",
+    en: "Could not load proposals: ",
+    pt: "Não foi possível carregar as propostas: ",
+    fr: "Impossible de charger les propositions : ",
+  },
+  "quarantine.mergedStale": {
+    es: "fusionada sobre una base vencida",
+    en: "merged past a stale basis",
+    pt: "fundida sobre uma base vencida",
+    fr: "fusionnée sur une base périmée",
+  },
+  "quarantine.supersededNote": {
+    es: "reemplazada por la fusión de una propuesta hermana",
+    en: "superseded by a sibling proposal's merge",
+    pt: "substituída pela fusão de uma proposta irmã",
+    fr: "remplacée par la fusion d'une proposition sœur",
+  },
+  "quarantine.decided": { es: "decidida", en: "decided", pt: "decidida", fr: "décidée" },
+
   // onboarding — the sixty-second first value (Story 1.9, FR-8.1/8.2): the
   // welcome's two quiet actions and the result moment. Zero jargon beyond
   // the current layer: papers, candidates, one mission with its stop
