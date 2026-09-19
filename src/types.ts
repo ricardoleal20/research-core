@@ -155,3 +155,47 @@ export interface MissionRun {
   kind: string; // raw event kind, rendered in mono (receipt voice)
   actor: string; // "user" | "agent" | "system:<component>"
 }
+
+// Hypotheses (event-sourced read model, Story 1.5): lifecycle is
+// machine-enforced (FR-2.2) — proposed → testing → supported/refuted,
+// supported/refuted → revised, revised → testing; every transition is an
+// event with an audit stamp. Typed relations render as chips (FR-2.3).
+export type HypothesisStatus = "proposed" | "testing" | "supported" | "refuted" | "revised";
+
+// The typed-relation vocabulary (FR-2.3): contradicts | extends |
+// specializes | supports_the_same_claim.
+export type RelationKind = "contradicts" | "extends" | "specializes" | "supports_the_same_claim";
+
+// A relation chip's direction from its card's perspective:
+// outgoing reads "⟶ contradicts H-7"; incoming reads "⟵ contradicted-by H-3".
+export type RelationDirection = "outgoing" | "incoming";
+
+// The audit stamp of the last lifecycle event (FR-2.2): actor, ts, basis.
+export interface AuditStamp {
+  seq: number;
+  ts: string;
+  actor: string; // "user" | "agent" | "system:<component>"
+  basis: string; // transition basis; the event kind on creation
+}
+
+// One typed-relation chip on a hypothesis card (FR-2.3) — chips only,
+// never a graph canvas.
+export interface RelationChip {
+  seq: number; // the relation event's seq (latest per endpoint pair wins)
+  kind: RelationKind;
+  direction: RelationDirection;
+  otherId: string; // the other endpoint's creation event id
+  otherSeq: number; // the other endpoint's creation seq — the H-n label
+  otherStatement: string;
+}
+
+export interface Hypothesis {
+  id: string; // the hypothesis.created event id
+  seq: number; // creation event seq — the H-n label derives from it
+  ts: string; // ISO-8601 UTC
+  statement: string;
+  missionId: string;
+  status: HypothesisStatus; // derived by the fold from status_changed events
+  relations: RelationChip[]; // derived: typed relations, both directions
+  audit: AuditStamp; // derived: the last lifecycle event's stamp
+}

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -45,6 +45,41 @@ const browserApi = {
       );
     }
     return mockApi.createMission(m);
+  },
+  listHypotheses: async (missionId: string) =>
+    (await servedByCore)
+      ? httpJson<Hypothesis[]>(`/api/missions/${missionId}/hypotheses`)
+      : mockApi.listHypotheses(missionId),
+  createHypothesis: async (statement: string, missionId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage hypotheses from the desktop app / " +
+          "Vista de solo lectura — gestiona hipótesis desde la app de escritorio"
+      );
+    }
+    return mockApi.createHypothesis(statement, missionId);
+  },
+  transitionHypothesis: async (hypothesisId: string, to: string, basis: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage hypotheses from the desktop app / " +
+          "Vista de solo lectura — gestiona hipótesis desde la app de escritorio"
+      );
+    }
+    return mockApi.transitionHypothesis(hypothesisId, to, basis);
+  },
+  addRelation: async (
+    fromHypothesisId: string,
+    toHypothesisId: string,
+    relationKind: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage hypotheses from the desktop app / " +
+          "Vista de solo lectura — gestiona hipótesis desde la app de escritorio"
+      );
+    }
+    return mockApi.addRelation(fromHypothesisId, toHypothesisId, relationKind);
   },
 };
 
@@ -127,6 +162,16 @@ export const api = mockActive ? browserApi : {
     invoke<Mission>("create_mission", m),
   listMissions: () => invoke<Mission[]>("list_missions"),
   getMissionRuns: (missionId: string) => invoke<MissionRun[]>("get_mission_runs", { missionId }),
+
+  // hypotheses (event-sourced: FR-2.2 transitions are audited events,
+  // FR-2.3 typed relations are events cause-linked to both endpoints)
+  createHypothesis: (statement: string, missionId: string) =>
+    invoke<Hypothesis>("create_hypothesis", { statement, missionId }),
+  listHypotheses: (missionId: string) => invoke<Hypothesis[]>("list_hypotheses", { missionId }),
+  transitionHypothesis: (hypothesisId: string, to: string, basis: string) =>
+    invoke<Hypothesis>("transition_hypothesis", { hypothesisId, to, basis }),
+  addRelation: (fromHypothesisId: string, toHypothesisId: string, relationKind: string) =>
+    invoke<Hypothesis>("add_relation", { fromHypothesisId, toHypothesisId, relationKind }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

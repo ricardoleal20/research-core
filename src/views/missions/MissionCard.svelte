@@ -2,6 +2,7 @@
   import type { Mission, MissionRun } from "../../types";
   import { t } from "../../i18n";
   import { api } from "../../api";
+  import HypothesesBoard from "./HypothesesBoard.svelte";
 
   let { mission }: { mission: Mission } = $props();
 
@@ -10,6 +11,11 @@
   let runsOpen = $state(false);
   let runs = $state<MissionRun[] | null>(null);
   let runsError = $state("");
+
+  // Hypothesis board drill-down (Story 1.5): the mission's hypothesis
+  // cards — lifecycle chips, relation chips, audit stamps. The full
+  // board-at-a-glance surface is Story 1.8; this section suffices here.
+  let boardOpen = $state(false);
 
   const ceiling = $derived(`$${(mission.spendCeilingCents / 100).toFixed(2)}`);
   const autonomyLabel = $derived(t(`missions.autonomy.${mission.autonomy}`));
@@ -52,6 +58,10 @@
         runsError = t("missions.loadRunsError") + e;
       }
     }
+  }
+
+  function toggleBoard() {
+    boardOpen = !boardOpen;
   }
 </script>
 
@@ -109,10 +119,17 @@
     <span aria-hidden="true">·</span>
     <span>{created}</span>
     <span class="mc-spacer"></span>
+    <button class="mc-runs-toggle" type="button" onclick={toggleBoard} aria-expanded={boardOpen}>
+      {t("hyp.show")}
+    </button>
     <button class="mc-runs-toggle" type="button" onclick={toggleRuns} aria-expanded={runsOpen}>
       {runsOpen ? t("missions.hideRuns") : t("missions.showRuns")}
     </button>
   </footer>
+
+  {#if boardOpen}
+    <HypothesesBoard {mission} />
+  {/if}
 
   {#if runsOpen}
     <div class="mc-runs">

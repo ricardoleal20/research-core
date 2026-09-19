@@ -216,6 +216,70 @@ const DICT: Record<string, Record<Lang, string>> = {
     fr: "Pas encore d'exécutions pour cette mission.",
   },
   "missions.loadRunsError": { es: "No se pudieron cargar las ejecuciones: ", en: "Could not load runs: ", pt: "Não foi possível carregar as execuções: ", fr: "Impossible de charger les exécutions : " },
+
+  // hypotheses — Story 1.5 (board, lifecycle chips, relations, audit stamps)
+  "hyp.show": { es: "Hipótesis", en: "Hypotheses", pt: "Hipóteses", fr: "Hypothèses" },
+  "hyp.hide": { es: "Ocultar hipótesis", en: "Hide hypotheses", pt: "Ocultar hipóteses", fr: "Masquer les hypothèses" },
+  "hyp.board": { es: "Tablero de hipótesis", en: "Hypothesis board", pt: "Quadro de hipóteses", fr: "Tableau des hypothèses" },
+  "hyp.empty": {
+    es: "Aún no hay hipótesis. La misión propondrá la primera.",
+    en: "No hypotheses yet. The mission will propose its first.",
+    pt: "Ainda não há hipóteses. A missão proporá a primeira.",
+    fr: "Pas encore d'hypothèses. La mission proposera la première.",
+  },
+  "hyp.statement": { es: "Enunciado", en: "Statement", pt: "Enunciado", fr: "Énoncé" },
+  "hyp.statementPh": {
+    es: "Un enunciado falsable de esta misión…",
+    en: "A falsifiable statement from this mission…",
+    pt: "Um enunciado falsificável desta missão…",
+    fr: "Un énoncé falsifiable de cette mission…",
+  },
+  "hyp.add": { es: "Añadir hipótesis", en: "Add hypothesis", pt: "Adicionar hipótese", fr: "Ajouter une hypothèse" },
+  "hyp.createError": { es: "No se pudo crear la hipótesis: ", en: "Could not create the hypothesis: ", pt: "Não foi possível criar a hipótese: ", fr: "Impossible de créer l'hypothèse : " },
+  "hyp.loadError": { es: "No se pudieron cargar las hipótesis: ", en: "Could not load hypotheses: ", pt: "Não foi possível carregar as hipóteses: ", fr: "Impossible de charger les hypothèses : " },
+  "hyp.basis": { es: "Base de la transición", en: "Transition basis", pt: "Base da transição", fr: "Base de la transition" },
+  "hyp.basisPh": {
+    es: "Por qué este cambio — ejecución, ancla o nota",
+    en: "Why this change — run, pin, or note",
+    pt: "Porquê esta mudança — execução, âncora ou nota",
+    fr: "Pourquoi ce changement — exécution, ancre ou note",
+  },
+  "hyp.basisRequired": {
+    es: "Toda transición nombra su base — requerida",
+    en: "Every transition names its basis — required",
+    pt: "Toda transição nomeia a sua base — necessária",
+    fr: "Toute transition nomme sa base — requise",
+  },
+  "hyp.transitionError": { es: "Transición rechazada: ", en: "Transition refused: ", pt: "Transição recusada: ", fr: "Transition refusée : " },
+  "hyp.relate": { es: "Relacionar", en: "Relate", pt: "Relacionar", fr: "Relier" },
+  "hyp.relateTo": { es: "Segunda hipótesis", en: "Second hypothesis", pt: "Segunda hipótese", fr: "Seconde hypothèse" },
+  "hyp.relationKind": { es: "Tipo de relación", en: "Relation kind", pt: "Tipo de relação", fr: "Type de relation" },
+  "hyp.relationPick": { es: "Elige una hipótesis…", en: "Pick a hypothesis…", pt: "Escolhe uma hipótese…", fr: "Choisis une hypothèse…" },
+  "hyp.relationError": { es: "No se pudo crear la relación: ", en: "Could not create the relation: ", pt: "Não foi possível criar a relação: ", fr: "Impossible de créer la relation : " },
+  "hyp.status.proposed": { es: "Propuesta", en: "Proposed", pt: "Proposta", fr: "Proposée" },
+  "hyp.status.testing": { es: "En prueba", en: "Testing", pt: "Em teste", fr: "En test" },
+  "hyp.status.supported": { es: "Soportada", en: "Supported", pt: "Sustentada", fr: "Soutenue" },
+  "hyp.status.refuted": { es: "Refutada", en: "Refuted", pt: "Refutada", fr: "Réfutée" },
+  "hyp.status.revised": { es: "Revisada", en: "Revised", pt: "Revista", fr: "Révisée" },
+  // relation chip labels (FR-2.3 vocabulary): outgoing / incoming per kind;
+  // supports_the_same_claim is symmetric — one label both directions.
+  "hyp.rel.contradicts.out": { es: "contradice a", en: "contradicts", pt: "contradiz", fr: "contredit" },
+  "hyp.rel.contradicts.in": { es: "contradicha por", en: "contradicted-by", pt: "contraditada por", fr: "contredite par" },
+  "hyp.rel.extends.out": { es: "extiende a", en: "extends", pt: "estende", fr: "étend" },
+  "hyp.rel.extends.in": { es: "extendida por", en: "extended-by", pt: "estendida por", fr: "étendue par" },
+  "hyp.rel.specializes.out": { es: "especializa a", en: "specializes", pt: "especializa", fr: "spécialise" },
+  "hyp.rel.specializes.in": { es: "especializada por", en: "specialized-by", pt: "especializada por", fr: "spécialisée par" },
+  "hyp.rel.supports_the_same_claim": {
+    es: "sostiene la misma afirmación que",
+    en: "supports-the-same-claim-as",
+    pt: "sustenta a mesma alegação que",
+    fr: "soutient la même affirmation que",
+  },
+  // relation-kind picker labels (fuller forms of the same vocabulary)
+  "hyp.relKind.contradicts": { es: "contradice", en: "contradicts", pt: "contradiz", fr: "contredit" },
+  "hyp.relKind.extends": { es: "extiende", en: "extends", pt: "estende", fr: "étend" },
+  "hyp.relKind.specializes": { es: "especializa", en: "specializes", pt: "especializa", fr: "spécialise" },
+  "hyp.relKind.supports_the_same_claim": { es: "sostiene la misma afirmación", en: "supports the same claim", pt: "sustenta a mesma alegação", fr: "soutient la même affirmation" },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

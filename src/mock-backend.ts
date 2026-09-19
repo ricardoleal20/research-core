@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -66,6 +66,46 @@ const missions: Mission[] = [];
 let missionSeq = 0;
 // In-memory run lists per mission id (empty until events would reference them).
 const missionRuns: Record<string, MissionRun[]> = {};
+
+// In-memory hypotheses so the board flows (create, transition, relate) work
+// in-browser. Mirrors the event-sourced core: the FR-2.2 transition table is
+// enforced here too, and every transition carries an audit stamp.
+const hypotheses: Hypothesis[] = [];
+let hypSeq = 0;
+const allowedNext: Record<HypothesisStatus, HypothesisStatus[]> = {
+  proposed: ["testing"],
+  testing: ["supported", "refuted"],
+  supported: ["revised"],
+  refuted: ["revised"],
+  revised: ["testing"],
+};
+
+/** Upsert a relation chip onto one endpoint (latest event per endpoint
+ *  pair wins — editing a relation appends, mirroring the core's fold). */
+function upsertMockRelation(
+  h: Hypothesis,
+  seq: number,
+  kind: RelationKind,
+  direction: "outgoing" | "incoming",
+  other: Hypothesis,
+) {
+  const existing = h.relations.find(
+    (r) => r.direction === direction && r.otherId === other.id,
+  );
+  if (existing) {
+    existing.seq = seq;
+    existing.kind = kind;
+  } else {
+    h.relations.push({
+      seq,
+      kind,
+      direction,
+      otherId: other.id,
+      otherSeq: other.seq,
+      otherStatement: other.statement,
+    });
+  }
+}
 
 const agents: Agent[] = [
   { id: "a1", key: "rigor", name: "Rigor", description: "Detecta fallos metodológicos y lógicos.", icon: "brain", enabled: 1, kind: "judge" },
@@ -198,6 +238,69 @@ export const mockApi = {
   },
   listMissions: async () => { await delay(); return [...missions]; },
   getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
+
+  // hypotheses — mirrors the typed core (FR-2.2 table enforced, relations
+  // upserted onto both endpoints with latest-wins semantics)
+  createHypothesis: async (statement: string, missionId: string) => {
+    await delay();
+    if (!statement.trim()) throw new Error("hypothesis.statement must not be empty");
+    if (!missions.some((m) => m.id === missionId)) {
+      throw new Error(`not_found: no mission with id \`${missionId}\``);
+    }
+    hypSeq += 1;
+    const ts = nowISO();
+    const h: Hypothesis = {
+      id: "h" + hypSeq + "-" + Date.now(),
+      seq: hypSeq,
+      ts,
+      statement: statement.trim(),
+      missionId,
+      status: "proposed",
+      relations: [],
+      audit: { seq: hypSeq, ts, actor: "user", basis: "hypothesis.created" },
+    };
+    hypotheses.push(h);
+    return h;
+  },
+  listHypotheses: async (missionId: string) => {
+    await delay();
+    return hypotheses.filter((h) => h.missionId === missionId).map((h) => ({ ...h }));
+  },
+  transitionHypothesis: async (hypothesisId: string, to: string, basis: string) => {
+    await delay();
+    const h = hypotheses.find((x) => x.id === hypothesisId);
+    if (!h) throw new Error(`not_found: no hypothesis with id \`${hypothesisId}\``);
+    if (!allowedNext[h.status].includes(to as HypothesisStatus)) {
+      throw new Error(
+        `illegal_transition: ${h.status} → ${to} is not a legal hypothesis lifecycle transition (FR-2.2)`,
+      );
+    }
+    if (!basis.trim()) {
+      throw new Error("hypothesis.basis must not be empty — every transition names its basis (FR-2.2)");
+    }
+    h.status = to as HypothesisStatus;
+    hypSeq += 1;
+    h.audit = { seq: hypSeq, ts: nowISO(), actor: "user", basis: basis.trim() };
+    return { ...h };
+  },
+  addRelation: async (fromHypothesisId: string, toHypothesisId: string, relationKind: string) => {
+    await delay();
+    const from = hypotheses.find((x) => x.id === fromHypothesisId);
+    const to = hypotheses.find((x) => x.id === toHypothesisId);
+    if (!from) throw new Error(`not_found: no hypothesis with id \`${fromHypothesisId}\``);
+    if (!to) throw new Error(`not_found: no hypothesis with id \`${toHypothesisId}\``);
+    if (from.id === to.id) throw new Error("hypothesis.related: a hypothesis cannot relate to itself");
+    const kind = (["contradicts", "extends", "specializes", "supports_the_same_claim"] as const)
+      .find((k) => k === relationKind);
+    if (!kind) {
+      throw new Error(`unknown_relation: \`${relationKind}\``);
+    }
+    hypSeq += 1;
+    const seq = hypSeq;
+    upsertMockRelation(from, seq, kind, "outgoing", to);
+    upsertMockRelation(to, seq, kind, "incoming", from);
+    return { ...from };
+  },
 
   // danger zone
   resetDatabase: async () => { await delay(); },
