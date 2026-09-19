@@ -6,4 +6,5 @@ pub mod evidence;
 pub mod hypotheses;
 pub mod missions;
 pub mod onboarding;
+pub mod proposals;
 pub mod spend;

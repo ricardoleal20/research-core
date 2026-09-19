@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::domain::proposals::{
+    MergeApprovedPayload, ProposalCreatedPayload, MERGE_APPROVED, PROPOSAL_CREATED,
+};
 use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const HYPOTHESIS_CREATED: &str = "hypothesis.created";
@@ -308,12 +311,24 @@ fn actor_label(actor: &Actor) -> String {
 /// corrupt and fails the fold. Relations fold onto both endpoint
 /// hypotheses; the latest relation event per endpoint pair wins (relations
 /// are edited by appending).
+///
+/// Quarantine (AD-3, AD-13): `proposal.created` events record intent only
+/// — the proposed change is EXCLUDED from this fold (and every projection)
+/// until a `merge.approved` lands. The fold applies each merged proposal's
+/// intended transition when it meets the approval event, so approval seq
+/// order IS the application order (approval-order-by-seq, AD-13). A merged
+/// transition skips the `from` corruption check: its basis was validated at
+/// approve time, and a forced merge past a stale basis is the recorded
+/// human override — the fold applies the intended `to` deterministically.
 pub struct HypothesesProjection;
 
 impl HypothesesProjection {
     pub fn fold(events: &[StoredEvent]) -> Result<Vec<Hypothesis>, EventError> {
         let mut hyps: Vec<Hypothesis> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
+        // Quarantine index (AD-3): hypothesis-targeting proposals by event
+        // id, so a merge.approved can resolve and apply the intended change.
+        let mut proposals: HashMap<Uuid, (ProposalCreatedPayload, String)> = HashMap::new();
         for event in events {
             match event.kind.as_str() {
                 HYPOTHESIS_CREATED => {
@@ -422,6 +437,64 @@ impl HypothesesProjection {
                         from_seq,
                         from_statement,
                     );
+                }
+                PROPOSAL_CREATED => {
+                    // Quarantine (AD-3): a proposal records intent only —
+                    // the proposed change stays EXCLUDED from the fold until
+                    // a merge.approved lands. Indexed here so the merge
+                    // application below can resolve it.
+                    let payload: ProposalCreatedPayload = serde_json::from_value(
+                        event.payload.clone(),
+                    )
+                    .map_err(|e| {
+                        EventError::Invalid(format!(
+                            "corrupt {PROPOSAL_CREATED} payload at seq {}: {e}",
+                            event.seq
+                        ))
+                    })?;
+                    if payload.proposed_kind == HYPOTHESIS_STATUS_CHANGED {
+                        proposals.insert(event.id, (payload, actor_label(&event.actor)));
+                    }
+                }
+                MERGE_APPROVED => {
+                    // The application point (AD-13): the approval applies the
+                    // proposal's intended transition to its target — in this
+                    // event's seq order, i.e. by approval order, never by
+                    // proposal order. The audit stamp carries the merge seq,
+                    // the proposing agent's actor label, and the agent's basis.
+                    let payload: MergeApprovedPayload = serde_json::from_value(
+                        event.payload.clone(),
+                    )
+                    .map_err(|e| {
+                        EventError::Invalid(format!(
+                            "corrupt {MERGE_APPROVED} payload at seq {}: {e}",
+                            event.seq
+                        ))
+                    })?;
+                    let Some((proposal, actor)) = proposals.get(&payload.proposal_id) else {
+                        continue; // references no known proposal — skipped
+                    };
+                    let Some(&i) = index.get(&proposal.target_entity) else {
+                        continue; // the target never appeared — skipped
+                    };
+                    let intended: HypothesisStatusChangedPayload =
+                        serde_json::from_value(proposal.proposed_payload.clone()).map_err(
+                            |e| {
+                                EventError::Invalid(format!(
+                                    "corrupt proposed payload of proposal {} applied at seq \
+                                     {}: {e}",
+                                    payload.proposal_id, event.seq
+                                ))
+                            },
+                        )?;
+                    let hyp = &mut hyps[i];
+                    hyp.status = intended.to;
+                    hyp.audit = AuditStamp {
+                        seq: event.seq,
+                        ts: event.ts,
+                        actor: actor.clone(),
+                        basis: intended.basis,
+                    };
                 }
                 _ => {}
             }
