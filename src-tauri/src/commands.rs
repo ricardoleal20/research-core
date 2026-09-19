@@ -162,12 +162,12 @@ pub async fn list_reviews(db: State<'_, Db>, project_id: String) -> Result<Vec<V
     for r in reviews.iter_mut() {
         if let Some(d) = r.get("dims").and_then(|v| v.as_str()) {
             if let Ok(parsed) = serde_json::from_str::<Value>(d) {
-                if let Value::Object(ref mut m) = r { m.insert("dims".into(), parsed); }
+                if let Value::Object(m) = r { m.insert("dims".into(), parsed); }
             }
         }
         let rid = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let findings = db::query_all(&c, "SELECT * FROM findings WHERE review_id=?1 ORDER BY rowid", &[&rid]).unwrap_or_default();
-        if let Value::Object(ref mut m) = r { m.insert("findings".into(), Value::Array(findings)); }
+        if let Value::Object(m) = r { m.insert("findings".into(), Value::Array(findings)); }
     }
     Ok(reviews)
 }
