@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -230,6 +230,37 @@ const mockRollbacks: RollbackRecord[] = [
     name: "after onboarding", targetSeq: 90, orphanedCount: 3,
   },
 ];
+
+// Recorded mock exports (Story 3.1): folder → the cut its "manifest"
+// recorded — the staleness read's state (any rollback after the cut
+// stales it, mirroring the core's export_is_stale).
+const mockExports = new Map<string, { cutSeq: number }>();
+
+/** The per-entity file list a scope renders — the same shape the core
+ *  writes on disk (the mock records the list; the core writes the files). */
+function exportFilesFor(scope: string): string[] {
+  const slug = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40) || "untitled";
+  const missionFiles = () => missions.map((m) => `missions/M-${m.seq}-${slug(m.question)}.md`);
+  const hypothesisFiles = () => hypotheses.map((h) => `hypotheses/H-${h.seq}-${slug(h.statement)}.md`);
+  const evidenceFiles = () => hypotheses.map((h) => `evidence/H-${h.seq}-${slug(h.statement)}.md`);
+  const timeline = () => [
+    "timeline/events.jsonl",
+    "digest/digest.md",
+    ...proposals.map((p) => `proposals/pr-${p.seq}-${slug(p.proposedPayload.to ?? "")}.md`),
+  ];
+  const searchLog = () => ["search-log/search-log.md"];
+  switch (scope) {
+    case "missions": return missionFiles();
+    case "hypotheses": return hypothesisFiles();
+    case "evidence": return evidenceFiles();
+    case "timeline": return timeline();
+    case "search_log": return searchLog();
+    case "all":
+    default:
+      return [...missionFiles(), ...hypothesisFiles(), ...evidenceFiles(), ...timeline(), ...searchLog()];
+  }
+}
 
 const cloneSnapshot = (): MockSnapshot => ({
   missions: missions.map((m) => ({ ...m })),
@@ -1434,4 +1465,53 @@ export const mockApi = {
 
   // danger zone
   resetDatabase: async () => { await delay(); },
+
+  // open export (Story 3.1, FR-7.1/7.2): renders the mock's read model at
+  // ONE cut (the head at render start) into a recorded folder — the same
+  // shape the core's export_workspace returns. The browser mock cannot
+  // write files, so the "folder" is a recorded manifest; the staleness
+  // read mirrors the core's export_is_stale signal honestly (any rollback
+  // appended after the recorded cut stales it).
+  exportWorkspace: async (dir: string, scope: string): Promise<ExportOutcome> => {
+    await delay();
+    const trimmed = dir.trim();
+    if (!trimmed) throw new Error("invalid_dir: an export names the folder it writes");
+    const cut = mockEventSeq;
+    const previous = mockExports.get(trimmed);
+    const staleNotice =
+      previous && mockRollbacks.some((r) => r.seq > previous.cutSeq)
+        ? {
+            previousCut: previous.cutSeq,
+            rollbackSeq: mockRollbacks.find((r) => r.seq > previous.cutSeq)!.seq,
+            rollbackTs: mockRollbacks.find((r) => r.seq > previous.cutSeq)!.ts,
+          }
+        : null;
+    const files = exportFilesFor(scope);
+    mockExports.set(trimmed, { cutSeq: cut });
+    return {
+      dir: trimmed,
+      manifest: {
+        cutSeq: cut,
+        cutTs: nowISO(),
+        renderedTs: nowISO(),
+        scope,
+        appVersion: "0.1.0",
+        fileCount: files.length + 1,
+        staleNotice,
+      },
+      files,
+    };
+  },
+
+  inspectExport: async (dir: string): Promise<ExportInspect | null> => {
+    await delay();
+    const previous = mockExports.get(dir.trim());
+    if (!previous) return null;
+    const rollback = mockRollbacks.find((r) => r.seq > previous.cutSeq);
+    return {
+      cutSeq: previous.cutSeq,
+      stale: !!rollback,
+      rollbackSeq: rollback ? rollback.seq : null,
+    };
+  },
 };

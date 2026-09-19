@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -302,6 +302,22 @@ const browserApi = {
     }
     return mockApi.previewRollback(_checkpointId);
   },
+  // Open export (Story 3.1, FR-7.1/7.2): rendering writes files — a desktop
+  // action, refused in the served read-only view (single writer, AD-14);
+  // the inspect read is desktop-only too (it reads the local folder).
+  exportWorkspace: async (dir: string, scope: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — export from the desktop app / " +
+          "Vista de solo lectura — exporta desde la app de escritorio",
+      );
+    }
+    return mockApi.exportWorkspace(dir, scope);
+  },
+  inspectExport: async (dir: string) => {
+    if (await servedByCore) return null;
+    return mockApi.inspectExport(dir);
+  },
   rollbackToCheckpoint: async (_checkpointId: string) => {
     if (await servedByCore) {
       throw new Error(
@@ -495,6 +511,15 @@ export const api = mockActive ? browserApi : {
     invoke<RollbackPlan>("preview_rollback", { checkpointId }),
   rollbackToCheckpoint: (checkpointId: string) =>
     invoke<RollbackOutcome>("rollback_to_checkpoint", { checkpointId }),
+
+  // open export (event-sourced, Story 3.1, FR-7.1/7.2): renders every
+  // requested scope's fold at ONE named seq cut into open git-friendly
+  // files; inspect reads an existing export folder's cut + staleness
+  // (Story 2.6's signal) for the composer's warning state
+  exportWorkspace: (dir: string, scope: string) =>
+    invoke<ExportOutcome>("export_workspace", { dir, scope }),
+  inspectExport: (dir: string) =>
+    invoke<ExportInspect | null>("inspect_export", { dir }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

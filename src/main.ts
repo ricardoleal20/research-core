@@ -14,6 +14,8 @@ import { renderWizard } from "./views/wizard";
 import { renderTutorial } from "./views/tutorial";
 import { showLockScreen } from "./views/lockscreen";
 import { renderMissions, unmountMissions } from "./views/missions";
+import { openExport } from "./views/missions/export";
+import { t } from "./i18n";
 
 export type Tab = "misiones" | "investigacion" | "refs" | "ai-review" | "asistente" | "acciones" | "status" | "ajustes";
 
@@ -106,6 +108,7 @@ export function renderShell() {
       ${projSelectorHtml()}
       <nav class="nav-tabs" aria-label="Pestañas del proyecto">${navTabsHtml()}</nav>
       <div class="nav-spacer" data-tauri-drag-region></div>
+      <button class="nav-tab is-global" data-action="open-export">${t("export.action")}</button>
       <button class="nav-tab is-global ${state.tab === "ajustes" ? "is-active" : ""}" data-tab="ajustes">Ajustes</button>
       <div class="identity-chip" title="Usuario">RC</div>
     </header>
@@ -123,6 +126,9 @@ function wireNav() {
   );
   const ps = $("#app [data-action='open-projects']");
   ps?.addEventListener("click", openProjectsModal);
+  // The header's Export action (Story 3.1, FR-7.1): opens the export
+  // composer overlay — a header action, never a tab (EXPERIENCE.md).
+  $("#app [data-action='open-export']")?.addEventListener("click", openExport);
 }
 
 export function setTab(tab: Tab) {

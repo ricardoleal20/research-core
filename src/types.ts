@@ -641,3 +641,42 @@ export interface RollbackOutcome {
   orphanedEvents: OrphanedEvent[];
   orphanedProposals: OrphanedProposal[];
 }
+
+// --- Open export (Story 3.1, FR-7.1/7.2, AD-11) -------------------------
+
+// Why the previous export at a folder is stale: its cut, and the rollback
+// appended after it that changed what that cut means (both cuts render in
+// mono on the manifest, EXPERIENCE.md).
+export interface StaleNotice {
+  previousCut: number;
+  rollbackSeq: number;
+  rollbackTs: string;
+}
+
+// The parsed export manifest — the summary the result moment renders.
+export interface ExportManifest {
+  cutSeq: number; // the single named seq cut every file rendered at
+  cutTs: string | null; // null for the empty log's e-0 beginning
+  renderedTs: string;
+  scope: string;
+  appVersion: string;
+  fileCount: number;
+  staleNotice: StaleNotice | null; // set when this render supersedes a stale export
+}
+
+// What export_workspace did: where it wrote, the manifest summary, and
+// every file it rendered (paths relative to the folder).
+export interface ExportOutcome {
+  dir: string;
+  manifest: ExportManifest;
+  files: string[];
+}
+
+// The "at open" read of an existing export folder: the cut its manifest
+// records, and whether a rollback after that cut has staled it (Story
+// 2.6's signal) — the composer's stale-warning state.
+export interface ExportInspect {
+  cutSeq: number;
+  stale: boolean;
+  rollbackSeq: number | null;
+}

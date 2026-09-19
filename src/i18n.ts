@@ -757,6 +757,123 @@ const DICT: Record<string, Record<Lang, string>> = {
     pt: "corrida falhou — {reason}",
     fr: "exécution échouée — {reason}",
   },
+
+  // open export (Story 3.1, FR-7.1/7.2): the header composer — "Own your
+  // research / Tu investigación es tuya". Scope picker, destination, the
+  // mono cut in the result moment, and the stale-warning states (both cuts
+  // in mono, EXPERIENCE.md).
+  "export.action": { es: "Exportar", en: "Export", pt: "Exportar", fr: "Exporter" },
+  "export.heading": {
+    es: "Tu investigación es tuya",
+    en: "Own your research",
+    pt: "A tua investigação é tua",
+    fr: "Ta recherche t'appartient",
+  },
+  "export.sub": {
+    es: "Todo tu espacio de trabajo en archivos abiertos y aptos para git — markdown y JSON en un único corte temporal, registrado en el manifiesto.",
+    en: "Your whole workspace as open git-friendly files — markdown and JSON at a single point-in-time, recorded in the manifest.",
+    pt: "Todo o teu espaço de trabalho em ficheiros abertos e git-friendly — markdown e JSON num único corte temporal, registado no manifesto.",
+    fr: "Tout ton espace de travail en fichiers ouverts compatibles git — markdown et JSON à un seul instant, consigné dans le manifeste.",
+  },
+  "export.scope": { es: "Alcance", en: "Scope", pt: "Âmbito", fr: "Périmètre" },
+  "export.scope.all": {
+    es: "Todo el espacio de trabajo",
+    en: "Whole workspace",
+    pt: "Todo o espaço de trabalho",
+    fr: "Tout l'espace de travail",
+  },
+  "export.scope.desc.all": {
+    es: "Tablero, anclas, misiones, cronología y búsquedas",
+    en: "Board, pins, missions, timeline, and search disclosures",
+    pt: "Quadro, âncoras, missões, cronologia e buscas",
+    fr: "Tableau, ancres, missions, chronologie et recherches",
+  },
+  "export.scope.missions": { es: "Misiones", en: "Missions", pt: "Missões", fr: "Missions" },
+  "export.scope.desc.missions": {
+    es: "Preguntas, condiciones de paro, criterios de éxito y ejecuciones",
+    en: "Questions, stop conditions, success criteria, and runs",
+    pt: "Perguntas, condições de paragem, critérios de êxito e execuções",
+    fr: "Questions, conditions d'arrêt, critères de succès et exécutions",
+  },
+  "export.scope.hypotheses": {
+    es: "Tablero de hipótesis",
+    en: "Hypothesis board",
+    pt: "Quadro de hipóteses",
+    fr: "Tableau des hypothèses",
+  },
+  "export.scope.desc.hypotheses": {
+    es: "Enunciados, ciclo de vida, auditoría y anclas de evidencia",
+    en: "Statements, lifecycle, audit, and evidence pins",
+    pt: "Enunciados, ciclo de vida, auditoria e âncoras de evidência",
+    fr: "Énoncés, cycle de vie, audit et ancres de preuve",
+  },
+  "export.scope.evidence": {
+    es: "Anclas de evidencia",
+    en: "Evidence pins",
+    pt: "Âncoras de evidência",
+    fr: "Ancres de preuve",
+  },
+  "export.scope.desc.evidence": {
+    es: "Afirmaciones con citas, extractos y huellas sha-256",
+    en: "Claims with citations, excerpts, and sha-256 digests",
+    pt: "Afirmaciones con citas, extractos y huellas sha-256",
+    fr: "Affirmations avec citations, extraits et empreintes sha-256",
+  },
+  "export.scope.timeline": { es: "Cronología", en: "Timeline", pt: "Cronologia", fr: "Chronologie" },
+  "export.scope.desc.timeline": {
+    es: "Eventos, recibos de ejecución y resumen matutino",
+    en: "Events, run receipts, and the morning digest",
+    pt: "Eventos, recibos de execução e resumo matinal",
+    fr: "Événements, reçus d'exécution et résumé du matin",
+  },
+  "export.scope.search_log": {
+    es: "Divulgación de búsquedas",
+    en: "Search disclosures",
+    pt: "Divulgação de buscas",
+    fr: "Divulgation des recherches",
+  },
+  "export.scope.desc.search_log": {
+    es: "Cada búsqueda que ejecutaron las ejecuciones",
+    en: "Every search the runs performed",
+    pt: "Cada busca que as execuções realizaram",
+    fr: "Chaque recherche effectuée par les exécutions",
+  },
+  "export.path": { es: "Carpeta de destino", en: "Destination folder", pt: "Pasta de destino", fr: "Dossier de destination" },
+  "export.pick": { es: "Elegir…", en: "Choose…", pt: "Escolher…", fr: "Choisir…" },
+  "export.run": { es: "Exportar", en: "Export", pt: "Exportar", fr: "Exporter" },
+  "export.running": { es: "Exportando…", en: "Exporting…", pt: "A exportar…", fr: "Exportation…" },
+  "export.result": {
+    es: "Export escrito en",
+    en: "Export written to",
+    pt: "Export escrito em",
+    fr: "Export écrit dans",
+  },
+  "export.resultCut": {
+    es: "{count} archivos · corte",
+    en: "{count} files · cut",
+    pt: "{count} ficheiros · corte",
+    fr: "{count} fichiers · coupe",
+  },
+  "export.reveal": { es: "Ver carpeta", en: "Show folder", pt: "Ver pasta", fr: "Voir le dossier" },
+  "export.staleAtOpen": {
+    es: "El export en esta carpeta está DESACTUALIZADO — retroceso en e-{seq}; exportar lo refresca.",
+    en: "The export in this folder is STALE — rolled back at e-{seq}; exporting refreshes it.",
+    pt: "O export nesta pasta está DESATUALIZADO — retrocesso em e-{seq}; exportar refresca-o.",
+    fr: "L'export dans ce dossier est PÉRIMÉ — retour arrière à e-{seq} ; exporter le rafraîchit.",
+  },
+  "export.staleSuperseded": {
+    es: "El export anterior (corte e-{prev}) quedó DESACTUALIZADO por el retroceso e-{seq} — este render lo reemplaza en el corte e-{cut}.",
+    en: "The previous export (cut e-{prev}) was STALE — rolled back at e-{seq}; this render supersedes it at cut e-{cut}.",
+    pt: "O export anterior (corte e-{prev}) ficou DESATUALIZADO pelo retrocesso e-{seq} — este render substitui-o no corte e-{cut}.",
+    fr: "L'export précédent (coupe e-{prev}) est PÉRIMÉ — retour arrière à e-{seq} ; ce rendu le remplace à la coupe e-{cut}.",
+  },
+  "export.error": {
+    es: "Error al exportar: ",
+    en: "Export failed: ",
+    pt: "Erro ao exportar: ",
+    fr: "Échec de l'export : ",
+  },
+  "export.close": { es: "Cerrar", en: "Close", pt: "Fechar", fr: "Fermer" },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];
