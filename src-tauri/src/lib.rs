@@ -3,6 +3,7 @@ mod checkpoints_commands;
 mod commands;
 mod db;
 mod evidence_commands;
+mod export_commands;
 mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
@@ -182,6 +183,8 @@ pub fn run() {
             evidence_commands::pin_claim_to_citation,
             evidence_commands::pin_claim_to_numerical,
             evidence_commands::list_evidence,
+            export_commands::export_workspace,
+            export_commands::inspect_export,
             proposals_commands::list_proposals,
             proposals_commands::approve_proposal,
             proposals_commands::reject_proposal,

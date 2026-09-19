@@ -5,6 +5,7 @@
 pub mod checkpoints;
 pub mod digest;
 pub mod evidence;
+pub mod export;
 pub mod nightshift;
 pub mod hypotheses;
 pub mod missions;
