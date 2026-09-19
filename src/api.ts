@@ -63,6 +63,21 @@ const browserApi = {
     if (await servedByCore) return httpJson<ComputeTargetView[]>("/api/targets");
     return mockApi.listComputeTargets();
   },
+  // The host allowlist (Story 3.3): reads go over the same-origin API;
+  // edits stay on the Tauri command path (mutations, AD-14).
+  getHostAllowlist: async () => {
+    if (await servedByCore) return httpJson<string[]>("/api/host-allowlist");
+    return mockApi.getHostAllowlist();
+  },
+  setHostAllowlist: async (_hosts: string[]) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — edit the allowlist from the desktop app / " +
+          "Vista de solo lectura — edita la lista desde la app de escritorio",
+      );
+    }
+    return mockApi.setHostAllowlist(_hosts);
+  },
   submitJob: async (_missionId: string, _target: string, _spec: JobSpec) => {
     if (await servedByCore) {
       throw new Error(
@@ -72,14 +87,14 @@ const browserApi = {
     }
     return mockApi.submitJob(_missionId, _target, _spec);
   },
-  declareComputeTarget: async (_name: string, _kind: string) => {
+  declareComputeTarget: async (_name: string, _kind: string, _host?: string | null) => {
     if (await servedByCore) {
       throw new Error(
         "Read-only view — declare targets from the desktop app / " +
           "Vista de solo lectura — declara destinos desde la app de escritorio",
       );
     }
-    return mockApi.declareComputeTarget(_name, _kind);
+    return mockApi.declareComputeTarget(_name, _kind, _host);
   },
   // Run receipts (Story 2.5, FR-6.1): the drill-down's audit ledger — a read
   // over the same-origin API (the served browser view replays the identical
@@ -561,15 +576,20 @@ export const api = mockActive ? browserApi : {
   inspectExport: (dir: string) =>
     invoke<ExportInspect | null>("inspect_export", { dir }),
 
-  // compute targets + jobs (event-sourced, Story 3.2, FR-11.1/11.2/11.4,
-  // AD-6): specs are typed JSON validated before submit — the runtime
-  // executes argv directly and never constructs shell strings; the
-  // lifecycle (submit → monitor → terminal) is evented, terminals always
-  // stamped + reasoned, and every terminal job attributes its usage to its
-  // target (target.spend_recorded, AD-10)
+  // compute targets + jobs (event-sourced, Story 3.2/3.3,
+  // FR-11.1/11.2/11.4, AD-6): specs are typed JSON validated before
+  // submit — the runtime executes argv directly and never constructs
+  // shell strings; the lifecycle (submit → monitor → terminal) is evented,
+  // terminals always stamped + reasoned, and every terminal job attributes
+  // its usage to its target (target.spend_recorded, AD-10). SSH targets
+  // (Story 3.3) carry a host; hosts outside the allowlist are refused
+  // before any connection is attempted.
   listComputeTargets: () => invoke<ComputeTargetView[]>("list_compute_targets"),
-  declareComputeTarget: (name: string, kind: string) =>
-    invoke<ComputeTargetView[]>("declare_compute_target", { name, kind }),
+  declareComputeTarget: (name: string, kind: string, host?: string | null) =>
+    invoke<ComputeTargetView[]>("declare_compute_target", { name, kind, host }),
+  getHostAllowlist: () => invoke<string[]>("get_host_allowlist"),
+  setHostAllowlist: (hosts: string[]) =>
+    invoke<string[]>("set_host_allowlist", { hosts }),
   submitJob: (missionId: string, target: string, spec: JobSpec) =>
     invoke<Job>("submit_job", { missionId, target, spec }),
   pollJobs: (missionId: string) => invoke<Job[]>("poll_jobs", { missionId }),

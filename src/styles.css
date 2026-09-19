@@ -893,3 +893,8 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0;font-weight:600}
 
 .trust-target{padding:8px 0;border-bottom:1px solid var(--border)}
 .trust-target:last-child{border-bottom:0}
+/* The host allowlist editor (Story 3.3): the trust center's compute-targets
+   card — one workspace list of hosts ssh targets may connect to. */
+.trust-allowlist{padding:12px 0 4px;border-top:1px solid var(--border);margin-top:8px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.trust-allowlist .input{width:100%;max-width:420px}
+.trust-allowlist .micro{margin:0}

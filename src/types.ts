@@ -731,10 +731,14 @@ export interface JobResult {
 }
 
 // One compute target as the mission card's target row renders it: a name
-// and the adapter kind behind it (v1: "local"; SSH registers in Story 3.3).
+// and the adapter kind behind it ("local" | "ssh"), plus — for ssh targets
+// (Story 3.3) — the host it connects to and whether that host is on the
+// workspace allowlist (hosts outside it are refused before any connection).
 export interface ComputeTargetView {
   name: string;
   kind: string;
+  host?: string | null; // the host an ssh target connects to
+  allowlisted?: boolean | null; // host on the allowlist? (null for local)
   builtin: boolean; // the built-in "local" needs no target.declared event
   seq?: number | null;
   ts?: string | null;

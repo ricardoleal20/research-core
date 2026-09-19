@@ -73,8 +73,22 @@ const missionRuns: Record<string, MissionRun[]> = {};
 // queued → running → terminal lifecycle (terminals always stamped +
 // reasoned), advanced here by wall-clock elapsed time since submit.
 const mockTargets: ComputeTargetView[] = [
-  { name: "local", kind: "local", builtin: true, seq: null, ts: null },
+  { name: "local", kind: "local", host: null, allowlisted: null, builtin: true, seq: null, ts: null },
+  // a seeded ssh target (Story 3.3): the allowlist editor in Settings has
+  // something to work with out of the box — its host starts NOT allowlisted
+  {
+    name: "gpu-01",
+    kind: "ssh",
+    host: "gpu-01.lab",
+    allowlisted: false,
+    builtin: false,
+    seq: 1,
+    ts: new Date().toISOString(),
+  },
 ];
+// The mock host allowlist (Story 3.3): hosts ssh targets may connect to;
+// hosts outside it are refused before any connection (mirrored).
+const mockHostAllowlist: string[] = [];
 const mockJobs: Job[] = [];
 const mockJobStarts: Record<string, number> = {}; // job id → Date.now() at submit
 let mockJobSeq = 0;
@@ -1385,30 +1399,76 @@ export const mockApi = {
   // reasoned terminals, advanced by elapsed time on every read.
   listComputeTargets: async (): Promise<ComputeTargetView[]> => {
     await delay();
-    return mockTargets.map((t) => ({ ...t }));
+    return mockTargets.map((t) => ({
+      ...t,
+      allowlisted: t.kind === "ssh" ? mockHostAllowlist.includes(t.host ?? "") : null,
+    }));
   },
-  declareComputeTarget: async (name: string, kind: string): Promise<ComputeTargetView[]> => {
+  getHostAllowlist: async (): Promise<string[]> => {
+    await delay();
+    return [...mockHostAllowlist];
+  },
+  setHostAllowlist: async (hosts: string[]): Promise<string[]> => {
+    await delay();
+    for (const host of hosts) {
+      const trimmed = host.trim();
+      if (!trimmed || /\s/.test(trimmed) || trimmed.startsWith("-") || [...trimmed].some((c) => MOCK_SHELL_METACHARS.includes(c))) {
+        throw new Error(
+          `invalid_host: \`${host}\` — the allowlist holds one-token hosts (e.g. gpu-01.lab, user@10.0.0.4)`,
+        );
+      }
+    }
+    mockHostAllowlist.length = 0;
+    mockHostAllowlist.push(...hosts.map((h) => h.trim()));
+    return [...mockHostAllowlist];
+  },
+  declareComputeTarget: async (
+    name: string,
+    kind: string,
+    host?: string | null,
+  ): Promise<ComputeTargetView[]> => {
     await delay();
     const trimmedName = name.trim();
     const trimmedKind = kind.trim();
-    if (trimmedKind !== "local") {
-      throw new Error(`unknown_kind: \`${trimmedKind}\` — no adapter of that kind is registered (v1: local)`);
+    const trimmedHost = (host ?? "").trim();
+    if (trimmedKind !== "local" && trimmedKind !== "ssh") {
+      throw new Error(`unknown_kind: \`${trimmedKind}\` — no adapter of that kind is registered (v1: local | ssh)`);
     }
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(trimmedName)) {
       throw new Error(
         "invalid_name: `" + trimmedName + "` — expected lowercase letters, digits and dashes (e.g. laptop, cluster-1)",
       );
     }
+    if (trimmedKind === "ssh" && !trimmedHost) {
+      throw new Error(
+        "target.declared requires a host for kind `ssh` — the target names the machine it connects to",
+      );
+    }
+    if (trimmedKind !== "ssh" && trimmedHost) {
+      throw new Error(
+        `invalid_host: a \`${trimmedKind}\` target carries no host — only ssh targets name the machine they connect to`,
+      );
+    }
+    if (trimmedHost && (/\s/.test(trimmedHost) || trimmedHost.startsWith("-") || [...trimmedHost].some((c) => MOCK_SHELL_METACHARS.includes(c)))) {
+      throw new Error(
+        `invalid_host: \`${trimmedHost}\` — a host is one token (it becomes one argv element of ssh)`,
+      );
+    }
     if (!mockTargets.some((t) => t.name === trimmedName)) {
       mockTargets.push({
         name: trimmedName,
         kind: trimmedKind,
+        host: trimmedKind === "ssh" ? trimmedHost : null,
+        allowlisted: trimmedKind === "ssh" ? mockHostAllowlist.includes(trimmedHost) : null,
         builtin: false,
         seq: ++mockJobEventSeq,
         ts: realNowISO(),
       });
     }
-    return mockTargets.map((t) => ({ ...t }));
+    return mockTargets.map((t) => ({
+      ...t,
+      allowlisted: t.kind === "ssh" ? mockHostAllowlist.includes(t.host ?? "") : null,
+    }));
   },
   submitJob: async (missionId: string, target: string, spec: JobSpec): Promise<Job> => {
     await delay();
@@ -1417,6 +1477,14 @@ export const mockApi = {
     validateMockSpec(spec);
     if (!mockTargets.some((t) => t.name === target)) {
       throw new Error(`unknown_target: \`${target}\` — declared targets: ${mockTargets.map((t) => t.name).join(" | ")}`);
+    }
+    // The allowlist gate (Story 3.3, mirrored): an ssh target's host must
+    // be allowlisted BEFORE any connection is attempted.
+    const sshTarget = mockTargets.find((t) => t.name === target && t.kind === "ssh");
+    if (sshTarget && !mockHostAllowlist.includes(sshTarget.host ?? "")) {
+      throw new Error(
+        `host_not_allowed: \`${sshTarget.host}\` — hosts outside the allowlist are refused before any connection is attempted (allowlist: ${mockHostAllowlist.length ? mockHostAllowlist.join(" | ") : "empty — add hosts in Settings → Compute targets"})`,
+      );
     }
     mockJobSeq += 1;
     mockJobEventSeq += 1;

@@ -3,7 +3,7 @@ import { state, setTab, esc, el, toast } from "../main";
 import { ico } from "../icons";
 import { t, setLang, getLang } from "../i18n";
 import { showSettingsSkeleton } from "../skeleton";
-import type { McpServer, TrustStatus, Autonomy, MissionMeter, TargetMeter } from "../types";
+import type { McpServer, TrustStatus, Autonomy, MissionMeter, TargetMeter, ComputeTargetView } from "../types";
 
 const APP_VERSION = "0.1.0";
 const GITHUB_URL = "https://github.com/ricardoleal20/research-core";
@@ -11,6 +11,11 @@ const GITHUB_URL = "https://github.com/ricardoleal20/research-core";
 let settings: Record<string, string> = {};
 let servers: McpServer[] = [];
 let trust: TrustStatus | null = null;
+// Compute targets + the host allowlist (Story 3.3): the trust center's
+// compute-targets card — every target with its kind/host, and the
+// workspace allowlist ssh targets are gated on.
+let computeTargets: ComputeTargetView[] = [];
+let hostAllowlist: string[] = [];
 let ajView: HTMLElement | null = null;
 // Remember the open section so it survives a language-change re-render.
 let activeSection = "general";
@@ -38,13 +43,21 @@ export async function renderAjustes(view: HTMLElement) {
       try { sv = await api.listMcpServers(); } catch { sv = []; }
       let tr: TrustStatus | null = null;
       try { tr = await api.getTrustStatus(); } catch { tr = null; }
-      return { s, sv, tr };
+      // compute targets + the host allowlist (Story 3.3) — tolerant: the
+      // card renders what loaded
+      let ct: ComputeTargetView[] = [];
+      try { ct = await api.listComputeTargets(); } catch { ct = []; }
+      let ha: string[] = [];
+      try { ha = await api.getHostAllowlist(); } catch { ha = []; }
+      return { s, sv, tr, ct, ha };
     })(),
     waitSkeleton(),
   ]);
   settings = loaded.s;
   servers = loaded.sv;
   trust = loaded.tr;
+  computeTargets = loaded.ct;
+  hostAllowlist = loaded.ha;
   setLang(settings.lang || "es");
 
   view.innerHTML = `<div class="settings-body">
@@ -461,15 +474,22 @@ function cardTrustProviders(): string {
 
 function cardTrustTargets(): string {
   const tr = trust!;
-  if (tr.targets.length === 0) {
-    return `<div class="card" id="card-trust-targets">
-      <div class="card-head">
-        <div class="card-title">${ico.server} ${t("trust.targets")}</div>
-        <div class="micro">${t("trust.targetsSub")}</div>
+  // Every compute target (Story 3.3): name, kind chip (Local/SSH), and —
+  // for ssh targets — the host plus its allowlisted status. The frame's
+  // compute-targets row, read-model only.
+  const targetRows = computeTargets.map((ct: ComputeTargetView) => `
+    <div class="trust-target">
+      <div class="trust-row">
+        <div class="trust-row-l">
+          <div class="trust-row-t mono">${esc(ct.name)}
+            <span class="chip">${ct.kind === "local" ? "Local" : "SSH"}</span>
+            ${ct.kind === "ssh" ? `<span class="mono micro">${t("trust.host")}: ${esc(ct.host ?? "—")}</span>` : ""}
+            ${ct.kind === "ssh" ? `<span class="chip">${ct.allowlisted ? t("trust.allowlisted") : t("trust.notAllowlisted")}</span>` : ""}
+          </div>
+        </div>
       </div>
-      <div class="empty-row">${t("trust.targetsSub")}</div>
-    </div>`;
-  }
+    </div>`).join("");
+  // Spend + autonomy-dial rows for targets with recorded usage (Story 2.4)
   const rows = tr.targets.map((tg: TargetMeter) => `
     <div class="trust-target">
       <div class="trust-row">
@@ -485,12 +505,24 @@ function cardTrustTargets(): string {
         <input class="trust-ceil-input" type="text" inputmode="decimal" data-trust-ceiling="target" data-scope-id="${esc(tg.target)}" value="${tg.ceilingCents ? (tg.ceilingCents / 100).toFixed(2) : ""}" placeholder="—" aria-label="${t("trust.targets")}">
       </div>
     </div>`).join("");
+  // The host allowlist editor (Story 3.3, the trust-center frame): one
+  // workspace list — every host an ssh target may connect to. Hosts
+  // outside it are refused before any connection is attempted.
+  const allowlistEditor = `
+    <div class="trust-allowlist">
+      <label class="micro" for="trust-allowlist-input">${t("trust.hostAllowlist")}</label>
+      <input class="input mono" id="trust-allowlist-input" type="text" value="${esc(hostAllowlist.join(", "))}" placeholder="gpu-01.lab, user@10.0.0.4" aria-label="${t("trust.hostAllowlist")}">
+      <p class="micro">${t("trust.hostAllowlistHint")}</p>
+      <button class="btn btn-primary btn-sm" id="trust-allowlist-save" type="button">${t("trust.hostAllowlistSave")}</button>
+    </div>`;
   return `<div class="card" id="card-trust-targets">
     <div class="card-head">
       <div class="card-title">${ico.server} ${t("trust.targets")}</div>
       <div class="micro">${t("trust.targetsSub")}</div>
     </div>
+    ${targetRows || `<div class="empty-row">${t("trust.noSshTargets")}</div>`}
     ${rows}
+    ${allowlistEditor}
   </div>`;
 }
 
@@ -537,6 +569,24 @@ function wireTrust() {
     b.addEventListener("click", () => applyDial(b)));
   $$("#aj-section-trust [data-trust-ceiling]").forEach((input) =>
     input.addEventListener("change", () => applyCeiling(input as HTMLInputElement)));
+  // The host allowlist editor (Story 3.3): save replaces the whole list —
+  // the fresh allowlist and the targets' allowlisted status re-render.
+  $("#trust-allowlist-save")?.addEventListener("click", async () => {
+    const input = $("#trust-allowlist-input") as HTMLInputElement | null;
+    if (!input) return;
+    const hosts = input.value
+      .split(",")
+      .map((h) => h.trim())
+      .filter((h) => h.length > 0);
+    try {
+      hostAllowlist = await api.setHostAllowlist(hosts);
+      try { computeTargets = await api.listComputeTargets(); } catch { /* keep the last list */ }
+      toast(t("trust.hostAllowlistSaved"));
+      rerenderTrust();
+    } catch (e) {
+      toast(t("trust.saveError") + e);
+    }
+  });
   // Kill switch: a working confirm step — the button reveals the confirm row;
   // only the confirm fires it (AD-15e: a runtime-owned core command).
   $("#trust-kill-toggle")?.addEventListener("click", () => {

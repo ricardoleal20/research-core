@@ -343,7 +343,10 @@
             aria-pressed={target.name === selectedTarget}
           >
             {target.name}
-            <span class="mc-target-kind">{target.kind === "local" ? "Local" : target.kind}</span>
+            <span class="mc-target-kind">
+              {target.kind === "local" ? "Local" : target.kind.toUpperCase()}
+              {#if target.kind === "ssh" && target.host}· {target.host}{/if}
+            </span>
           </button>
         {/each}
       </div>
