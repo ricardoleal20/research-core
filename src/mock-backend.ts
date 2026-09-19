@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -177,6 +177,107 @@ function upsertMockRelation(
       otherStatement: other.statement,
     });
   }
+}
+
+// In-memory morning digest (mirrors the event-sourced core, Story 2.3):
+// seeded rows so the digest frame shows in the dev browser on first load —
+// a finished night, a ceiling-stopped mission, an honest failed row, and
+// one dead-run alert. `runNightShiftNow` appends real rows for any mock
+// missions on top of the seed.
+const seededAt = "2026-09-19T09:04:00Z";
+let digestRunSeq = 100;
+const seededRows: DigestRow[] = [
+  {
+    missionId: "m21-seed", missionSeq: 21,
+    question: "Does retrieval grounding reduce hallucinated citations?",
+    status: "active", runs: 1, finished: 1, failed: 0, failureReason: null,
+    ceilingReached: false, proposalsPending: 2, spendCents: 42, ceilingCents: 100,
+    receiptSeq: 101, lastRunTs: "2026-09-19T03:04:00Z",
+  },
+  {
+    missionId: "m22-seed", missionSeq: 22,
+    question: "Does sparse attention hold at long context?",
+    status: "active", runs: 1, finished: 1, failed: 0, failureReason: null,
+    ceilingReached: true, proposalsPending: 0, spendCents: 100, ceilingCents: 100,
+    receiptSeq: 102, lastRunTs: "2026-09-19T02:14:00Z",
+  },
+  {
+    missionId: "m24-seed", missionSeq: 24,
+    question: "Is linear complexity competitive with quadratic attention?",
+    status: "completed", runs: 2, finished: 2, failed: 0, failureReason: null,
+    ceilingReached: false, proposalsPending: 0, spendCents: 31, ceilingCents: 100,
+    receiptSeq: 103, lastRunTs: "2026-09-19T01:44:00Z",
+  },
+  {
+    missionId: "m26-seed", missionSeq: 26,
+    question: "Does MoE routing stay stable under distribution shift?",
+    status: "failed", runs: 1, finished: 0, failed: 1, failureReason: "provider_error",
+    ceilingReached: false, proposalsPending: 0, spendCents: 0, ceilingCents: 100,
+    receiptSeq: 104, lastRunTs: "2026-09-19T02:58:00Z",
+  },
+];
+const seededDigest: MorningDigest = {
+  generatedAt: seededAt,
+  outcome: "partial_success",
+  spendCents: 173,
+  ceilingCents: 400,
+  rows: seededRows,
+  alerts: [
+    { runId: "nightshift-17", missionId: "m26-seed", missionSeq: 26, heartbeatTs: "2026-09-19T02:31:00Z", receiptSeq: 104 },
+  ],
+};
+
+/** The mock digest: the seed plus one live row per active mock mission that
+ *  has run (the manual trigger appends them — mirrors the core's fold). */
+function currentMockDigest(): MorningDigest {
+  const liveRows: DigestRow[] = missions
+    .filter((m) => m.status === "active")
+    .map((m) => {
+      const runs = missionRuns[m.id] ?? [];
+      const started = runs.filter((r) => r.kind === "run.started").length;
+      if (started === 0) return null;
+      const finished = runs.filter((r) => r.kind === "run.finished").length;
+      const failedRuns = runs.filter((r) => r.kind === "run.failed");
+      const lastStarted = [...runs].reverse().find((r) => r.kind === "run.started");
+      const pending = proposals.filter((p) => p.missionId === m.id && p.status === "pending").length;
+      const row: DigestRow = {
+        missionId: m.id,
+        missionSeq: m.seq,
+        question: m.question,
+        status: m.status,
+        runs: started,
+        finished,
+        failed: failedRuns.length,
+        failureReason: failedRuns.length
+          ? (failedRuns[failedRuns.length - 1] as any).reason ?? "provider_error"
+          : null,
+        ceilingReached: m.spendCents >= m.spendCeilingCents && m.spendCeilingCents > 0,
+        proposalsPending: pending,
+        spendCents: m.spendCents,
+        ceilingCents: m.spendCeilingCents,
+        receiptSeq: lastStarted?.seq ?? 0,
+        lastRunTs: lastStarted?.ts ?? seededAt,
+      };
+      return row;
+    })
+    .filter((r): r is DigestRow => r !== null);
+  const rows = [...liveRows, ...seededRows].slice(0, 10);
+  const allRuns = rows.reduce((a, r) => ({ s: a.s + r.runs, f: a.f + r.finished, x: a.x + r.failed }), { s: 0, f: 0, x: 0 });
+  const outcome = allRuns.s === 0
+    ? "no_runs"
+    : allRuns.x === 0
+      ? "all_finished"
+      : allRuns.f === 0
+        ? "all_failed"
+        : "partial_success";
+  return {
+    generatedAt: seededAt,
+    outcome,
+    spendCents: rows.reduce((a, r) => a + r.spendCents, 0),
+    ceilingCents: rows.reduce((a, r) => a + r.ceilingCents, 0),
+    rows,
+    alerts: seededDigest.alerts,
+  };
 }
 
 const agents: Agent[] = [
@@ -507,6 +608,7 @@ export const mockApi = {
       autonomy: m.autonomy,
       spendCeilingCents: m.spendCeilingCents,
       roles,
+      schedule: "daily-03:00",
       status: "active",
       spendCents: 0,
       spendState: "ok",
@@ -814,6 +916,67 @@ export const mockApi = {
     p.status = "rejected";
     p.decided = { seq: mockEventSeq, ts: nowISO(), actor: "user" };
     return { ...p, proposedPayload: { ...p.proposedPayload }, decided: { ...p.decided! } };
+  },
+
+  // morning digest (Story 2.3) — mirrors the typed core: the seed shows the
+  // frame in the dev browser; the manual trigger runs every active mission's
+  // scan (a run.started/finished pair + one quarantined proposal — the AD-3
+  // loop, mirrored), and schedule changes update the mission in place.
+  getMorningDigest: async (): Promise<MorningDigest> => {
+    await delay();
+    const d = currentMockDigest();
+    return { ...d, rows: d.rows.map((r) => ({ ...r })), alerts: d.alerts.map((a) => ({ ...a })) };
+  },
+  runNightShiftNow: async (): Promise<MorningDigest> => {
+    await delay(300);
+    for (const mission of missions.filter((m) => m.status === "active")) {
+      const runId = `nightshift-${++digestRunSeq}`;
+      missionRuns[mission.id] = missionRuns[mission.id] ?? [];
+      const push = (kind: string) => {
+        mockEventSeq += 1;
+        missionRuns[mission.id].push({
+          seq: mockEventSeq,
+          id: "r" + mockEventSeq + "-" + Date.now(),
+          ts: nowISO(),
+          kind,
+          actor: "system:scheduler",
+        });
+      };
+      push("run.started");
+      // the scan's output lands as a quarantined proposal (FR-4.2)
+      const target = hypotheses.find(
+        (h) => h.missionId === mission.id && allowedNext[h.status].length > 0,
+      );
+      if (target) {
+        mockPropose(
+          target,
+          allowedNext[target.status][0],
+          `escaneo nocturno ${runId}: tres fuentes nuevas anclan la hipótesis central`,
+          runId,
+        );
+      }
+      push("run.finished");
+    }
+    const d = currentMockDigest();
+    return { ...d, rows: d.rows.map((r) => ({ ...r })), alerts: d.alerts.map((a) => ({ ...a })) };
+  },
+  setMissionSchedule: async (missionId: string, schedule: string): Promise<Mission> => {
+    await delay();
+    const mission = missions.find((m) => m.id === missionId);
+    if (!mission) throw new Error(`not_found: no mission with id \`${missionId}\``);
+    const trimmed = schedule.trim();
+    const valid =
+      trimmed.toLowerCase() === "off" ||
+      (/^daily-\d{2}:\d{2}$/.test(trimmed) &&
+        Number(trimmed.slice(6, 8)) <= 23 &&
+        Number(trimmed.slice(9, 11)) <= 59);
+    if (!valid) {
+      throw new Error(
+        "invalid_schedule: `" + trimmed + "` — expected `off` or `daily-HH:MM` (e.g. daily-03:00)",
+      );
+    }
+    mission.schedule = trimmed;
+    return { ...mission };
   },
 
   // onboarding (Story 1.9) — the arXiv paste door and the Zotero library

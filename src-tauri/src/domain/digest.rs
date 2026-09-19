@@ -106,6 +106,8 @@ impl DigestRow {
 #[serde(rename_all = "camelCase")]
 pub struct DigestAlert {
     pub run_id: String,
+    /// The mission the dead run belonged to (the receipts link's anchor).
+    pub mission_id: Uuid,
     /// The mission's creation seq — the `M-n` label.
     pub mission_seq: i64,
     /// The heartbeat timestamp the run died at.
@@ -222,6 +224,7 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
             run_id.to_string(),
             DigestAlert {
                 run_id: run_id.to_string(),
+                mission_id: Uuid::nil(), // resolved below, once the mission is known
                 mission_seq: 0, // resolved below, once the mission is known
                 heartbeat_ts,
                 receipt_seq: 0, // the matching run.started's seq
@@ -243,6 +246,7 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
         if let Some(alert) = dead.get_mut(run_id) {
             alert.receipt_seq = event.seq;
             if let Some(mission_id) = run_event_mission(event) {
+                alert.mission_id = mission_id;
                 alert.mission_seq = missions
                     .iter()
                     .find(|m| m.id == mission_id)

@@ -17,6 +17,34 @@
   // board-at-a-glance surface is Story 1.8; this section suffices here.
   let boardOpen = $state(false);
 
+  // Night Shift schedule (Story 2.3, FR-4.1): off | daily-HH:MM — the
+  // compact editor in the card footer; a save appends mission.scheduled.
+  let scheduleOpen = $state(false);
+  let scheduleDraft = $state(mission.schedule);
+  let scheduleError = $state("");
+  let scheduleSaving = $state(false);
+
+  const scheduleValid = $derived(
+    scheduleDraft.trim().toLowerCase() === "off" ||
+      (/^daily-\d{2}:\d{2}$/.test(scheduleDraft.trim()) &&
+        Number(scheduleDraft.trim().slice(6, 8)) <= 23 &&
+        Number(scheduleDraft.trim().slice(9, 11)) <= 59),
+  );
+
+  async function saveSchedule() {
+    if (!scheduleValid) return;
+    scheduleSaving = true;
+    scheduleError = "";
+    try {
+      await api.setMissionSchedule(mission.id, scheduleDraft.trim());
+      scheduleOpen = false;
+    } catch (e) {
+      scheduleError = t("missions.scheduleError") + e;
+    } finally {
+      scheduleSaving = false;
+    }
+  }
+
   const ceiling = $derived(`$${(mission.spendCeilingCents / 100).toFixed(2)}`);
   const autonomyLabel = $derived(t(`missions.autonomy.${mission.autonomy}`));
   const created = $derived(new Date(mission.ts).toLocaleString());
@@ -69,7 +97,7 @@
      in heading-3, stop condition + success criterion, thin spend meter, mono
      meta row, and the runs drill-down. Status is never color alone — the
      kicker carries text. -->
-<article class="mission-card">
+<article class="mission-card" id={`mission-${mission.id}`}>
   <header class="mc-head">
     <span class="mc-kicker" style={`--status:${statusColor[mission.status]}`}>
       <span class="mc-dot" aria-hidden="true"></span>
@@ -111,6 +139,43 @@
     </span>
     {#if mission.spendState === "blocked"}
       <span class="spend-blocked-label">{t("missions.spendBlocked")}</span>
+    {/if}
+  </div>
+
+  <!-- Night Shift schedule (FR-4.1): mono chip + inline editor; the hint
+       names the wire form. Saving appends a mission.scheduled event. -->
+  <div class="mc-schedule">
+    {#if scheduleOpen}
+      <input
+        class="mc-schedule-input mono"
+        type="text"
+        bind:value={scheduleDraft}
+        aria-label={t("missions.schedule")}
+        aria-invalid={!scheduleValid}
+      />
+      <button
+        class="mc-runs-toggle"
+        type="button"
+        onclick={saveSchedule}
+        disabled={!scheduleValid || scheduleSaving}
+      >
+        {t("missions.scheduleSave")}
+      </button>
+      {#if scheduleError}
+        <p class="mc-schedule-error" role="alert">{scheduleError}</p>
+      {/if}
+    {:else}
+      <button
+        class="mc-schedule-chip mono"
+        type="button"
+        onclick={() => {
+          scheduleDraft = mission.schedule;
+          scheduleOpen = true;
+        }}
+        title={t("missions.schedule")}
+      >
+        {t("digest.nightShift")}: {mission.schedule}
+      </button>
     {/if}
   </div>
 
@@ -273,6 +338,52 @@
   .spend-blocked-label {
     font-size: 12px;
     font-weight: 500;
+    color: var(--rc-danger-ink);
+  }
+
+  .mc-schedule {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .mc-schedule-chip {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--rc-ink-muted);
+    background: var(--rc-surface-2);
+    border: 1px solid var(--rc-border);
+    border-radius: 9999px;
+    padding: 3px 12px;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .mc-schedule-chip:hover {
+    color: var(--rc-accent);
+    border-color: var(--rc-accent);
+  }
+  .mc-schedule-chip:focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
+  }
+  .mc-schedule-input {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12.5px;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    outline: none;
+    min-height: 34px;
+    width: 150px;
+  }
+  .mc-schedule-input[aria-invalid="true"] {
+    border-color: var(--rc-danger-ink);
+  }
+  .mc-schedule-error {
+    margin: 0;
+    font-size: 12px;
     color: var(--rc-danger-ink);
   }
 

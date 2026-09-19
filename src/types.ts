@@ -153,6 +153,7 @@ export interface Mission {
   autonomy: Autonomy;
   spendCeilingCents: number;
   roles: RoleConfig[]; // the mission's agent-role config (Story 2.1)
+  schedule: string; // Night Shift schedule (Story 2.3): "off" | "daily-HH:MM"
   status: MissionStatus; // derived by the fold from events referencing the mission
   spendCents: number; // total spend.recorded cost against the ceiling
   spendState: SpendState; // the spend meter's state
@@ -304,6 +305,54 @@ export interface Proposal {
 export interface ApproveOutcome {
   proposal: Proposal;
   superseded: Proposal[];
+}
+
+// Morning Digest (event-sourced read model, Story 2.3, FR-4.4): a pure
+// projection over the last night's runs — the Night Shift result, skimmable
+// in ninety seconds. Delivered even when runs failed (FR-4.3): a failed run
+// is an honest row carrying its reason, never a missing one.
+
+// The run-outcome badge of the digest header: everything finished, some
+// failed, everything failed, or nothing ran.
+export type DigestOutcome = "no_runs" | "all_finished" | "partial_success" | "all_failed";
+
+// One digest row: one mission's night, structured so the view composes its
+// bilingual one-line verdict (the row renders at most two lines — the
+// verdict plus its translation).
+export interface DigestRow {
+  missionId: string;
+  missionSeq: number; // the M-n label derives from it
+  question: string;
+  status: MissionStatus; // the lifecycle chip
+  runs: number; // runs in the window
+  finished: number;
+  failed: number;
+  failureReason: string | null; // code-form reason when a run failed (FR-4.3)
+  ceilingReached: boolean; // spend at the ceiling — Story 2.4's seam
+  proposalsPending: number; // quarantined proposals awaiting review (FR-4.2)
+  spendCents: number; // the mission's folded spend vs ceiling
+  ceilingCents: number;
+  receiptSeq: number; // the latest run.started seq — the receipts link
+  lastRunTs: string; // ISO-8601 UTC
+}
+
+// The dead-man-switch alert row (FR-9.1 hook): a run that died with a stale
+// heartbeat. Rendered distinct from (and counted separately of) the rows.
+export interface DigestAlert {
+  runId: string;
+  missionId: string; // the receipts link's anchor
+  missionSeq: number;
+  heartbeatTs: string; // the heartbeat the run died at
+  receiptSeq: number;
+}
+
+export interface MorningDigest {
+  generatedAt: string; // ISO-8601 UTC
+  outcome: DigestOutcome;
+  spendCents: number; // aggregate of the rows' folded spend
+  ceilingCents: number;
+  rows: DigestRow[]; // <= 10, newest night first
+  alerts: DigestAlert[]; // dead-run alert rows
 }
 
 // Onboarding — the sixty-second first value (Story 1.9, FR-8.1): one pasted

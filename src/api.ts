@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -160,6 +160,34 @@ const browserApi = {
       );
     }
     return mockApi.runAgentStep(missionId, role, task);
+  },
+  // Morning Digest (Story 2.3, FR-4.4): the read goes to the same-origin
+  // read-only API over the shared core; triggering the Night Shift and
+  // changing schedules are mutations — the served browser view refuses
+  // them.
+  getMorningDigest: async () => {
+    if (await servedByCore) {
+      return httpJson<MorningDigest>("/api/digest");
+    }
+    return mockApi.getMorningDigest();
+  },
+  runNightShiftNow: async () => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run the Night Shift from the desktop app / " +
+          "Vista de solo lectura — ejecuta el Turno Nocturno desde la app de escritorio"
+      );
+    }
+    return mockApi.runNightShiftNow();
+  },
+  setMissionSchedule: async (_missionId: string, _schedule: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage schedules from the desktop app / " +
+          "Vista de solo lectura — gestiona los horarios desde la app de escritorio"
+      );
+    }
+    return mockApi.setMissionSchedule(_missionId, _schedule);
   },
   // Proposals (Story 2.2, AD-3/AD-13): reads go to the same-origin
   // read-only API over the shared core; merging and rejecting are
@@ -325,6 +353,14 @@ export const api = mockActive ? browserApi : {
     }),
   listEvidence: (hypothesisId: string) =>
     invoke<Claim[]>("list_evidence", { hypothesisId }),
+
+  // morning digest (event-sourced, Story 2.3): the Night Shift result —
+  // the manual trigger runs every active mission's scan now; schedule
+  // changes append mission.scheduled events
+  getMorningDigest: () => invoke<MorningDigest>("get_morning_digest"),
+  runNightShiftNow: () => invoke<MorningDigest>("run_night_shift_now"),
+  setMissionSchedule: (missionId: string, schedule: string) =>
+    invoke<Mission>("set_mission_schedule", { missionId, schedule }),
 
   // proposals (event-sourced, Story 2.2: agent changes land as quarantined
   // proposals — excluded from projections until a human merges them, AD-3;

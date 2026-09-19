@@ -658,6 +658,7 @@ mod tests {
         let digest = morning_digest(&db).await.unwrap();
         assert_eq!(digest.alerts.len(), 1);
         assert_eq!(digest.alerts[0].run_id, "nightshift-dead");
+        assert_eq!(digest.alerts[0].mission_id, mission.id);
         assert_eq!(digest.alerts[0].receipt_seq, started.seq);
     }
 

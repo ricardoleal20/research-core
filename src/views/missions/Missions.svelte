@@ -4,6 +4,7 @@
   import type { Autonomy, Mission } from "../../types";
   import BoardGlance from "./BoardGlance.svelte";
   import MissionCard from "./MissionCard.svelte";
+  import MorningDigest from "./MorningDigest.svelte";
   import Onboarding from "./Onboarding.svelte";
   import QuarantineReview from "./QuarantineReview.svelte";
 
@@ -297,6 +298,10 @@
   {/if}
 
   {#if newestFirst.length > 0}
+    <!-- Morning Digest (Story 2.3, FR-4): the Night Shift result, above the
+         board — the night's work (and its failures) waits at the top; a
+         manual run re-folds missions (spend, proposals, statuses move). -->
+    <MorningDigest onran={load} />
     <!-- Board at a glance (FR-2.4, Story 1.8): ALL hypotheses and their
          states in one view, above the per-mission sections — the board
          surface, with the checkpoint control in its header (Story 2.6's
