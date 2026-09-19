@@ -1,14 +1,18 @@
-// Evidence pin domain (FR-3, Story 1.7): an AI-generated claim is a
-// first-class log object (`claim.registered`, cause-linked to its
+// Evidence pin domain (FR-3, Stories 1.7–1.8): an AI-generated claim is
+// a first-class log object (`claim.registered`, cause-linked to its
 // hypothesis) that can carry an evidence pin. A citation pin
 // (`evidence.pinned`) references a library ref, quotes the specific
 // excerpt it rests on, and carries a sha-256 digest of that excerpt
 // computed at construction (AD-5) — callers never supply a digest, so a
-// pin can never claim to anchor text it does not quote. Confidence is
-// agent-assessed and attributed: the pin stores the assessing model
-// (FR-3.6) — a pin is never "verified", it is pinned with a stated
-// confidence by a named model. Claims without a pin read as UNPINNED so
-// the UI can flag them (FR-3.4).
+// pin can never claim to anchor text it does not quote. A numerical pin
+// (FR-3.3, Story 1.8) anchors the claim to a numerical artifact
+// (file/figure/table) by `artifact_ref` + the sha-256 digest of the
+// pinned content — the same AD-5 rule, the researcher's own results
+// instead of a library passage. Confidence is agent-assessed and
+// attributed: the pin stores the assessing model (FR-3.6) — a pin is
+// never "verified", it is pinned with a stated confidence by a named
+// model. Claims without a pin read as UNPINNED so the UI can flag them
+// (FR-3.4).
 //
 // Claim model choice: claims are registered as their own events rather
 // than inferred from assistant message fragments — inference would need a
@@ -80,17 +84,29 @@ pub struct ClaimRegisteredPayload {
 }
 
 /// The `evidence.pinned` payload (AD-5 shape): the pinned claim, the pin
-/// kind, the library ref it cites, the excerpt span, its sha-256 digest,
-/// and the agent-assessed confidence attributed to the assessing model.
+/// kind, the source it anchors to (a library `ref_id` for citations, an
+/// `artifact_ref` for numerical pins), the pinned content (`excerpt` —
+/// the quoted passage or the values the claim rests on), its sha-256
+/// digest, and the agent-assessed confidence attributed to the assessing
+/// model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvidencePinnedPayload {
     pub claim_id: Uuid,
     pub hypothesis_id: Uuid,
     pub kind: PinKind,
-    /// The library ref this pin cites — must exist in the refs table
-    /// (enforced by the shell; the domain validates non-emptiness).
-    pub ref_id: String,
-    /// The specific passage the claim rests on — non-empty, quoted verbatim.
+    /// The library ref a citation pin cites — must exist in the refs table
+    /// (enforced by the shell; the domain validates presence for the
+    /// kind). None for numerical pins.
+    #[serde(default)]
+    pub ref_id: Option<String>,
+    /// The artifact (file/figure/table) a numerical pin anchors to
+    /// (FR-3.3) — a path/id in the workspace or fetched from a run. None
+    /// for citation pins.
+    #[serde(default)]
+    pub artifact_ref: Option<String>,
+    /// The pinned content — the quoted passage (citation) or the values
+    /// (numerical) the claim rests on. Non-empty; the digest binds to
+    /// exactly this.
     pub excerpt: String,
     /// sha-256 of the excerpt — computed at construction, never trusted
     /// from callers (AD-5).
@@ -130,14 +146,14 @@ impl NewEvent {
         .with_causes(vec![hypothesis_id]))
     }
 
-    /// Typed constructor (AD-15, AD-5): the one way an `evidence.pinned`
-    /// event comes into being. The digest is COMPUTED here from the
-    /// excerpt — it is not a parameter, so no caller can pin an excerpt
-    /// with a digest of different text. Validates: ref_id non-empty
-    /// (existence in the library is the shell's check), excerpt non-empty,
-    /// confidence in [0, 1], assessing_model non-empty. The event is
-    /// cause-linked to the claim and the hypothesis (AD-2).
-    pub fn evidence_pinned(
+    /// Typed constructor (AD-15, AD-5): the one way a citation
+    /// `evidence.pinned` event comes into being. The digest is COMPUTED
+    /// here from the excerpt — it is not a parameter, so no caller can pin
+    /// an excerpt with a digest of different text. Validates: ref_id
+    /// non-empty (existence in the library is the shell's check), excerpt
+    /// non-empty, confidence in [0, 1], assessing_model non-empty. The
+    /// event is cause-linked to the claim and the hypothesis (AD-2).
+    pub fn evidence_pinned_citation(
         claim_id: Uuid,
         hypothesis_id: Uuid,
         ref_id: impl AsRef<str>,
@@ -157,27 +173,97 @@ impl NewEvent {
                 "evidence.excerpt must not be empty — a pin quotes the passage it rests on".into(),
             ));
         }
+        let assessing_model = assessing_model.as_ref().trim();
+        Self::pin_payload(
+            claim_id,
+            hypothesis_id,
+            PinKind::Citation,
+            Some(ref_id.to_string()),
+            None,
+            excerpt,
+            confidence,
+            assessing_model,
+        )
+    }
+
+    /// Typed constructor (AD-15, AD-5, FR-3.3): the one way a numerical
+    /// `evidence.pinned` event comes into being. The claim is anchored to
+    /// a numerical artifact (`artifact_ref` — a path/id of a file, figure,
+    /// or table) by the sha-256 digest of the pinned content, COMPUTED
+    /// here from `content` — never a parameter. Validates: artifact_ref
+    /// non-empty, content non-empty, confidence in [0, 1],
+    /// assessing_model non-empty. The event is cause-linked to the claim
+    /// and the hypothesis (AD-2).
+    pub fn evidence_pinned_numerical(
+        claim_id: Uuid,
+        hypothesis_id: Uuid,
+        artifact_ref: impl AsRef<str>,
+        content: impl AsRef<str>,
+        confidence: f64,
+        assessing_model: impl AsRef<str>,
+    ) -> Result<Self, EventError> {
+        let artifact_ref = artifact_ref.as_ref().trim();
+        if artifact_ref.is_empty() {
+            return Err(EventError::Invalid(
+                "evidence.artifact_ref must not be empty — a numerical pin names the artifact it \
+                 anchors to (FR-3.3)"
+                    .into(),
+            ));
+        }
+        let content = content.as_ref();
+        if content.trim().is_empty() {
+            return Err(EventError::Invalid(
+                "evidence.excerpt must not be empty — a pin anchors the content it rests on".into(),
+            ));
+        }
+        let assessing_model = assessing_model.as_ref().trim();
+        Self::pin_payload(
+            claim_id,
+            hypothesis_id,
+            PinKind::Numerical,
+            None,
+            Some(artifact_ref.to_string()),
+            content,
+            confidence,
+            assessing_model,
+        )
+    }
+
+    /// The shared pin-construction core: confidence bounds (FR-3.6),
+    /// attribution, digest computed from the pinned content (AD-5), and
+    /// the cause-linked event (AD-2). Kind-specific source presence is the
+    /// callers' check; kind/source consistency is re-checked on read.
+    fn pin_payload(
+        claim_id: Uuid,
+        hypothesis_id: Uuid,
+        kind: PinKind,
+        ref_id: Option<String>,
+        artifact_ref: Option<String>,
+        content: &str,
+        confidence: f64,
+        assessing_model: &str,
+    ) -> Result<Self, EventError> {
         if !(0.0..=1.0).contains(&confidence) || confidence.is_nan() {
             return Err(EventError::Invalid(format!(
                 "invalid confidence `{confidence}` — agent-assessed confidence is a number in \
                  [0.0, 1.0] (FR-3.6)"
             )));
         }
-        let assessing_model = assessing_model.as_ref().trim();
         if assessing_model.is_empty() {
             return Err(EventError::Invalid(
                 "evidence.assessing_model must not be empty — confidence is attributed to the \
                  assessing model, never anonymous (FR-3.6)"
-                .into(),
+                    .into(),
             ));
         }
         let payload = EvidencePinnedPayload {
             claim_id,
             hypothesis_id,
-            kind: PinKind::Citation,
-            ref_id: ref_id.to_string(),
-            excerpt: excerpt.to_string(),
-            digest: excerpt_digest(excerpt),
+            kind,
+            ref_id,
+            artifact_ref,
+            excerpt: content.to_string(),
+            digest: excerpt_digest(content),
             confidence,
             assessing_model: assessing_model.to_string(),
         };
@@ -200,14 +286,18 @@ pub struct EvidencePin {
     pub claim_id: Uuid,
     pub hypothesis_id: Uuid,
     pub kind: PinKind,
-    pub ref_id: String,
+    /// The library ref a citation pin cites; None for numerical pins.
+    pub ref_id: Option<String>,
+    /// The artifact a numerical pin anchors to (FR-3.3); None for
+    /// citation pins.
+    pub artifact_ref: Option<String>,
     pub excerpt: String,
     pub digest: String,
     pub confidence: f64,
     pub assessing_model: String,
     /// Author-year label enriched by the shell from the refs table
     /// (e.g. "Vaswani et al. 2017") — the fold leaves it None; refs live
-    /// in SQL, not in the log.
+    /// in SQL, not in the log. Citation pins only.
     pub ref_label: Option<String>,
 }
 
@@ -288,6 +378,41 @@ impl EvidenceProjection {
                             event.seq
                         )));
                     }
+                    // AD-5 on read, kind-specific source: a citation pin
+                    // names its library ref, a numerical pin names its
+                    // artifact — the constructors' guarantees, re-checked.
+                    let (ref_id, artifact_ref) = match payload.kind {
+                        PinKind::Citation => {
+                            let Some(ref_id) = payload
+                                .ref_id
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            else {
+                                return Err(EventError::Invalid(format!(
+                                    "corrupt {EVIDENCE_PINNED} event at seq {}: a citation pin \
+                                     without its library ref",
+                                    event.seq
+                                )));
+                            };
+                            (Some(ref_id.to_string()), None)
+                        }
+                        PinKind::Numerical => {
+                            let Some(artifact_ref) = payload
+                                .artifact_ref
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            else {
+                                return Err(EventError::Invalid(format!(
+                                    "corrupt {EVIDENCE_PINNED} event at seq {}: a numerical pin \
+                                     without its artifact_ref (FR-3.3)",
+                                    event.seq
+                                )));
+                            };
+                            (None, Some(artifact_ref.to_string()))
+                        }
+                    };
                     // FR-3.6 on read: attribution and bounds are structural
                     // — every pin names its assessing model, and confidence
                     // stays in [0, 1].
@@ -316,7 +441,8 @@ impl EvidenceProjection {
                         claim_id: payload.claim_id,
                         hypothesis_id: payload.hypothesis_id,
                         kind: payload.kind,
-                        ref_id: payload.ref_id,
+                        ref_id,
+                        artifact_ref,
                         excerpt: payload.excerpt,
                         digest: payload.digest,
                         confidence: payload.confidence,
@@ -425,7 +551,7 @@ mod tests {
         let (claim, h) = (Uuid::new_v4(), Uuid::new_v4());
         let excerpt = "Attention mechanisms, as introduced by Vaswani et al., dispense with recurrence entirely.";
         let ev =
-            NewEvent::evidence_pinned(claim, h, "ref-1", excerpt, 0.82, "GLM-5.3").unwrap();
+            NewEvent::evidence_pinned_citation(claim, h, "ref-1", excerpt, 0.82, "GLM-5.3").unwrap();
         assert_eq!(ev.kind, "evidence.pinned");
         assert_eq!(ev.actor, Actor::User);
         assert_eq!(ev.causes, vec![claim, h]);
@@ -441,7 +567,7 @@ mod tests {
         // A different excerpt yields a different digest — the digest binds
         // the pin to exactly the text it quotes.
         let other =
-            NewEvent::evidence_pinned(claim, h, "ref-1", "A different passage.", 0.82, "GLM-5.3")
+            NewEvent::evidence_pinned_citation(claim, h, "ref-1", "A different passage.", 0.82, "GLM-5.3")
                 .unwrap();
         let other_payload: EvidencePinnedPayload =
             serde_json::from_value(other.payload.clone()).unwrap();
@@ -452,28 +578,267 @@ mod tests {
     fn pin_constructor_rejects_invalid_ref_excerpt_confidence_and_model() {
         let (claim, h) = (Uuid::new_v4(), Uuid::new_v4());
         // empty ref_id
-        let err = NewEvent::evidence_pinned(claim, h, "  ", "excerpt", 0.5, "GLM-5.3")
+        let err = NewEvent::evidence_pinned_citation(claim, h, "  ", "excerpt", 0.5, "GLM-5.3")
             .expect_err("an empty ref_id must fail construction");
         assert!(err.to_string().contains("ref_id"), "unexpected: {err}");
         // empty excerpt
-        let err = NewEvent::evidence_pinned(claim, h, "ref-1", "   ", 0.5, "GLM-5.3")
+        let err = NewEvent::evidence_pinned_citation(claim, h, "ref-1", "   ", 0.5, "GLM-5.3")
             .expect_err("an empty excerpt must fail construction");
         assert!(err.to_string().contains("excerpt"), "unexpected: {err}");
         // confidence bounds: below 0, above 1, and NaN are all rejected
         for bad in [-0.01, 1.01, f64::NAN] {
-            let err = NewEvent::evidence_pinned(claim, h, "ref-1", "excerpt", bad, "GLM-5.3")
+            let err = NewEvent::evidence_pinned_citation(claim, h, "ref-1", "excerpt", bad, "GLM-5.3")
                 .expect_err("out-of-range confidence must fail construction");
             assert!(err.to_string().contains("confidence"), "unexpected: {err}");
         }
         // the bounds themselves are inclusive — 0.0 and 1.0 construct fine
         for ok in [0.0, 1.0] {
-            NewEvent::evidence_pinned(claim, h, "ref-1", "excerpt", ok, "GLM-5.3")
+            NewEvent::evidence_pinned_citation(claim, h, "ref-1", "excerpt", ok, "GLM-5.3")
                 .expect("inclusive bounds must construct");
         }
         // empty assessing model — confidence is never anonymous
-        let err = NewEvent::evidence_pinned(claim, h, "ref-1", "excerpt", 0.5, "  ")
+        let err = NewEvent::evidence_pinned_citation(claim, h, "ref-1", "excerpt", 0.5, "  ")
             .expect_err("an empty assessing model must fail construction");
         assert!(err.to_string().contains("assessing_model"), "unexpected: {err}");
+    }
+
+    // ---------- numerical pins (FR-3.3, Story 1.8) ----------
+
+    #[test]
+    fn numerical_pin_constructor_computes_the_digest_from_the_content() {
+        let (claim, h) = (Uuid::new_v4(), Uuid::new_v4());
+        let content = "benchmark: 42.7 mean, ±0.4, n=12, table 3 of run 7";
+        let ev = NewEvent::evidence_pinned_numerical(
+            claim,
+            h,
+            "runs/007/table-3.csv",
+            content,
+            0.9,
+            "GLM-5.3",
+        )
+        .unwrap();
+        assert_eq!(ev.kind, "evidence.pinned");
+        assert_eq!(ev.actor, Actor::User);
+        assert_eq!(ev.causes, vec![claim, h]);
+        let payload: EvidencePinnedPayload = serde_json::from_value(ev.payload.clone()).unwrap();
+        // FR-3.3 / AD-5: the numerical pin anchors by artifact_ref + the
+        // sha-256 of the pinned content — computed here, never a parameter.
+        assert_eq!(payload.kind, PinKind::Numerical);
+        assert_eq!(payload.artifact_ref.as_deref(), Some("runs/007/table-3.csv"));
+        assert_eq!(payload.ref_id, None);
+        assert_eq!(payload.digest, excerpt_digest(content));
+        assert_eq!(payload.digest.len(), 64);
+        assert_eq!(payload.confidence, 0.9);
+        assert_eq!(payload.assessing_model, "GLM-5.3");
+        // Different content yields a different digest — the digest binds
+        // the pin to exactly the values it anchors.
+        let other = NewEvent::evidence_pinned_numerical(
+            claim,
+            h,
+            "runs/007/table-3.csv",
+            "benchmark: 43.1 mean",
+            0.9,
+            "GLM-5.3",
+        )
+        .unwrap();
+        let other_payload: EvidencePinnedPayload =
+            serde_json::from_value(other.payload.clone()).unwrap();
+        assert_ne!(other_payload.digest, payload.digest);
+    }
+
+    #[test]
+    fn numerical_pin_constructor_rejects_invalid_artifact_content_confidence_and_model() {
+        let (claim, h) = (Uuid::new_v4(), Uuid::new_v4());
+        // empty artifact_ref
+        let err = NewEvent::evidence_pinned_numerical(claim, h, "  ", "values", 0.5, "GLM-5.3")
+            .expect_err("an empty artifact_ref must fail construction");
+        assert!(err.to_string().contains("artifact_ref"), "unexpected: {err}");
+        // empty content
+        let err = NewEvent::evidence_pinned_numerical(claim, h, "runs/7/t.csv", "   ", 0.5, "GLM-5.3")
+            .expect_err("empty content must fail construction");
+        assert!(err.to_string().contains("excerpt"), "unexpected: {err}");
+        // confidence bounds
+        for bad in [-0.01, 1.01, f64::NAN] {
+            let err = NewEvent::evidence_pinned_numerical(claim, h, "runs/7/t.csv", "values", bad, "GLM-5.3")
+                .expect_err("out-of-range confidence must fail construction");
+            assert!(err.to_string().contains("confidence"), "unexpected: {err}");
+        }
+        // empty assessing model
+        let err = NewEvent::evidence_pinned_numerical(claim, h, "runs/7/t.csv", "values", 0.5, "  ")
+            .expect_err("an empty assessing model must fail construction");
+        assert!(err.to_string().contains("assessing_model"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn a_numerical_pin_folds_with_its_artifact_and_digest() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Table 3 shows a 12% gain.", h, None).unwrap())
+            .unwrap();
+        let content = "gain: 12.3%, p<0.01, n=48";
+        store
+            .append(NewEvent::evidence_pinned_numerical(
+                claim.id,
+                h,
+                "runs/007/table-3.csv",
+                content,
+                0.91,
+                "GLM-5.3",
+            )
+            .unwrap())
+            .unwrap();
+        let [pinned] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(pinned.pinned);
+        let pin = pinned.pin.as_ref().expect("the pin is present");
+        assert_eq!(pin.kind, PinKind::Numerical);
+        assert_eq!(pin.artifact_ref.as_deref(), Some("runs/007/table-3.csv"));
+        assert_eq!(pin.ref_id, None);
+        assert_eq!(pin.digest, excerpt_digest(content));
+        assert_eq!(pin.confidence, 0.91);
+        assert_eq!(pin.assessing_model, "GLM-5.3");
+        assert_eq!(pin.ref_label, None, "no library label on a numerical pin");
+    }
+
+    #[test]
+    fn a_tampered_numerical_content_fails_the_fold_loudly() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        // A hand-built numerical pin whose digest matches DIFFERENT content
+        // than the values it quotes — the AD-5 tamper case, numerical kind.
+        let digest_of_other_content = excerpt_digest("entirely different numbers");
+        let payload = json!({
+            "claim_id": claim.id.to_string(),
+            "hypothesis_id": h.to_string(),
+            "kind": "numerical",
+            "artifact_ref": "runs/007/table-3.csv",
+            "excerpt": "gain: 12.3%, n=48",
+            "digest": digest_of_other_content,
+            "confidence": 0.9,
+            "assessing_model": "GLM-5.3",
+        });
+        store
+            .append(
+                NewEvent::new(EVIDENCE_PINNED, Actor::User, payload)
+                    .unwrap()
+                    .with_causes(vec![claim.id, h]),
+            )
+            .unwrap();
+        let err = EvidenceProjection::fold(&store.events_all().unwrap())
+            .expect_err("a digest that does not match its own content must fail the fold");
+        assert!(err.to_string().contains("tampered"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn a_pin_missing_its_kind_source_fails_the_fold() {
+        for (kind, body) in [
+            (
+                "citation",
+                json!({
+                    "kind": "citation",
+                    "artifact_ref": "runs/7/t.csv",
+                    "excerpt": "The quoted excerpt.",
+                    "digest": excerpt_digest("The quoted excerpt."),
+                    "confidence": 0.9,
+                    "assessing_model": "GLM-5.3",
+                }),
+            ),
+            (
+                "numerical",
+                json!({
+                    "kind": "numerical",
+                    "ref_id": "ref-1",
+                    "excerpt": "gain: 12.3%, n=48",
+                    "digest": excerpt_digest("gain: 12.3%, n=48"),
+                    "confidence": 0.9,
+                    "assessing_model": "GLM-5.3",
+                }),
+            ),
+        ] {
+            let conn = mem_conn();
+            let store = EventStore::new(&conn);
+            let h = seed_hypothesis(&store);
+            let claim = store
+                .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+                .unwrap();
+            let mut payload = body;
+            payload["claim_id"] = json!(claim.id.to_string());
+            payload["hypothesis_id"] = json!(h.to_string());
+            store
+                .append(
+                    NewEvent::new(EVIDENCE_PINNED, Actor::User, payload)
+                        .unwrap()
+                        .with_causes(vec![claim.id, h]),
+                )
+                .unwrap();
+            let err = EvidenceProjection::fold(&store.events_all().unwrap())
+                .expect_err("a pin missing its kind's source must fail the fold");
+            assert!(
+                err.to_string().contains(kind),
+                "the error names the kind: {err}"
+            );
+        }
+    }
+
+    /// FR-3.3 + FR-3.1 in one fold: citation and numerical pins coexist on
+    /// the same hypothesis — each claim keeps its own kind's anatomy.
+    #[test]
+    fn both_pin_kinds_coexist_in_one_fold() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let cited = store
+            .append(NewEvent::claim_registered("Attention drops recurrence.", h, None).unwrap())
+            .unwrap();
+        let measured = store
+            .append(NewEvent::claim_registered("Table 3 shows a 12% gain.", h, None).unwrap())
+            .unwrap();
+        store
+            .append(
+                NewEvent::evidence_pinned_citation(
+                    cited.id,
+                    h,
+                    "ref-1",
+                    "Attention dispenses with recurrence entirely.",
+                    0.82,
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(NewEvent::evidence_pinned_numerical(
+                measured.id,
+                h,
+                "runs/007/table-3.csv",
+                "gain: 12.3%, n=48",
+                0.91,
+                "GLM-5.3",
+            )
+            .unwrap())
+            .unwrap();
+        let claims = EvidenceProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(claims.len(), 2);
+        assert!(claims.iter().all(|c| c.pinned));
+        let citation = claims.iter().find(|c| c.id == cited.id).unwrap();
+        assert_eq!(citation.pin.as_ref().unwrap().kind, PinKind::Citation);
+        assert_eq!(citation.pin.as_ref().unwrap().ref_id.as_deref(), Some("ref-1"));
+        assert_eq!(citation.pin.as_ref().unwrap().artifact_ref, None);
+        let numerical = claims.iter().find(|c| c.id == measured.id).unwrap();
+        let pin = numerical.pin.as_ref().unwrap();
+        assert_eq!(pin.kind, PinKind::Numerical);
+        assert_eq!(pin.artifact_ref.as_deref(), Some("runs/007/table-3.csv"));
+        assert_eq!(pin.ref_id, None);
+        assert_eq!(pin.digest, excerpt_digest("gain: 12.3%, n=48"));
     }
 
     // ---------- fold ----------
@@ -501,7 +866,7 @@ mod tests {
         // pin shape — the exact flip the UI renders.
         store
             .append(
-                NewEvent::evidence_pinned(
+                NewEvent::evidence_pinned_citation(
                     claim.id,
                     h,
                     "ref-1",
@@ -521,7 +886,8 @@ mod tests {
         let pin = pinned.pin.as_ref().expect("the pin is present");
         assert_eq!(pin.claim_id, claim.id);
         assert_eq!(pin.kind, PinKind::Citation);
-        assert_eq!(pin.ref_id, "ref-1");
+        assert_eq!(pin.ref_id.as_deref(), Some("ref-1"));
+        assert_eq!(pin.artifact_ref, None);
         assert_eq!(pin.digest, excerpt_digest("Attention dispenses with recurrence entirely."));
         assert_eq!(pin.confidence, 0.82);
         // FR-3.6: attribution is present on the pin — the assessing model,
@@ -619,7 +985,7 @@ mod tests {
             .unwrap();
         store
             .append(
-                NewEvent::evidence_pinned(
+                NewEvent::evidence_pinned_citation(
                     Uuid::new_v4(), // no such claim
                     h,
                     "ref-1",
@@ -646,10 +1012,10 @@ mod tests {
             .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
             .unwrap();
         store
-            .append(NewEvent::evidence_pinned(claim.id, h, "ref-1", "First excerpt.", 0.5, "GLM-5.3").unwrap())
+            .append(NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "First excerpt.", 0.5, "GLM-5.3").unwrap())
             .unwrap();
         let second = store
-            .append(NewEvent::evidence_pinned(claim.id, h, "ref-2", "Second excerpt.", 0.9, "GLM-5.3").unwrap())
+            .append(NewEvent::evidence_pinned_citation(claim.id, h, "ref-2", "Second excerpt.", 0.9, "GLM-5.3").unwrap())
             .unwrap();
         let [claim_read] = EvidenceProjection::fold(&store.events_all().unwrap())
             .unwrap()
@@ -658,7 +1024,7 @@ mod tests {
             .expect("one claim");
         let pin = claim_read.pin.as_ref().unwrap();
         assert_eq!(pin.seq, second.seq);
-        assert_eq!(pin.ref_id, "ref-2");
+        assert_eq!(pin.ref_id.as_deref(), Some("ref-2"));
         assert_eq!(pin.digest, excerpt_digest("Second excerpt."));
     }
 
@@ -674,7 +1040,7 @@ mod tests {
             .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
             .unwrap();
         store
-            .append(NewEvent::evidence_pinned(claim.id, h, "ref-1", "Excerpt.", 0.82, "GLM-5.3").unwrap())
+            .append(NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Excerpt.", 0.82, "GLM-5.3").unwrap())
             .unwrap();
         let hyps = HypothesesProjection::fold(&store.events_all().unwrap()).unwrap();
         assert_eq!(hyps.len(), 1);

@@ -50,9 +50,13 @@ fn ref_label(conn: &Connection, ref_id: &str) -> Result<Option<String>, String> 
 }
 
 /// Enrich a folded claim's pin with its ref label from the library.
+/// Citation pins only — a numerical pin's label is its artifact name
+/// (the `artifact_ref` itself), never a library author-year.
 fn enrich(conn: &Connection, claim: &mut Claim) -> Result<(), String> {
     if let Some(pin) = claim.pin.as_mut() {
-        pin.ref_label = ref_label(conn, &pin.ref_id)?;
+        if let Some(ref_id) = pin.ref_id.as_deref() {
+            pin.ref_label = ref_label(conn, ref_id)?;
+        }
     }
     Ok(())
 }
@@ -85,6 +89,29 @@ fn require_hypothesis(conn: &Connection, hypothesis_id: Uuid) -> Result<(), Stri
     } else {
         Err(format!("not_found: no hypothesis with id `{hypothesis_id}`"))
     }
+}
+
+/// The claim must exist in the fold and belong to this hypothesis —
+/// shared by both pin commands (citation and numerical).
+fn require_claim(
+    conn: &Connection,
+    claim_id: Uuid,
+    hypothesis_id: Uuid,
+) -> Result<(), String> {
+    require_hypothesis(conn, hypothesis_id)?;
+    let events = EventStore::new(conn).events_all().map_err(err)?;
+    let claim = EvidenceProjection::fold(&events)
+        .map_err(err)?
+        .into_iter()
+        .find(|cl| cl.id == claim_id)
+        .ok_or_else(|| format!("not_found: no claim with id `{claim_id}`"))?;
+    if claim.hypothesis_id != hypothesis_id {
+        return Err(format!(
+            "invalid_claim: claim `{claim_id}` belongs to hypothesis `{}`, not `{hypothesis_id}`",
+            claim.hypothesis_id
+        ));
+    }
+    Ok(())
 }
 
 /// Register an AI-generated claim on a hypothesis: append one
@@ -168,20 +195,7 @@ fn pin_claim_to_citation_inner(
     confidence: f64,
     assessing_model: String,
 ) -> Result<(), String> {
-    require_hypothesis(conn, hypothesis_id)?;
-    // The claim must exist and belong to this hypothesis.
-    let events = EventStore::new(conn).events_all().map_err(err)?;
-    let claim = EvidenceProjection::fold(&events)
-        .map_err(err)?
-        .into_iter()
-        .find(|cl| cl.id == claim_id)
-        .ok_or_else(|| format!("not_found: no claim with id `{claim_id}`"))?;
-    if claim.hypothesis_id != hypothesis_id {
-        return Err(format!(
-            "invalid_claim: claim `{claim_id}` belongs to hypothesis `{}`, not `{hypothesis_id}`",
-            claim.hypothesis_id
-        ));
-    }
+    require_claim(conn, claim_id, hypothesis_id)?;
     // FR-3.1: the ref must exist in the library — a pin never cites a ghost.
     let ref_id = ref_id.trim();
     if ref_id.is_empty() {
@@ -195,11 +209,73 @@ fn pin_claim_to_citation_inner(
             "invalid_ref: `{ref_id}` — no reference with this id in the library"
         ));
     }
-    let event = NewEvent::evidence_pinned(
+    let event = NewEvent::evidence_pinned_citation(
         claim_id,
         hypothesis_id,
         ref_id,
         excerpt,
+        confidence,
+        assessing_model,
+    )
+    .map_err(err)?;
+    EventStore::new(conn).append(event).map_err(err)?;
+    Ok(())
+}
+
+/// Pin a claim to a numerical artifact (FR-3.3, AD-5): append one
+/// `evidence.pinned` event with kind `numerical`, the `artifact_ref`
+/// (path/id of a file/figure/table in the workspace or fetched from a
+/// run), and the sha-256 digest of the pinned content computed at the
+/// domain constructor. Artifacts are not library refs — no refs-table
+/// check applies; the artifact_ref names where the content lives.
+#[tauri::command]
+pub async fn pin_claim_to_numerical(
+    db: State<'_, Db>,
+    claim_id: String,
+    hypothesis_id: String,
+    artifact_ref: String,
+    content: String,
+    confidence: f64,
+    assessing_model: String,
+) -> Result<Claim, String> {
+    let claim_id = parse_id(&claim_id, "claim")?;
+    let hypothesis_id = parse_id(&hypothesis_id, "hypothesis")?;
+    let c = db.0.lock().await;
+    pin_claim_to_numerical_inner(
+        &c,
+        claim_id,
+        hypothesis_id,
+        artifact_ref,
+        content,
+        confidence,
+        assessing_model,
+    )?;
+    // Return the re-folded, enriched read model — the log is the only truth.
+    Ok(list_evidence_inner(&c, hypothesis_id)?
+        .into_iter()
+        .find(|cl| cl.id == claim_id)
+        .expect("the claim was just pinned"))
+}
+
+/// Plain inner (testable without Tauri state): validate + append one
+/// numerical `evidence.pinned` event. Typed error codes: `not_found:` /
+/// `invalid_claim:` for unknown or foreign claims; artifact presence,
+/// confidence bounds, and attribution are the constructor's guarantees.
+fn pin_claim_to_numerical_inner(
+    conn: &Connection,
+    claim_id: Uuid,
+    hypothesis_id: Uuid,
+    artifact_ref: String,
+    content: String,
+    confidence: f64,
+    assessing_model: String,
+) -> Result<(), String> {
+    require_claim(conn, claim_id, hypothesis_id)?;
+    let event = NewEvent::evidence_pinned_numerical(
+        claim_id,
+        hypothesis_id,
+        artifact_ref,
+        content,
         confidence,
         assessing_model,
     )
@@ -322,12 +398,79 @@ mod tests {
         assert_eq!(claims.len(), 1);
         assert!(claims[0].pinned);
         let pin = claims[0].pin.as_ref().unwrap();
-        assert_eq!(pin.ref_id, ref_id);
+        assert_eq!(pin.ref_id.as_deref(), Some(ref_id.as_str()));
+        assert_eq!(pin.artifact_ref, None);
         assert!(
             pin.ref_label.as_deref().is_some_and(|l| !l.is_empty()),
             "the pin is enriched with an author-year label: {:?}",
             pin.ref_label
         );
+        drop(c);
+        cleanup(&path);
+    }
+
+    /// FR-3.3: a numerical pin appends with kind numerical, anchors by
+    /// artifact_ref + content digest, and never touches the refs table.
+    #[test]
+    fn a_numerical_pin_anchors_by_artifact_ref_and_content_digest() {
+        let (db, path) = test_db();
+        let h = seed_hypothesis(&db);
+        let c = db.0.blocking_lock();
+        let store = EventStore::new(&c);
+        let claim = store
+            .append(RawNewEvent::claim_registered("Table 3 shows a 12% gain.", h, None).unwrap())
+            .unwrap();
+
+        // A ghost claim is refused with the typed not_found code.
+        let e = pin_claim_to_numerical_inner(
+            &c,
+            Uuid::new_v4(),
+            h,
+            "runs/007/table-3.csv".into(),
+            "gain: 12.3%, n=48".into(),
+            0.9,
+            "GLM-5.3".into(),
+        )
+        .expect_err("pinning a ghost claim must be refused");
+        assert!(e.starts_with("not_found:"), "unexpected: {e}");
+
+        // A blank artifact_ref is refused by the constructor guarantee.
+        let e = pin_claim_to_numerical_inner(
+            &c,
+            claim.id,
+            h,
+            "   ".into(),
+            "gain: 12.3%, n=48".into(),
+            0.9,
+            "GLM-5.3".into(),
+        )
+        .expect_err("a blank artifact_ref must be refused");
+        assert!(e.contains("artifact_ref"), "unexpected: {e}");
+
+        // A real numerical pin reads back with its anatomy — artifact_ref,
+        // digest of the content, no library label.
+        pin_claim_to_numerical_inner(
+            &c,
+            claim.id,
+            h,
+            "runs/007/table-3.csv".into(),
+            "gain: 12.3%, n=48".into(),
+            0.91,
+            "GLM-5.3".into(),
+        )
+        .unwrap();
+        let claims = list_evidence_inner(&c, h).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert!(claims[0].pinned);
+        let pin = claims[0].pin.as_ref().unwrap();
+        assert_eq!(pin.kind, crate::domain::evidence::PinKind::Numerical);
+        assert_eq!(pin.artifact_ref.as_deref(), Some("runs/007/table-3.csv"));
+        assert_eq!(pin.ref_id, None);
+        assert_eq!(
+            pin.digest,
+            crate::domain::evidence::excerpt_digest("gain: 12.3%, n=48")
+        );
+        assert_eq!(pin.ref_label, None, "no author-year label on a numerical pin");
         drop(c);
         cleanup(&path);
     }

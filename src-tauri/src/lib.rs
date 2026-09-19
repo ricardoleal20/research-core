@@ -163,6 +163,7 @@ pub fn run() {
             hypotheses_commands::add_relation,
             evidence_commands::register_claim,
             evidence_commands::pin_claim_to_citation,
+            evidence_commands::pin_claim_to_numerical,
             evidence_commands::list_evidence,
         ])
         .run(tauri::generate_context!())

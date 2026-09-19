@@ -319,7 +319,7 @@ mod tests {
                 .unwrap();
             store
                 .append(
-                    NewEvent::evidence_pinned(
+                    NewEvent::evidence_pinned_citation(
                         claim.id,
                         hyp.id,
                         "ref-1",
