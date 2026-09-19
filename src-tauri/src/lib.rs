@@ -1,4 +1,5 @@
 mod agent;
+mod checkpoints_commands;
 mod commands;
 mod db;
 mod evidence_commands;
@@ -189,6 +190,10 @@ pub fn run() {
             trust_commands::configure_ceiling,
             trust_commands::kill_runtime,
             trust_commands::resume_runtime,
+            checkpoints_commands::create_checkpoint,
+            checkpoints_commands::list_checkpoints,
+            checkpoints_commands::preview_rollback,
+            checkpoints_commands::rollback_to_checkpoint,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
         ])

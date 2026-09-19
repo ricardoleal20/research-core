@@ -7,6 +7,7 @@
 // are v0.2.0.
 
 use crate::db::Db;
+use crate::domain::checkpoints::{fold_checkpoints, CheckpointsView};
 use crate::domain::evidence::Claim;
 use crate::domain::hypotheses::{Hypothesis, HypothesesProjection};
 use crate::domain::missions::{Mission, MissionRun, MissionsProjection};
@@ -46,6 +47,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/digest", get(digest))
         .route("/api/runs/{run_id}/receipt", get(run_receipt))
         .route("/api/trust", get(trust))
+        .route("/api/checkpoints", get(checkpoints))
         .route("/api/proposals", get(all_proposals))
         .route(
             "/api/missions/{mission_id}/proposals",
@@ -146,6 +148,17 @@ async fn trust(
         .await
         .map(Json)
         .map_err(|_| internal())
+}
+
+/// The checkpoints read model (Story 2.6, FR-10.1 — read-only per AD-14):
+/// the restore points and the rollback history. Creating checkpoints,
+/// previewing, and rolling back stay on the Tauri command path.
+async fn checkpoints(
+    State(state): State<ServerState>,
+) -> Result<Json<CheckpointsView>, StatusCode> {
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    fold_checkpoints(&events).map(Json).map_err(|_| internal())
 }
 
 /// The quarantine read model, all missions (Story 2.2, read-only per AD-14
@@ -716,6 +729,68 @@ mod tests {
         // path. A POST to the read route must not be accepted.
         let res = app(test_db())
             .oneshot(Request::post("/api/missions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// The checkpoints route (Story 2.6, FR-10.1): read-only over the shared
+    /// core — the restore points and the rollback history. Creating
+    /// checkpoints, previewing, and rolling back stay on the Tauri command
+    /// path (single writer, AD-14).
+    #[tokio::test]
+    async fn get_api_checkpoints_lists_restore_points_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold up?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A rater agrees.".into(),
+                        autonomy: Autonomy::Watch,
+                        spend_ceiling_cents: 500,
+                        roles: vec![],
+                        schedule: "off".into(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            let head = store.head_seq().unwrap();
+            let cp = store
+                .append(NewEvent::checkpoint_created("pre-trial", head).unwrap())
+                .unwrap();
+            store
+                .append(NewEvent::checkpoint_rolled_back(cp.id, "pre-trial", head, 0).unwrap())
+                .unwrap();
+        }
+        let res = app(db)
+            .oneshot(Request::get("/api/checkpoints").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let view: CheckpointsView = body_json(res.into_body()).await;
+        assert_eq!(view.checkpoints.len(), 1);
+        assert_eq!(view.checkpoints[0].name, "pre-trial");
+        assert_eq!(view.checkpoints[0].seq, 1, "the log head at creation");
+        assert_eq!(view.head_seq, 3);
+        assert_eq!(view.rollbacks.len(), 1);
+        assert_eq!(view.rollbacks[0].name, "pre-trial");
+        assert_eq!(view.rollbacks[0].orphaned_count, 0);
+        // an empty core renders an honest empty view, not an error
+        let res = app(test_db())
+            .oneshot(Request::get("/api/checkpoints").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let view: CheckpointsView = body_json(res.into_body()).await;
+        assert!(view.checkpoints.is_empty());
+        assert!(view.rollbacks.is_empty());
+        // single writer (AD-14): rollback is a mutation — POST is not routed
+        let res = app(test_db())
+            .oneshot(Request::post("/api/checkpoints").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
