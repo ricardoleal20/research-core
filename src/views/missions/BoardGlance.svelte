@@ -387,17 +387,17 @@
 
 <style>
   .glance {
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-accent-soft: rgba(48, 113, 181, 0.1);
-    --rc-danger-ink: #be123c;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-accent-soft: var(--accent-soft);
+    --rc-danger-ink: var(--destructive-tx);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 14px;
+    border-radius: var(--r-card);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     padding: 18px;
     display: flex;
@@ -436,7 +436,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 6px 8px;
     min-height: 34px;
     outline: none;
@@ -451,7 +451,7 @@
     color: var(--rc-accent);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 12px;
     min-height: 34px;
     cursor: pointer;
@@ -507,7 +507,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
     min-height: 34px;
     outline: none;
@@ -517,12 +517,12 @@
     outline-offset: 1px;
   }
   .glance-cp-btn--confirm {
-    color: #ffffff;
+    color: var(--surface);
     background: var(--rc-accent);
     border-color: var(--rc-accent);
   }
   .glance-cp-btn--confirm:hover:not(:disabled) {
-    background: #285f97;
+    background: var(--accent-hover);
   }
   .glance-cp-list {
     list-style: none;
@@ -559,8 +559,8 @@
   }
   /* The confirm step (EXPERIENCE.md): names every orphaned proposal. */
   .glance-cp-confirm {
-    border: 1px solid rgba(180, 83, 9, 0.35);
-    background: #fffbeb;
+    border: 1px solid color-mix(in oklch, var(--st-reading) 35%, transparent);
+    background: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
     border-radius: 10px;
     padding: 12px 14px;
   }
@@ -568,7 +568,7 @@
     margin: 0 0 6px;
     font-size: 13px;
     font-weight: 600;
-    color: #92400e;
+    color: var(--st-reading-tx);
   }
   .glance-cp-confirm-body {
     margin: 0 0 4px;
@@ -604,9 +604,9 @@
   .glance-cp-rolled {
     margin: 10px 0 0;
     font-size: 11.5px;
-    color: #047857;
-    background: #ecfdf5;
-    border-radius: 8px;
+    color: var(--st-read-tx);
+    background: color-mix(in oklch, var(--st-read) 14%, var(--surface));
+    border-radius: var(--r-input);
     padding: 6px 10px;
   }
   .glance-error {

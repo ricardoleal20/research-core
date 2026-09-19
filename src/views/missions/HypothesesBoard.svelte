@@ -100,17 +100,17 @@
 
 <style>
   .board {
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-accent-soft: rgba(48, 113, 181, 0.1);
-    --rc-danger-ink: #be123c;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-accent-soft: var(--accent-soft);
+    --rc-danger-ink: var(--destructive-tx);
     background: var(--rc-surface-2);
     border: 1px solid var(--rc-border);
-    border-radius: 12px;
+    border-radius: var(--r-card);
     padding: 14px;
     display: flex;
     flex-direction: column;
@@ -142,7 +142,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 8px 12px;
     outline: none;
     min-height: 36px;
@@ -152,16 +152,16 @@
   }
   .board-input.invalid {
     border-color: var(--rc-danger-ink);
-    background: #fff1f2;
+    background: color-mix(in oklch, var(--destructive) 6%, var(--surface));
   }
   .board-btn {
     font-family: inherit;
     font-size: 13px;
     font-weight: 500;
-    color: #ffffff;
+    color: var(--surface);
     background: var(--rc-accent);
     border: 1px solid var(--rc-accent);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 8px 14px;
     min-height: 36px;
     cursor: pointer;
@@ -169,7 +169,7 @@
   }
   .board-btn:hover:not(:disabled) {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px -2px rgba(48, 113, 181, 0.35);
+    box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--accent) 35%, transparent);
   }
   .board-btn:disabled {
     opacity: 0.45;

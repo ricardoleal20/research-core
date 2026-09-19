@@ -26,9 +26,9 @@
    *  thresholds as the evidence pins): green 0.75+, amber 0.5–0.75, red
    *  below. Never a "verified" label. */
   function confidenceColor(c: number): string {
-    if (c >= 0.75) return "#047857";
-    if (c >= 0.5) return "#B45309";
-    return "#BE123C";
+    if (c >= 0.75) return "var(--st-read)";
+    if (c >= 0.5) return "var(--st-reading)";
+    return "var(--destructive)";
   }
   const pct = (c: number) => `${Math.round(c * 100)}%`;
 
@@ -270,22 +270,22 @@
   .onboarding {
     /* DESIGN.md tokens (light surface) — same token block as the missions
        surface so the first-run state reads as the same product. */
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-danger-ink: #be123c;
-    --rc-ok: #047857;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-danger-ink: var(--destructive-tx);
+    --rc-ok: var(--st-read);
     width: 100%;
     display: flex;
     flex-direction: column;
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-body);
     color: var(--rc-ink);
   }
   .mono {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
   .kicker {
@@ -297,7 +297,7 @@
     margin: 0 0 8px;
   }
   .display {
-    font-family: "Instrument Serif", Georgia, serif;
+    font-family: var(--font-display);
     font-style: italic;
     font-weight: 400;
     font-size: clamp(30px, 4vw, 44px);
@@ -307,7 +307,7 @@
     color: var(--rc-ink);
   }
   .display-es {
-    font-family: "Instrument Serif", Georgia, serif;
+    font-family: var(--font-display);
     font-style: italic;
     font-weight: 400;
     font-size: clamp(19px, 2.4vw, 26px);
@@ -331,8 +331,8 @@
     filter: blur(26px);
     opacity: 0.5;
     background:
-      radial-gradient(42% 62% at 26% 38%, rgba(48, 113, 181, 0.2), transparent 70%),
-      radial-gradient(40% 60% at 74% 30%, rgba(50, 131, 143, 0.1), transparent 70%);
+      radial-gradient(42% 62% at 26% 38%, color-mix(in oklch, var(--accent) 20%, transparent), transparent 70%),
+      radial-gradient(40% 60% at 74% 30%, color-mix(in oklch, var(--accent) 10%, transparent), transparent 70%);
     pointer-events: none;
   }
   .sub {
@@ -364,7 +364,7 @@
     font-family: inherit;
     font-size: 14px;
     font-weight: 500;
-    border-radius: 10px;
+    border-radius: var(--r-input);
     padding: 11px 18px;
     min-height: 42px;
     cursor: pointer;
@@ -383,12 +383,12 @@
   }
   .btn-primary {
     background: var(--rc-accent);
-    color: #ffffff;
+    color: var(--surface);
     border: 1px solid var(--rc-accent);
   }
   .btn-primary:hover:not(:disabled) {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px -2px rgba(48, 113, 181, 0.35);
+    box-shadow: 0 4px 12px -2px color-mix(in oklch, var(--accent) 35%, transparent);
   }
   .btn-primary:active:not(:disabled) {
     transform: scale(0.98);
@@ -436,7 +436,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 10px 14px;
     outline: none;
   }
@@ -461,7 +461,7 @@
     gap: 2px;
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 10px 12px;
     cursor: pointer;
   }
@@ -489,7 +489,7 @@
   .log {
     background: var(--rc-surface-2);
     border: 1px solid var(--rc-border);
-    border-radius: 10px;
+    border-radius: var(--r-card);
     padding: 14px 16px;
     display: flex;
     flex-direction: column;
@@ -571,7 +571,7 @@
   .cand {
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 10px;
+    border-radius: var(--r-card);
     padding: 12px 14px;
     animation: rise 0.35s ease both;
   }
@@ -628,8 +628,8 @@
     align-items: center;
     gap: 6px;
     color: var(--rc-accent);
-    background: rgba(48, 113, 181, 0.08);
-    border-color: rgba(48, 113, 181, 0.25);
+    background: color-mix(in oklch, var(--accent) 8%, var(--surface));
+    border-color: color-mix(in oklch, var(--accent) 25%, var(--border));
   }
   .chip-active .dot {
     width: 7px;
@@ -638,7 +638,7 @@
     background: var(--rc-accent);
   }
   .m-title {
-    font-family: "Instrument Serif", Georgia, serif;
+    font-family: var(--font-display);
     font-style: italic;
     font-weight: 400;
     font-size: 21px;

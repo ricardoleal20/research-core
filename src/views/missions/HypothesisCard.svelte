@@ -19,11 +19,11 @@
 
   // DESIGN.md lifecycle tokens: per-state ink + soft background.
   const lifecycle: Record<HypothesisStatus, { ink: string; soft: string }> = {
-    proposed: { ink: "#334155", soft: "#F1F5F9" },
-    testing: { ink: "#0369A1", soft: "#F0F9FF" },
-    supported: { ink: "#047857", soft: "#ECFDF5" },
-    refuted: { ink: "#BE123C", soft: "#FFF1F2" },
-    revised: { ink: "#B45309", soft: "#FFFBEB" },
+    proposed: { ink: "var(--lifecycle-proposed-tx)", soft: "color-mix(in oklch, var(--lifecycle-proposed) 14%, var(--surface))" },
+    testing: { ink: "var(--lifecycle-testing-tx)", soft: "color-mix(in oklch, var(--lifecycle-testing) 14%, var(--surface))" },
+    supported: { ink: "var(--lifecycle-supported-tx)", soft: "color-mix(in oklch, var(--lifecycle-supported) 14%, var(--surface))" },
+    refuted: { ink: "var(--lifecycle-refuted-tx)", soft: "color-mix(in oklch, var(--lifecycle-refuted) 14%, var(--surface))" },
+    revised: { ink: "var(--lifecycle-revised-tx)", soft: "color-mix(in oklch, var(--lifecycle-revised) 14%, var(--surface))" },
   };
 
   // FR-2.2 transition table — only legal next statuses ever render; the
@@ -244,9 +244,9 @@
   /** The confidence dot's color (DESIGN.md citation-pin anatomy): green at
    *  0.75+, amber 0.5–0.75, red below — never a "verified" label. */
   function confidenceColor(c: number): string {
-    if (c >= 0.75) return "#047857";
-    if (c >= 0.5) return "#B45309";
-    return "#BE123C";
+    if (c >= 0.75) return "var(--st-read)";
+    if (c >= 0.5) return "var(--st-reading)";
+    return "var(--destructive)";
   }
 
   // ---- Pin verification (FR-14.1, Story 4.2) ----
@@ -722,17 +722,17 @@
 
 <style>
   .hyp-card {
-    --rc-surface: #ffffff;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-accent-soft: rgba(48, 113, 181, 0.1);
-    --rc-danger-ink: #be123c;
+    --rc-surface: var(--surface);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-accent-soft: var(--accent-soft);
+    --rc-danger-ink: var(--destructive-tx);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-card);
     padding: 16px;
     display: flex;
     flex-direction: column;
@@ -741,7 +741,7 @@
   }
   .hyp-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.08);
+    box-shadow: var(--shadow-pop);
     border-color: var(--rc-accent);
   }
   .mono {
@@ -773,7 +773,7 @@
     white-space: nowrap;
   }
   .hc-statement {
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-body);
     font-size: 15px;
     font-weight: 600;
     line-height: 1.45;
@@ -789,8 +789,8 @@
   /* Card-level unpinned chip (FR-3.4): amber — claims without pins are
      flagged, never hidden. */
   .hc-unpinned-card {
-    --ink: #b45309;
-    --soft: #fef3c7;
+    --ink: var(--st-reading-tx);
+    --soft: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
   }
 
   /* Evidence claims: one bordered row per claim, pin state inline. */
@@ -816,7 +816,7 @@
   }
   .hc-claim {
     border: 1px solid var(--rc-border);
-    border-radius: 10px;
+    border-radius: var(--r-card);
     padding: 10px 12px;
     display: flex;
     flex-direction: column;
@@ -841,11 +841,11 @@
     font-size: 11.5px;
     font-weight: 500;
     letter-spacing: 0.02em;
-    color: #92400e;
-    background: #fef3c7;
+    color: var(--st-reading-tx);
+    background: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
     border-radius: 9999px;
     padding: 2px 10px;
-    box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.25);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-reading) 25%, transparent);
     white-space: nowrap;
   }
 
@@ -904,7 +904,7 @@
     line-height: 1.55;
     color: var(--rc-ink-muted);
     border-left: 2px solid var(--rc-accent-soft);
-    border-left-color: rgba(48, 113, 181, 0.35);
+    border-left-color: color-mix(in srgb, var(--accent) 35%, transparent);
     padding-left: 10px;
     white-space: pre-wrap;
   }
@@ -913,8 +913,8 @@
      label + icon, per-status ink + soft background. Status never reads
      color alone: the label always renders. */
   .hc-verif {
-    --ink: #52525b;
-    --soft: #f4f4f5;
+    --ink: var(--muted);
+    --soft: var(--surface-2);
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -932,16 +932,16 @@
     flex-shrink: 0;
   }
   .hc-verif--verified {
-    --ink: #047857;
-    --soft: #ecfdf5;
+    --ink: var(--st-read-tx);
+    --soft: color-mix(in oklch, var(--st-read) 14%, var(--surface));
   }
   .hc-verif--failed {
-    --ink: #be123c;
-    --soft: #fff1f2;
+    --ink: var(--destructive-tx);
+    --soft: color-mix(in oklch, var(--destructive) 6%, var(--surface));
   }
   .hc-verif--stale {
-    --ink: #b45309;
-    --soft: #fef3c7;
+    --ink: var(--st-reading-tx);
+    --soft: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
   }
   .hc-verif-btn {
     font-family: inherit;
@@ -950,7 +950,7 @@
     color: var(--rc-accent);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 3px 9px;
     min-height: 26px;
     cursor: pointer;
@@ -984,7 +984,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
     outline: none;
     resize: vertical;
@@ -999,7 +999,7 @@
   .hc-model-input.invalid,
   .hc-artifact-input.invalid {
     border-color: var(--rc-danger-ink);
-    background: #fff1f2;
+    background: color-mix(in oklch, var(--destructive) 6%, var(--surface));
   }
   .hc-artifact-input {
     width: 100%;
@@ -1009,7 +1009,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
     min-height: 34px;
     outline: none;
@@ -1035,7 +1035,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 9px;
     min-height: 34px;
     outline: none;
@@ -1048,7 +1048,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
     min-height: 34px;
     outline: none;
@@ -1057,17 +1057,17 @@
     font-family: inherit;
     font-size: 12.5px;
     font-weight: 500;
-    color: #ffffff;
+    color: var(--surface);
     background: var(--rc-accent);
     border: 1px solid var(--rc-accent);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 12px;
     min-height: 34px;
     cursor: pointer;
     transition: background 0.15s ease;
   }
   .hc-pin-submit:hover:not(:disabled) {
-    background: #285f97;
+    background: var(--accent-hover);
   }
   .hc-pin-submit:disabled {
     opacity: 0.45;
@@ -1086,7 +1086,7 @@
     color: var(--rc-accent);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 5px 11px;
     min-height: 30px;
     cursor: pointer;
@@ -1112,7 +1112,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
     outline: none;
     min-height: 32px;
@@ -1160,7 +1160,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
     outline: none;
     min-height: 34px;
@@ -1170,7 +1170,7 @@
   }
   .hc-basis.invalid {
     border-color: var(--rc-danger-ink);
-    background: #fff1f2;
+    background: color-mix(in oklch, var(--destructive) 6%, var(--surface));
   }
   .hc-next {
     display: flex;
@@ -1183,7 +1183,7 @@
     color: var(--rc-accent);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 12px;
     min-height: 34px;
     cursor: pointer;
@@ -1216,7 +1216,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 6px 8px;
     min-height: 34px;
     max-width: 220px;
@@ -1230,7 +1230,7 @@
     color: var(--rc-accent);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 12px;
     min-height: 34px;
     cursor: pointer;

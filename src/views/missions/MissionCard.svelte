@@ -70,10 +70,10 @@
   // Phase chips: the queued/running/terminal lifecycle (FR-11.4) — text
   // always (never color alone), terminal states carry ts + reason below.
   const phaseColor: Record<Job["phase"], string> = {
-    queued: "#71717a",
-    running: "#3071b5",
-    finished: "#047857",
-    failed: "#be123c",
+    queued: "var(--muted)",
+    running: "var(--accent)",
+    finished: "var(--st-read)",
+    failed: "var(--destructive)",
   };
 
   async function toggleJobs() {
@@ -190,11 +190,11 @@
   // DESIGN.md mission lifecycle tokens; awaiting-review reuses the amber
   // review hue (no dedicated token exists yet).
   const statusColor: Record<Mission["status"], string> = {
-    active: "#3071B5",
-    awaiting_review: "#B45309",
-    completed: "#047857",
-    stopped: "#334155",
-    failed: "#BE123C",
+    active: "var(--mission-active)",
+    awaiting_review: "var(--st-reading)",
+    completed: "var(--mission-completed)",
+    stopped: "var(--mission-stopped)",
+    failed: "var(--mission-failed)",
   };
 
   // DESIGN.md components.spend-meter: thin track, fill colored by state,
@@ -208,9 +208,9 @@
         : 0
   );
   const spendFill: Record<Mission["spendState"], string> = {
-    ok: "#047857", // spend-ok
-    near: "#B45309", // spend-near
-    blocked: "#BE123C", // spend-blocked
+    ok: "var(--spend-ok)", // spend-ok
+    near: "var(--spend-near)", // spend-near
+    blocked: "var(--spend-blocked)", // spend-blocked
   };
 
   async function toggleRuns() {
@@ -563,17 +563,17 @@
 
 <style>
   .mission-card {
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-accent-soft: rgba(48, 113, 181, 0.1);
-    --rc-danger-ink: #be123c;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-accent-soft: var(--accent-soft);
+    --rc-danger-ink: var(--destructive-tx);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 14px;
+    border-radius: var(--r-card);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     padding: 24px;
     display: flex;
@@ -587,7 +587,7 @@
     border-color: var(--rc-accent);
   }
   .mono {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
   .mc-head {
     display: flex;
@@ -621,7 +621,7 @@
     color: var(--rc-ink-muted);
   }
   .mc-question {
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-display);
     font-size: 16px;
     font-weight: 600;
     line-height: 1.35;
@@ -689,7 +689,7 @@
     flex-wrap: wrap;
   }
   .mc-schedule-chip {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     color: var(--rc-ink-muted);
     background: var(--rc-surface-2);
@@ -708,12 +708,12 @@
     outline-offset: 2px;
   }
   .mc-schedule-input {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 12.5px;
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 6px 10px;
     outline: none;
     min-height: 34px;
@@ -748,7 +748,7 @@
     color: var(--rc-accent);
     background: transparent;
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 4px 10px;
     cursor: pointer;
     transition: background 0.15s ease;
@@ -794,7 +794,7 @@
     font-variant-numeric: tabular-nums;
   }
   .mc-run-receipt {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 11.5px;
     font-weight: 500;
     color: var(--rc-accent);
@@ -925,7 +925,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 6px 10px;
     outline: none;
     min-height: 32px;
@@ -971,7 +971,7 @@
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 10px;
     overflow-x: auto;
     white-space: pre-wrap;
@@ -988,10 +988,10 @@
     font-family: inherit;
     font-size: 12.5px;
     font-weight: 500;
-    color: #ffffff;
+    color: var(--surface);
     background: var(--rc-accent);
     border: 1px solid var(--rc-accent);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 6px 14px;
     cursor: pointer;
     transition: opacity 0.15s ease;
@@ -1102,7 +1102,7 @@
     line-height: 1.45;
     color: var(--rc-accent);
     background: var(--rc-accent-soft);
-    border-radius: 6px;
+    border-radius: var(--r-input);
     padding: 5px 8px;
   }
   .mc-results-label {
@@ -1129,7 +1129,7 @@
     line-height: 1.5;
     color: var(--rc-ink);
     background: var(--rc-surface-2);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 8px 10px;
     overflow-x: auto;
     white-space: pre-wrap;

@@ -63,11 +63,11 @@
 
   // DESIGN.md mission lifecycle tokens (same mapping as the mission card).
   const statusColor: Record<MissionStatus, string> = {
-    active: "#3071B5",
-    awaiting_review: "#B45309",
-    completed: "#047857",
-    stopped: "#334155",
-    failed: "#BE123C",
+    active: "var(--accent)",
+    awaiting_review: "var(--st-reading)",
+    completed: "var(--st-read)",
+    stopped: "var(--fg)",
+    failed: "var(--destructive)",
   };
 
   // The one-line verdict of a row (FR-4.4 — ≤2 lines rendered: the verdict
@@ -137,11 +137,11 @@
         aria-label={`${dollars(digest.spendCents)} / ${dollars(digest.ceilingCents)}`}>
         <defs>
           <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#3071B5" />
-            <stop offset="1" stop-color="#32838F" />
+            <stop offset="0" stop-color="#3B5BDB" />
+            <stop offset="1" stop-color="#3B5BDB" />
           </linearGradient>
         </defs>
-        <circle cx="28" cy="28" r="22" fill="none" stroke="#E4E4E7" stroke-width="5" />
+        <circle cx="28" cy="28" r="22" fill="none" stroke="#D8DBE4" stroke-width="5" />
         <circle
           cx="28" cy="28" r="22" fill="none" stroke="url(#ringGrad)" stroke-width="5"
           stroke-linecap="round" stroke-dasharray={CIRC} stroke-dashoffset={dashOffset}
@@ -248,19 +248,19 @@
 
 <style>
   .digest {
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-danger-ink: #be123c;
-    --rc-attention-ink: #92400e;
-    --rc-attention-bg: #fef3c7;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-danger-ink: var(--destructive-tx);
+    --rc-attention-ink: var(--st-reading-tx);
+    --rc-attention-bg: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
     display: flex;
     flex-direction: column;
     gap: 18px;
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-body);
     color: var(--rc-ink);
   }
   .mono {
@@ -289,9 +289,9 @@
     gap: 28px;
   }
   .d-date {
-    font-family: "Instrument Serif", Georgia, serif;
+    font-family: var(--font-display);
     font-style: italic;
-    font-weight: 400;
+    font-weight: 600;
     font-size: 26px;
     line-height: 1.15;
     margin: 6px 0 10px;
@@ -306,21 +306,21 @@
     align-items: center;
     font-size: 12px;
     font-weight: 500;
-    color: #047857;
-    background: rgba(4, 120, 87, 0.1);
+    color: var(--st-read-tx);
+    background: color-mix(in oklch, var(--st-read) 10%, var(--surface));
     border-radius: 9999px;
     padding: 2px 10px;
-    box-shadow: inset 0 0 0 1px rgba(4, 120, 87, 0.25);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-read) 25%, var(--border));
   }
   .d-chip.partial {
     color: var(--rc-attention-ink);
     background: var(--rc-attention-bg);
-    box-shadow: inset 0 0 0 1px rgba(146, 64, 14, 0.25);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-reading) 25%, var(--border));
   }
   .d-chip.failed {
     color: var(--rc-danger-ink);
-    background: rgba(190, 18, 60, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(190, 18, 60, 0.25);
+    background: color-mix(in oklch, var(--destructive) 8%, var(--surface));
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--destructive) 25%, var(--border));
   }
   .d-ring {
     text-align: center;
@@ -340,7 +340,7 @@
   .d-card {
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 14px;
+    border-radius: var(--r-card);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     overflow: hidden;
   }
@@ -419,9 +419,9 @@
   }
   .d-note {
     margin: 12px 20px;
-    background: rgba(48, 113, 181, 0.08);
+    background: var(--accent-soft);
     color: var(--rc-accent);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 12px;
     font-size: 11px;
   }
@@ -442,13 +442,13 @@
     color: var(--rc-accent);
     background: transparent;
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 4px 12px;
     cursor: pointer;
     transition: background 0.15s ease;
   }
   .d-run:hover:not(:disabled) {
-    background: rgba(48, 113, 181, 0.08);
+    background: var(--accent-soft);
   }
   .d-run:disabled {
     opacity: 0.55;
@@ -462,7 +462,7 @@
   .digest--empty {
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 14px;
+    border-radius: var(--r-card);
     padding: 20px;
     gap: 10px;
   }

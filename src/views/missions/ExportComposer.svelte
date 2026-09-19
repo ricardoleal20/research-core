@@ -175,22 +175,22 @@
 <style>
   .composer {
     /* DESIGN.md tokens (light surface) — same family as the missions views. */
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-danger-ink: #be123c;
-    --rc-warn-ink: #92400e;
-    --rc-warn-bg: #fffbeb;
-    --rc-warn-border: #b45309;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-danger-ink: var(--destructive-tx);
+    --rc-warn-ink: var(--st-reading-tx);
+    --rc-warn-bg: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
+    --rc-warn-border: var(--st-reading);
   }
   .drawer-root {
     position: fixed;
     inset: 0;
     z-index: 60;
-    background: rgba(21, 21, 25, 0.35);
+    background: color-mix(in oklch, var(--fg) 35%, transparent);
     display: flex;
     align-items: flex-start;
     justify-content: center;
@@ -200,7 +200,7 @@
   .composer {
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 14px;
+    border-radius: var(--r-card);
     box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.25);
     padding: 24px;
     width: 100%;
@@ -209,11 +209,11 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-body);
     color: var(--rc-ink);
   }
   .mono {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
   .kicker {
@@ -225,7 +225,7 @@
     margin: 0 0 6px;
   }
   .title {
-    font-family: "Instrument Serif", Georgia, serif;
+    font-family: var(--font-display);
     font-style: italic;
     font-weight: 400;
     font-size: 26px;
@@ -262,7 +262,7 @@
     grid-template-columns: repeat(2, 1fr);
     gap: 4px;
     background: var(--rc-surface-2);
-    border-radius: 12px;
+    border-radius: var(--r-input);
     padding: 4px;
   }
   .scope {
@@ -274,7 +274,7 @@
     text-align: left;
     background: transparent;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 10px 12px;
     min-height: 40px;
     cursor: pointer;
@@ -305,13 +305,13 @@
   .path-row input {
     flex: 1;
     min-width: 0;
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
     line-height: 1.5;
     color: var(--rc-ink);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 9px 12px;
     outline: none;
     min-height: 40px;
@@ -331,7 +331,7 @@
     font-family: inherit;
     font-size: 14px;
     font-weight: 500;
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 10px 16px;
     min-height: 40px;
     cursor: pointer;
@@ -339,12 +339,12 @@
   }
   .btn-primary {
     background: var(--rc-accent);
-    color: #ffffff;
+    color: var(--surface);
     border: 1px solid var(--rc-accent);
   }
   .btn-primary:hover:not(:disabled) {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px -2px rgba(48, 113, 181, 0.35);
+    box-shadow: 0 4px 12px -2px color-mix(in oklch, var(--accent) 35%, transparent);
   }
   .btn-primary:disabled {
     opacity: 0.45;
@@ -379,12 +379,12 @@
     color: var(--rc-warn-ink);
     background: var(--rc-warn-bg);
     border: 1px solid var(--rc-warn-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
   }
 
   .result {
     border: 1px solid var(--rc-border);
-    border-radius: 10px;
+    border-radius: var(--r-card);
     background: var(--rc-surface-2);
     padding: 14px;
     display: flex;

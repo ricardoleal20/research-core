@@ -214,25 +214,25 @@
     position: fixed;
     inset: 0;
     z-index: 80;
-    background: rgba(21, 21, 25, 0.32);
+    background: color-mix(in oklch, var(--fg) 32%, transparent);
     display: flex;
     justify-content: flex-end;
   }
   .drawer {
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-danger-ink: #be123c;
-    --rc-danger-bg: #fef1f4;
-    --rc-success-ink: #047857;
-    --rc-success-bg: #ecfdf5;
-    --rc-info-ink: #3071b5;
-    --rc-info-bg: #eff6fc;
-    --rc-attention-ink: #92400e;
-    --rc-attention-bg: #fef3c7;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-danger-ink: var(--destructive-tx);
+    --rc-danger-bg: color-mix(in oklch, var(--destructive) 6%, var(--surface));
+    --rc-success-ink: var(--st-read-tx);
+    --rc-success-bg: color-mix(in oklch, var(--st-read) 14%, var(--surface));
+    --rc-info-ink: var(--accent-text);
+    --rc-info-bg: var(--accent-soft);
+    --rc-attention-ink: var(--st-reading-tx);
+    --rc-attention-bg: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
     width: min(680px, 100vw);
     height: 100%;
     background: var(--rc-surface);
@@ -241,7 +241,7 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-body);
     color: var(--rc-ink);
     animation: drawer-in 0.22s ease;
   }
@@ -256,7 +256,7 @@
     }
   }
   .mono {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
   .micro {
@@ -303,7 +303,7 @@
     color: var(--rc-ink-muted);
     background: transparent;
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 6px 10px;
     cursor: pointer;
   }
@@ -370,12 +370,12 @@
   .chip.finished {
     color: var(--rc-success-ink);
     background: var(--rc-success-bg);
-    box-shadow: inset 0 0 0 1px rgba(4, 120, 87, 0.25);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-read) 25%, transparent);
   }
   .chip.failed {
     color: var(--rc-danger-ink);
     background: var(--rc-danger-bg);
-    box-shadow: inset 0 0 0 1px rgba(190, 18, 60, 0.25);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--destructive) 25%, transparent);
   }
   .chip.open {
     color: var(--rc-ink-muted);
@@ -385,14 +385,14 @@
   .chip.hit {
     color: var(--rc-attention-ink);
     background: var(--rc-attention-bg);
-    box-shadow: inset 0 0 0 1px rgba(146, 64, 14, 0.25);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-reading) 25%, transparent);
   }
 
   /* The ledger: grid [time | chip | line | seq], rows in seq order. */
   .ledger {
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 12px;
+    border-radius: var(--r-card);
     overflow: hidden;
   }
   .row {

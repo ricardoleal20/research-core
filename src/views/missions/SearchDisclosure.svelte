@@ -104,16 +104,16 @@
   /* DESIGN.md tokens (local): the info/telemetry hue the receipt drawer's
      chips use — null results render informational, never alarming. */
   .sd {
-    --rc-info-ink: #3071b5;
-    --rc-info-bg: #eff6fc;
-    --rc-ink: #0f172a;
-    --rc-muted: #64748b;
-    --rc-line: #e2e8f0;
+    --rc-info-ink: var(--accent-text);
+    --rc-info-bg: var(--accent-soft);
+    --rc-ink: var(--fg);
+    --rc-muted: var(--muted);
+    --rc-line: var(--border-2);
     margin-top: 12px;
     border: 1px solid var(--rc-line);
-    border-radius: 10px;
+    border-radius: var(--r-card);
     padding: 12px 14px;
-    background: #fff;
+    background: var(--surface);
   }
 
   .sd-head {
@@ -180,7 +180,7 @@
   }
 
   .mono {
-    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
@@ -199,7 +199,7 @@
 
   .sd-chip.info {
     color: var(--rc-info-ink);
-    background: #fff;
+    background: var(--surface);
     border-color: var(--rc-info-ink);
   }
 
@@ -214,7 +214,7 @@
   .sd-error {
     margin: 4px 0 0;
     font-size: 0.82rem;
-    color: #be123c;
+    color: var(--destructive-tx);
   }
 
   @media (max-width: 860px) {

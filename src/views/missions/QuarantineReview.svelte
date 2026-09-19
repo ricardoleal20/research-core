@@ -25,20 +25,20 @@
 
   // DESIGN.md lifecycle tokens (same values as the hypothesis cards).
   const lifecycle: Record<HypothesisStatus, { ink: string; soft: string }> = {
-    proposed: { ink: "#334155", soft: "#F1F5F9" },
-    testing: { ink: "#0369A1", soft: "#F0F9FF" },
-    supported: { ink: "#047857", soft: "#ECFDF5" },
-    refuted: { ink: "#BE123C", soft: "#FFF1F2" },
-    revised: { ink: "#B45309", soft: "#FFFBEB" },
+    proposed: { ink: "#5A6373", soft: "color-mix(in oklch,var(--lifecycle-proposed) 14%,var(--surface))" },
+    testing: { ink: "#8A5214", soft: "color-mix(in oklch,var(--lifecycle-testing) 14%,var(--surface))" },
+    supported: { ink: "#1A6B47", soft: "color-mix(in oklch,var(--lifecycle-supported) 14%,var(--surface))" },
+    refuted: { ink: "#C0392B", soft: "color-mix(in oklch,var(--lifecycle-refuted) 14%,var(--surface))" },
+    revised: { ink: "#2B46B8", soft: "color-mix(in oklch,var(--lifecycle-revised) 14%,var(--surface))" },
   };
 
   // DESIGN.md quarantine tokens: per-status ink + soft background.
   const statusTokens: Record<ProposalStatus, { ink: string; soft: string }> = {
-    pending: { ink: "#334155", soft: "#F1F5F9" },
-    merged: { ink: "#047857", soft: "#ECFDF5" },
-    rejected: { ink: "#BE123C", soft: "#FFF1F2" },
-    superseded: { ink: "#71717A", soft: "#F4F4F6" },
-    voided: { ink: "#71717A", soft: "#F4F4F6" },
+    pending: { ink: "#8A5214", soft: "color-mix(in oklch,var(--quarantine-pending) 14%,var(--surface))" },
+    merged: { ink: "#1A6B47", soft: "color-mix(in oklch,var(--quarantine-merged) 14%,var(--surface))" },
+    rejected: { ink: "#5A6373", soft: "color-mix(in oklch,var(--quarantine-rejected) 14%,var(--surface))" },
+    superseded: { ink: "var(--muted)", soft: "color-mix(in oklch,var(--quarantine-superseded) 14%,var(--surface))" },
+    voided: { ink: "var(--muted)", soft: "color-mix(in oklch,var(--quarantine-void) 14%,var(--surface))" },
   };
 
   const pending = $derived(
@@ -113,7 +113,7 @@
   // at ≥0.8, amber at ≥0.5, red below — labeled with the assessing model,
   // never "verified" (FR-3.6).
   const confidenceColor = (c: number) =>
-    c >= 0.8 ? "#047857" : c >= 0.5 ? "#B45309" : "#BE123C";
+    c >= 0.8 ? "var(--st-read)" : c >= 0.5 ? "var(--st-reading)" : "var(--destructive)";
   const pct = (c: number) => `${Math.round(c * 100)}%`;
 </script>
 
@@ -349,17 +349,17 @@
 
 <style>
   .quarantine {
-    --rc-surface: #ffffff;
-    --rc-surface-2: #f4f4f6;
-    --rc-ink: #151519;
-    --rc-ink-muted: #71717a;
-    --rc-border: #eaeaec;
-    --rc-accent: #3071b5;
-    --rc-accent-soft: rgba(48, 113, 181, 0.1);
-    --rc-danger-ink: #be123c;
+    --rc-surface: var(--surface);
+    --rc-surface-2: var(--surface-2);
+    --rc-ink: var(--fg);
+    --rc-ink-muted: var(--muted);
+    --rc-border: var(--border);
+    --rc-accent: var(--accent);
+    --rc-accent-soft: var(--accent-soft);
+    --rc-danger-ink: var(--destructive-tx);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 14px;
+    border-radius: var(--r-card);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     padding: 18px;
     display: flex;
@@ -404,7 +404,7 @@
     font-size: 11.5px;
     color: var(--rc-ink);
     background: var(--rc-accent-soft);
-    border-radius: 6px;
+    border-radius: var(--r-input);
     padding: 2px 6px;
   }
   .q-history-btn {
@@ -414,7 +414,7 @@
     color: var(--rc-accent);
     background: var(--rc-surface);
     border: 1px solid var(--rc-border);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 12px;
     min-height: 34px;
     cursor: pointer;
@@ -439,7 +439,7 @@
   }
   .q-card {
     border: 1px solid var(--rc-border);
-    border-radius: 10px;
+    border-radius: var(--r-card);
     padding: 12px 14px;
     display: flex;
     flex-direction: column;
@@ -447,8 +447,8 @@
     background: var(--rc-surface);
   }
   .q-card.stale {
-    border-color: #b45309;
-    background: #fffbeb;
+    border-color: var(--st-reading);
+    background: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
   }
   .q-card-decided {
     background: var(--rc-surface-2);
@@ -522,7 +522,7 @@
     font-size: 12.5px;
     color: var(--rc-ink);
     background: var(--rc-surface-2);
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 7px 10px;
   }
   .q-pin-main {
@@ -574,7 +574,7 @@
     font-family: "JetBrains Mono", ui-monospace, monospace;
     background: var(--rc-surface-2);
     border-left: 3px solid var(--rc-border);
-    border-radius: 0 8px 8px 0;
+    border-radius: 0 var(--r-input) var(--r-input) 0;
     padding: 8px 10px;
     max-height: 120px;
     overflow: hidden;
@@ -590,21 +590,21 @@
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1.45;
-    color: #92400e;
-    background: #fffbeb;
-    border: 1px solid #b45309;
-    border-radius: 8px;
+    color: var(--st-reading-tx);
+    background: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
+    border: 1px solid var(--st-reading);
+    border-radius: var(--r-input);
     padding: 8px 10px;
   }
   .q-card.stale .q-stale {
-    background: #ffffff;
+    background: var(--surface);
   }
   .q-stale-icon {
     font-size: 13px;
   }
   .q-stale-seq {
     font-size: 11px;
-    color: #92400e;
+    color: var(--st-reading-tx);
     margin-left: auto;
   }
   .q-stale-marker {
@@ -635,7 +635,7 @@
     font-family: inherit;
     font-size: 13.5px;
     font-weight: 500;
-    border-radius: 8px;
+    border-radius: var(--r-input);
     padding: 8px 14px;
     min-height: 38px;
     cursor: pointer;
@@ -647,20 +647,20 @@
   }
   .btn-approve {
     background: var(--rc-accent);
-    color: #ffffff;
+    color: var(--surface);
     border: 1px solid var(--rc-accent);
   }
   .btn-approve:hover:not(:disabled) {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px -2px rgba(48, 113, 181, 0.35);
+    box-shadow: 0 4px 12px -2px rgba(59, 91, 219, 0.35);
   }
   .btn-force {
-    background: #ffffff;
-    color: #92400e;
-    border: 1px solid #b45309;
+    background: var(--surface);
+    color: var(--st-reading-tx);
+    border: 1px solid var(--st-reading);
   }
   .btn-force:hover:not(:disabled) {
-    background: #fffbeb;
+    background: color-mix(in oklch, var(--st-reading) 14%, var(--surface));
     transform: translateY(-2px);
   }
   .btn-reject {
@@ -670,7 +670,7 @@
     border: 1px solid var(--rc-border);
   }
   .btn-reject:hover:not(:disabled) {
-    background: #fff1f2;
+    background: color-mix(in oklch, var(--destructive) 6%, var(--surface));
     border-color: var(--rc-danger-ink);
     transform: translateY(-2px);
   }

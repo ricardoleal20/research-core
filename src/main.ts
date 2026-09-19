@@ -328,10 +328,10 @@ function fatalError(stage: string, e: unknown) {
   try { api.appLog("FATAL " + stage + ": " + msg); } catch {}
   const app = document.getElementById("app");
   if (app) {
-    app.innerHTML = `<div style="font-family:Inter,system-ui,sans-serif;padding:40px;color:#1a1a1a;max-width:680px;margin:0 auto">
-      <h2 style="color:#d00">Research Core no pudo iniciar</h2>
-      <p style="color:#666">Etapa: <b>${stage}</b></p>
-      <pre style="background:#f4f4f5;padding:14px;border-radius:8px;overflow:auto;font-size:12px;white-space:pre-wrap">${msg}</pre>
+    app.innerHTML = `<div style="font-family:Inter,system-ui,sans-serif;padding:40px;color:#1F2430;max-width:680px;margin:0 auto">
+      <h2 style="color:#C0392B">Research Core no pudo iniciar</h2>
+      <p style="color:#6E7686">Etapa: <b>${stage}</b></p>
+      <pre style="background:#F1F2F6;padding:14px;border-radius:6px;overflow:auto;font-size:12px;white-space:pre-wrap">${msg}</pre>
       <button onclick="location.reload()" style="margin-top:16px;padding:8px 16px;background:#3B5BDB;color:#fff;border:none;border-radius:8px;cursor:pointer">Reintentar</button>
     </div>`;
   }
