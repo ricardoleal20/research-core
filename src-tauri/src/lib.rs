@@ -2,7 +2,9 @@ mod agent;
 mod commands;
 mod db;
 mod mcp;
+mod missions_commands;
 
+pub mod domain;
 pub mod eventstore;
 
 use db::Db;
@@ -144,6 +146,8 @@ pub fn run() {
             commands::set_lock_key,
             commands::lock_state,
             commands::test_cli,
+            missions_commands::create_mission,
+            missions_commands::list_missions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
