@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod missions;
 pub mod onboarding;
 pub mod proposals;
+pub mod readiness;
 pub mod receipts;
 pub mod search;
 pub mod spend;

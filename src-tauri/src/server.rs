@@ -17,7 +17,9 @@ use crate::evidence_commands::list_evidence_inner;
 use crate::eventstore::EventStore;
 use crate::nightshift::morning_digest;
 use crate::proposals_commands::list_proposals_inner;
+use crate::domain::readiness::ReadinessReport;
 use crate::domain::search::SearchDisclosure;
+use crate::readiness_commands::readiness_report_inner;
 use crate::search_commands::search_disclosure_inner;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -61,6 +63,11 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             get(mission_search_disclosure),
         )
         .route("/api/search-disclosure", get(search_disclosure_all))
+        .route("/api/readiness", get(readiness_all))
+        .route(
+            "/api/missions/{mission_id}/readiness",
+            get(mission_readiness),
+        )
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
         .route("/api/host-allowlist", get(host_allowlist))
@@ -144,6 +151,35 @@ async fn search_disclosure_all(
 ) -> Result<Json<SearchDisclosure>, StatusCode> {
     let c = state.db.0.lock().await;
     search_disclosure_inner(&c, None)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The workspace readiness report (Story 4.3, FR-13.1/13.2 — read-only per
+/// AD-14): the preprint-tier gate, a pure derived view over the shared log
+/// at its current head — no readiness state exists anywhere to serve stale.
+async fn readiness_all(
+    State(state): State<ServerState>,
+) -> Result<Json<ReadinessReport>, StatusCode> {
+    let c = state.db.0.lock().await;
+    readiness_report_inner(&c, None)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The readiness report of one mission (Story 4.3, FR-13.1/13.2 —
+/// read-only): the same gate scoped to the mission's board. An unknown
+/// mission is an honest empty scope (the same contract as the disclosure
+/// read).
+async fn mission_readiness(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<ReadinessReport>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    readiness_report_inner(&c, Some(mission_id))
         .map(Json)
         .map_err(|_| internal())
 }
@@ -1217,6 +1253,74 @@ mod tests {
         // a malformed mission id is a 400, not a 500
         let res = app(test_db())
             .oneshot(Request::get("/api/missions/not-a-uuid/jobs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+    /// The readiness routes (Story 4.3, FR-13.1/13.2): the workspace report
+    /// and the mission-scoped report serve the same pure fold the desktop
+    /// webview renders — blockers reference their specific board objects; a
+    /// malformed mission id is a 400; the routes are read-only (POST is not
+    /// routed).
+    #[tokio::test]
+    async fn get_api_readiness_serves_the_derived_gate() {
+        let db = test_db();
+        let mission_id = {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold up?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A blind rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
+                        roles: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            let h = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            store
+                .append(NewEvent::claim_registered("X holds at 32k.", h.id, None).unwrap())
+                .unwrap();
+            mission.id
+        };
+        // workspace-wide: not ready, the unpinned claim + the load-bearing
+        // hypothesis both referenced by their specific ids
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/readiness").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let report: ReadinessReport = body_json(res.into_body()).await;
+        assert_eq!(report.verdict, crate::domain::readiness::ReadinessVerdict::NotReady);
+        assert!(report.blockers.iter().any(|b| b.claim_id.is_some()));
+        assert!(report.blockers.iter().any(|b| b.hypothesis_id.is_some()));
+        // mission-scoped: the same derived gate over the mission's board
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/missions/{mission_id}/readiness"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let scoped: ReadinessReport = body_json(res.into_body()).await;
+        assert_eq!(scoped.scope, Some(mission_id));
+        assert_eq!(scoped.blockers.len(), report.blockers.len());
+        // a malformed mission id is a 400, not a 500
+        let res = app(db)
+            .oneshot(
+                Request::get("/api/missions/not-a-uuid/readiness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);

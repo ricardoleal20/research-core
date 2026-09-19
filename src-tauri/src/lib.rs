@@ -11,6 +11,7 @@ mod missions_commands;
 mod nightshift_commands;
 mod onboarding_commands;
 mod proposals_commands;
+mod readiness_commands;
 mod trust_commands;
 mod verifier_commands;
 mod nightshift;
@@ -211,6 +212,7 @@ pub fn run() {
             checkpoints_commands::rollback_to_checkpoint,
             search_commands::run_search,
             search_commands::get_search_disclosure,
+            readiness_commands::get_readiness_report,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
         ])
