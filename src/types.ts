@@ -132,6 +132,17 @@ export type MissionStatus = "active" | "awaiting_review" | "completed" | "stoppe
 // blocked at/over the hard ceiling (dispatch refused past it, AD-10).
 export type SpendState = "ok" | "near" | "blocked";
 
+// One agent role of a mission's runtime config (Story 2.1, NFR-3): a named
+// role bound to a (provider, model) pair — the core rejects a config whose
+// critic shares a drafter's pair (same_model_critic).
+export type AgentRoleName = "drafter" | "critic";
+
+export interface RoleConfig {
+  name: AgentRoleName; // the role's name is its identity
+  provider: string; // provider-layer name ("simulated" | "cli" | BYOK name)
+  model: string; // the model the role runs on
+}
+
 export interface Mission {
   id: string; // the mission.created event id
   seq: number; // store-assigned seq of the creation event
@@ -141,6 +152,7 @@ export interface Mission {
   successCriterion: string;
   autonomy: Autonomy;
   spendCeilingCents: number;
+  roles: RoleConfig[]; // the mission's agent-role config (Story 2.1)
   status: MissionStatus; // derived by the fold from events referencing the mission
   spendCents: number; // total spend.recorded cost against the ceiling
   spendState: SpendState; // the spend meter's state
@@ -154,6 +166,17 @@ export interface MissionRun {
   ts: string;
   kind: string; // raw event kind, rendered in mono (receipt voice)
   actor: string; // "user" | "agent" | "system:<component>"
+  role?: string; // the agent role a role-scoped event is attributed to
+}
+
+// One completed agent step (Story 2.1): which role ran, on which
+// provider+model, and what it produced.
+export interface AgentStepResult {
+  missionId: string;
+  role: AgentRoleName;
+  provider: string;
+  model: string;
+  content: string;
 }
 
 // Hypotheses (event-sourced read model, Story 1.5): lifecycle is

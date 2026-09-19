@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -10,6 +10,10 @@ export type CreateMissionInput = {
   successCriterion: string;
   autonomy: Autonomy;
   spendCeilingCents: number;
+  // Optional agent-role overrides (Story 2.1): when unset, the core resolves
+  // the layer's defaults (drafter on the configured pair, critic never the
+  // same pair — NFR-3).
+  roles?: RoleConfig[] | null;
 };
 
 // Plain-browser transport (AD-7): when this page is served by the in-process
@@ -146,6 +150,17 @@ const browserApi = {
     }
     return mockApi.runFirstValueFromRef(refId);
   },
+  // Agent steps (Story 2.1): a role step dispatches through the provider
+  // layer — a mutation, refused by the served browser view.
+  runAgentStep: async (missionId: string, role: string, task: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run agent steps from the desktop app / " +
+          "Vista de solo lectura — ejecuta pasos de agente desde la app de escritorio"
+      );
+    }
+    return mockApi.runAgentStep(missionId, role, task);
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -225,9 +240,13 @@ export const api = mockActive ? browserApi : {
 
   // missions (event-sourced: create appends mission.created, list folds the projection)
   createMission: (m: CreateMissionInput) =>
-    invoke<Mission>("create_mission", m),
+    invoke<Mission>("create_mission", { ...m, roles: m.roles ?? null }),
   listMissions: () => invoke<Mission[]>("list_missions"),
   getMissionRuns: (missionId: string) => invoke<MissionRun[]>("get_mission_runs", { missionId }),
+  // agent steps (Story 2.1): one role step through the provider layer —
+  // spend recorded role-tagged, result returned to the caller
+  runAgentStep: (missionId: string, role: string, task: string) =>
+    invoke<AgentStepResult>("run_agent_step", { missionId, role, task }),
 
   // hypotheses (event-sourced: FR-2.2 transitions are audited events,
   // FR-2.3 typed relations are events cause-linked to both endpoints)

@@ -28,12 +28,29 @@
   let launching = $state(false);
   let launchError = $state("");
 
+  // Agent roles (Story 2.1): drafter + critic, each with its own
+  // provider+model. Defaults mirror the core's no-key resolution — both
+  // simulated — so the composer starts valid; the different-model critic
+  // rule (NFR-3) surfaces inline and blocks launch.
+  let drafterProvider = $state("simulated");
+  let drafterModel = $state("simulated");
+  let criticProvider = $state("simulated");
+  let criticModel = $state("simulated");
+
   const stops: Autonomy[] = ["watch", "suggest", "act_with_receipts"];
   const newestFirst = $derived([...missions].sort((a, b) => b.seq - a.seq));
   const questionMissing = $derived(question.trim() === "");
   const stopMissing = $derived(stopCondition.trim() === "");
   const successMissing = $derived(successCriterion.trim() === "");
-  const canLaunch = $derived(!questionMissing && !stopMissing && !successMissing && !launching);
+  const rolePair = (provider: string, model: string) =>
+    `${provider.trim().toLowerCase()}+${model.trim().toLowerCase()}`;
+  const sameModelCritic = $derived(
+    criticProvider.trim().toLowerCase() !== "simulated" &&
+      rolePair(criticProvider, criticModel) === rolePair(drafterProvider, drafterModel),
+  );
+  const canLaunch = $derived(
+    !questionMissing && !stopMissing && !successMissing && !sameModelCritic && !launching,
+  );
 
   $effect(() => {
     load();
@@ -72,6 +89,10 @@
         successCriterion: successCriterion.trim(),
         autonomy,
         spendCeilingCents: Math.round(spendCeiling * 100),
+        roles: [
+          { name: "drafter", provider: drafterProvider.trim(), model: drafterModel.trim() },
+          { name: "critic", provider: criticProvider.trim(), model: criticModel.trim() },
+        ],
       });
       missions.push(mission);
       composing = false;
@@ -79,6 +100,10 @@
       question = "";
       stopCondition = "";
       successCriterion = "";
+      drafterProvider = "simulated";
+      drafterModel = "simulated";
+      criticProvider = "simulated";
+      criticModel = "simulated";
     } catch (e) {
       launchError = t("missions.createError") + e;
     } finally {
@@ -199,6 +224,56 @@
           <span class="ceiling-cents mono">= {Math.round(spendCeiling * 100)}¢</span>
         </div>
         <p class="field-hint">{t("missions.spendCeilingHint")}</p>
+      </div>
+
+      <div class="field">
+        <span class="field-label" id="roles-label">{t("missions.roles.title")}</span>
+        <!-- Agent roles (Story 2.1): drafter + critic, each with its own
+             provider+model — the inline warning and the blocked launch are
+             the NFR-3 contract (never one algorithm grading its own
+             homework). -->
+        <div class="roles" role="group" aria-labelledby="roles-label">
+          <div class="role-row">
+            <span class="role-name">{t("missions.roles.drafter")}</span>
+            <input
+              class="mono"
+              type="text"
+              bind:value={drafterProvider}
+              placeholder={t("missions.roles.provider")}
+              aria-label={`${t("missions.roles.drafter")} · ${t("missions.roles.provider")}`}
+            />
+            <input
+              class="mono"
+              type="text"
+              bind:value={drafterModel}
+              placeholder={t("missions.roles.model")}
+              aria-label={`${t("missions.roles.drafter")} · ${t("missions.roles.model")}`}
+            />
+          </div>
+          <div class="role-row" class:warn={sameModelCritic}>
+            <span class="role-name">{t("missions.roles.critic")}</span>
+            <input
+              class="mono"
+              type="text"
+              bind:value={criticProvider}
+              placeholder={t("missions.roles.provider")}
+              aria-label={`${t("missions.roles.critic")} · ${t("missions.roles.provider")}`}
+              aria-invalid={sameModelCritic}
+            />
+            <input
+              class="mono"
+              type="text"
+              bind:value={criticModel}
+              placeholder={t("missions.roles.model")}
+              aria-label={`${t("missions.roles.critic")} · ${t("missions.roles.model")}`}
+              aria-invalid={sameModelCritic}
+            />
+          </div>
+        </div>
+        {#if sameModelCritic}
+          <p class="field-warning" role="alert">{t("missions.roles.sameModel")}</p>
+        {/if}
+        <p class="field-hint">{t("missions.roles.hint")}</p>
       </div>
 
       <footer class="composer-foot">
@@ -486,6 +561,53 @@
   .ceiling-cents {
     font-size: 13px;
     color: var(--rc-ink-muted);
+  }
+
+  /* Agent roles (Story 2.1): two rows — role name, provider, model — with
+     the NFR-3 collision rendered as an amber inline warning on the critic
+     row (a config problem to fix, not a destructive error). */
+  .roles {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .role-row {
+    display: grid;
+    grid-template-columns: 84px 1fr 1fr;
+    gap: 8px;
+    align-items: center;
+  }
+  .role-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--rc-ink);
+  }
+  .role-row input {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    outline: none;
+    min-height: 38px;
+    min-width: 0;
+  }
+  .role-row input::placeholder {
+    color: var(--rc-ink-muted);
+  }
+  .role-row.warn input {
+    border-color: #b45309;
+    background: #fffbeb;
+  }
+  .field-warning {
+    margin: 0;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.45;
+    color: #92400e;
   }
 
   .composer-foot {

@@ -217,6 +217,26 @@ const DICT: Record<string, Record<Lang, string>> = {
   },
   "missions.loadRunsError": { es: "No se pudieron cargar las ejecuciones: ", en: "Could not load runs: ", pt: "Não foi possível carregar as execuções: ", fr: "Impossible de charger les exécutions : " },
 
+  // agent roles — Story 2.1 (drafter + critic, each with provider+model;
+  // the different-model critic rule, NFR-3, surfaces inline)
+  "missions.roles.title": { es: "Roles de agente", en: "Agent roles", pt: "Papéis de agente", fr: "Rôles d'agent" },
+  "missions.roles.drafter": { es: "Redactor", en: "Drafter", pt: "Redator", fr: "Rédacteur" },
+  "missions.roles.critic": { es: "Crítico", en: "Critic", pt: "Crítico", fr: "Critique" },
+  "missions.roles.provider": { es: "Proveedor", en: "Provider", pt: "Provedor", fr: "Fournisseur" },
+  "missions.roles.model": { es: "Modelo", en: "Model", pt: "Modelo", fr: "Modèle" },
+  "missions.roles.hint": {
+    es: "Cada rol corre con su propio proveedor y modelo. Sin clave configurada, todo corre simulado.",
+    en: "Each role runs on its own provider and model. With no key configured, everything runs simulated.",
+    pt: "Cada papel roda com seu próprio provedor e modelo. Sem chave configurada, tudo roda simulado.",
+    fr: "Chaque rôle tourne avec son propre fournisseur et modèle. Sans clé configurée, tout tourne en simulé.",
+  },
+  "missions.roles.sameModel": {
+    es: "El crítico no puede usar el mismo proveedor y modelo que el redactor: nunca un algoritmo calificando su propia tarea. Elige un modelo distinto.",
+    en: "The critic cannot use the same provider and model as the drafter: never one algorithm grading its own homework. Pick a different model.",
+    pt: "O crítico não pode usar o mesmo provedor e modelo que o redator: nunca um algoritmo avaliando o próprio trabalho. Escolha um modelo diferente.",
+    fr: "Le critique ne peut pas utiliser le même fournisseur et modèle que le rédacteur : jamais un algorithme notant son propre travail. Choisissez un modèle différent.",
+  },
+
   // hypotheses — Story 1.5 (board, lifecycle chips, relations, audit stamps)
   "hyp.show": { es: "Hipótesis", en: "Hypotheses", pt: "Hipóteses", fr: "Hypothèses" },
   "hyp.hide": { es: "Ocultar hipótesis", en: "Hide hypotheses", pt: "Ocultar hipóteses", fr: "Masquer les hypothèses" },

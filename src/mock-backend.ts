@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -291,6 +291,44 @@ async function mockFirstValue(paper: {
   };
 }
 
+// Agent roles (Story 2.1): the mock mirrors the core's default resolution —
+// the drafter runs the configured pair, the critic never shares it (NFR-3),
+// and with no key both run simulated. Overrides apply by role name.
+function resolveMockRoles(overrides?: RoleConfig[] | null): RoleConfig[] {
+  const hasKey = (settings.api_key ?? "").trim() !== "";
+  const provider = hasKey ? settings.provider || "simulated" : "simulated";
+  const model = hasKey ? settings.model || "simulated" : "simulated";
+  const defaults: RoleConfig[] = [
+    { name: "drafter", provider, model },
+    { name: "critic", provider: "simulated", model: "simulated" },
+  ];
+  if (!overrides || overrides.length === 0) return defaults;
+  const roles = [...defaults];
+  for (const o of overrides) {
+    const i = roles.findIndex((r) => r.name === o.name);
+    if (i >= 0) roles[i] = o;
+    else roles.push(o);
+  }
+  return roles;
+}
+
+// The different-model critic rule (NFR-3), exactly as the core enforces it:
+// a critic on any drafter's (provider, model) pair is rejected — the
+// simulated fallback is exempt (the no-key mock, not an algorithm).
+function assertDifferentModelCritics(roles: RoleConfig[]): void {
+  const pair = (r: RoleConfig) => `${r.provider.trim().toLowerCase()}+${r.model.trim().toLowerCase()}`;
+  const drafters = roles.filter((r) => r.name === "drafter").map(pair);
+  for (const critic of roles.filter((r) => r.name === "critic")) {
+    if (critic.provider.trim().toLowerCase() === "simulated") continue;
+    if (drafters.includes(pair(critic))) {
+      throw new Error(
+        `same_model_critic: the critic role resolves to ${critic.provider} + ${critic.model} — the same (provider, model) pair as a drafter. ` +
+          "Configure a different model for the critic (NFR-3: never one algorithm grading its own homework)",
+      );
+    }
+  }
+}
+
 export const mockApi = {
   // projects
   listProjects: async () => { await delay(); return [project]; },
@@ -404,8 +442,13 @@ export const mockApi = {
   testCli: async (command: string) => ({ command, path: `/usr/local/bin/${command}` }),
 
   // missions
-  createMission: async (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number }) => {
+  createMission: async (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number; roles?: RoleConfig[] | null }) => {
     await delay();
+    // Agent roles (Story 2.1): resolve the layer defaults, apply overrides by
+    // name — then enforce the different-model critic rule exactly like the
+    // core does (NFR-3), before anything is created.
+    const roles = resolveMockRoles(m.roles);
+    assertDifferentModelCritics(roles);
     missionSeq += 1;
     const mission: Mission = {
       id: "m" + missionSeq + "-" + Date.now(),
@@ -416,6 +459,7 @@ export const mockApi = {
       successCriterion: m.successCriterion,
       autonomy: m.autonomy,
       spendCeilingCents: m.spendCeilingCents,
+      roles,
       status: "active",
       spendCents: 0,
       spendState: "ok",
@@ -425,6 +469,26 @@ export const mockApi = {
   },
   listMissions: async () => { await delay(); return [...missions]; },
   getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
+  // agent steps (Story 2.1): one role step through the mock provider — the
+  // dev browser answers with the simulated voice, no spend.
+  runAgentStep: async (missionId: string, role: string, task: string): Promise<AgentStepResult> => {
+    await delay(150);
+    const mission = missions.find((x) => x.id === missionId);
+    if (!mission) throw new Error(`not_found: no mission with id \`${missionId}\``);
+    if (!task.trim()) throw new Error("task must not be empty — an agent step needs something to do");
+    const config = mission.roles.find((r) => r.name === role);
+    if (!config) throw new Error(`not_found: mission \`${missionId}\` has no role named \`${role}\` — expected drafter | critic`);
+    return {
+      missionId,
+      role: config.name,
+      provider: config.provider,
+      model: config.model,
+      content:
+        config.name === "critic"
+          ? `Crítica (simulada): la tarea «${task.trim()}» avanza la misión, pero las afirmaciones centrales aún carecen de evidencia anclada. Señala qué cita respalda cada afirmación antes de continuar.`
+          : `Propuesta (simulada) para «${task.trim()}»: avanzar con una afirmación verificable anclada al tablero, citando las referencias disponibles y marcando la confianza de cada paso.`,
+    };
+  },
 
   // hypotheses — mirrors the typed core (FR-2.2 table enforced, relations
   // upserted onto both endpoints with latest-wins semantics)
