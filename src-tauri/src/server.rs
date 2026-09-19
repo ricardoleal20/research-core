@@ -7,6 +7,7 @@
 // are v0.2.0.
 
 use crate::db::Db;
+use crate::domain::hypotheses::{Hypothesis, HypothesesProjection};
 use crate::domain::missions::{Mission, MissionRun, MissionsProjection};
 use crate::eventstore::EventStore;
 use axum::extract::{Path, State};
@@ -31,6 +32,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
     Router::new()
         .route("/api/missions", get(list_missions))
         .route("/api/missions/{mission_id}/runs", get(mission_runs))
+        .route("/api/missions/{mission_id}/hypotheses", get(mission_hypotheses))
         .with_state(ServerState { db })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
@@ -56,6 +58,19 @@ async fn mission_runs(
 
 fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
+}
+
+/// The hypothesis board of one mission (Story 1.5, read-only per AD-14).
+async fn mission_hypotheses(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<Vec<Hypothesis>>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    HypothesesProjection::fold_for(&events, mission_id).map_err(|_| internal()).map(Json)
 }
 
 /// Resolve the frontend dist dir: `RC_DIST_DIR` override, else the compile-time
@@ -211,6 +226,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_api_mission_hypotheses_folds_the_board() {
+        let db = test_db();
+        let mission_id = {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Watch,
+                    spend_ceiling_cents: 500,
+                })
+                .unwrap())
+                .unwrap();
+            store
+                .append(NewEvent::hypothesis_created("X holds under stiff systems.", mission.id).unwrap())
+                .unwrap();
+            mission.id
+        };
+        let res = app(db)
+            .oneshot(
+                Request::get(format!("/api/missions/{mission_id}/hypotheses"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let hyps: Vec<Hypothesis> = body_json(res.into_body()).await;
+        assert_eq!(hyps.len(), 1);
+        assert_eq!(hyps[0].statement, "X holds under stiff systems.");
+        assert_eq!(hyps[0].status, crate::domain::hypotheses::HypothesisStatus::Proposed);
     }
 
     #[tokio::test]

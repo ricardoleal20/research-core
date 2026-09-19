@@ -1,6 +1,7 @@
 mod agent;
 mod commands;
 mod db;
+mod hypotheses_commands;
 mod mcp;
 mod missions_commands;
 mod server;
@@ -153,6 +154,10 @@ pub fn run() {
             missions_commands::create_mission,
             missions_commands::list_missions,
             missions_commands::get_mission_runs,
+            hypotheses_commands::create_hypothesis,
+            hypotheses_commands::list_hypotheses,
+            hypotheses_commands::transition_hypothesis,
+            hypotheses_commands::add_relation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
