@@ -255,6 +255,7 @@ function renderHypothesisCard(app, h, claims, i) {
         <div class="flex items-start justify-between gap-3">
           <span class="font-mono text-[10px] text-muted tabular">H-${h.seq}</span>
           <div class="flex items-center gap-2">
+            ${btn({ label: t("hyp.relate"), variant: "ghost", size: "sm", onClick: `RC.openRelateForm('${esc(h.id)}')` })}
             ${allowed.length ? rcSelect({ id: `hyp-status-${h.seq}`, size: "sm", cls: "w-auto min-w-[9rem]", options: [{ value: h.status, label: t("hyp.status." + h.status) }, ...allowed.map((a) => ({ value: a, label: "→ " + t("hyp.status." + a) }))], value: h.status, onChange: `RC.transitionHyp('${esc(h.id)}', this.value)` }) : badge(t("hyp.status." + h.status), chipColor)}
           </div>
         </div>
@@ -288,7 +289,7 @@ function renderEvidenceRows(h, claims) {
         <div class="rounded-lg bg-white border border-border px-3 py-2">
           <div class="flex items-start justify-between gap-2">
             <p class="text-xs leading-snug"><span class="font-mono text-[10px] text-muted tabular">CLAIMS-${c.seq}</span> ${esc(c.text)}</p>
-            ${c.pinned ? "" : badge(t("ev.unpinned"), "warning")}
+            ${c.pinned ? "" : `<span class="flex items-center gap-1.5 shrink-0">${badge(t("ev.unpinned"), "warning")}${btn({ label: t("ev.pin"), variant: "secondary", size: "sm", onClick: `RC.openPinForm('${esc(c.id)}','${esc(h.id)}')` })}</span>`}
           </div>
           ${c.pinned && c.pin ? `
             <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -740,4 +741,141 @@ Object.assign(RC, {
       alert(t("quarantine.actionError") + (e?.message || e));
     }
   },
+  // ---- Evidence pin composer (FR-3.3): citation (library ref) or
+  // numerical (artifact ref) — the bible's modal idiom over the core
+  // pin_claim_to_citation / pin_claim_to_numerical commands.
+  async openPinForm(claimId, hypothesisId) {
+    const app = ctx.app;
+    const form = (app.state.pinForm = { claimId, hypothesisId, kind: "citation", saving: false });
+    if (!app.data.refs.length) {
+      try {
+        app.data.refs = await api.listRefs(app.data.project?.id || "p1", null);
+      } catch (e) {
+        /* keep empty — the ref select falls back to a text input */
+      }
+    }
+    RCPinModal(app, form);
+  },
+  setPinKind(kind) {
+    const app = ctx.app;
+    if (app.state.pinForm) app.state.pinForm.kind = kind;
+    RCPinModal(app, app.state.pinForm);
+  },
+  async submitPin() {
+    const app = ctx.app;
+    const f = app.state.pinForm;
+    if (!f || f.saving) return;
+    const read = (id) => document.getElementById(id)?.value.trim() || "";
+    const excerpt = f.kind === "citation" ? read("pin-excerpt") : read("pin-content");
+    const confidence = parseFloat(read("pin-confidence")) || 0.5;
+    const model = read("pin-model") || "GLM-5.3";
+    if (!excerpt || !model) return;
+    f.saving = true;
+    try {
+      if (f.kind === "citation") {
+        const refId = read("pin-ref");
+        if (!refId) return;
+        await api.pinClaimToCitation(f.claimId, f.hypothesisId, refId, excerpt, confidence, model);
+      } else {
+        const artifact = read("pin-artifact");
+        if (!artifact) return;
+        await api.pinClaimToNumerical(f.claimId, f.hypothesisId, artifact, excerpt, confidence, model);
+      }
+      RC.closeRcModal();
+      await reloadBoard(app);
+    } catch (e) {
+      f.saving = false;
+      alert(t("ev.pinError") + (e?.message || e));
+      RCPinModal(app, f);
+    }
+  },
+  async openRelateForm(hypId) {
+    const app = ctx.app;
+    const b = app.data.board[app.state.boardMissionId];
+    const others = (b?.hyps || []).filter((h) => h.id !== hypId);
+    const overlay = document.createElement("div");
+    overlay.className = "rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm";
+    overlay.innerHTML = `
+      <div class="min-h-full flex items-center justify-center p-6">
+      <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
+        <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t("hyp.relate")}</h3><button onclick="RC.closeRcModal()" class="p-1 rounded hover:bg-gray-100">${icon("close", "w-5 h-5")}</button></div>
+        ${others.length ? `
+        <div class="space-y-4">
+          <div><label class="block text-sm font-medium mb-1.5">${t("hyp.relateTo")}</label>${rcSelect({ id: "relate-to", options: others.map((o) => ({ value: o.id, label: `H-${o.seq} — ${o.statement.slice(0, 60)}` })) })}</div>
+          <div><label class="block text-sm font-medium mb-1.5">${t("hyp.relationKind")}</label>${rcSelect({ id: "relate-kind", options: ["contradicts", "extends", "specializes", "supports_the_same_claim"].map((k) => ({ value: k, label: t("hyp.relKind." + k) })) })}</div>
+        </div>
+        <div class="mt-6 flex justify-end gap-2">
+          ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.closeRcModal()" })}
+          ${btn({ label: t("hyp.relate"), variant: "default", onClick: `RC.submitRelation('${esc(hypId)}')` })}
+        </div>` : `<p class="text-sm text-muted text-center py-6">${t("hyp.empty")}</p>`}
+      </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.onclick = (e) => { if (e.target === overlay) RC.closeRcModal(); };
+  },
+  async submitRelation(fromId) {
+    const to = document.getElementById("relate-to")?.value;
+    const kind = document.getElementById("relate-kind")?.value;
+    if (!to || !kind) return;
+    try {
+      await api.addRelation(fromId, to, kind);
+      RC.closeRcModal();
+      await reloadBoard(ctx.app);
+    } catch (e) {
+      alert(t("hyp.relationError") + (e?.message || e));
+    }
+  },
+  closeRcModal() {
+    document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
+    ctx.app.state.pinForm = null;
+  },
 });
+
+function RCPinModal(app, f) {
+  if (!f) return;
+  document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
+  const refs = app.data.refs || [];
+  const overlay = document.createElement("div");
+  overlay.className = "rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm";
+  const kindToggle = `
+    <div class="grid grid-cols-2 gap-1 rounded-lg border border-border bg-gray-50 p-1">
+      ${[["citation", t("ev.pin")], ["numerical", t("ev.pinArtifact")]].map(([k, l]) => `
+        <button type="button" onclick="RC.setPinKind('${k}')" class="rounded-md py-1.5 text-xs font-medium transition ${f.kind === k ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${l}</button>`).join("")}
+    </div>`;
+  const body = f.kind === "citation"
+    ? refs.length
+      ? `<div><label class="block text-sm font-medium mb-1.5">${t("ev.refPick")}</label>${rcSelect({ id: "pin-ref", options: refs.map((r) => ({ value: r.id, label: `${r.year} — ${r.title.slice(0, 48)}` })) })}</div>`
+      : `<div><label class="block text-sm font-medium mb-1.5">${t("ev.artifact")}</label><input id="pin-ref" placeholder="${t("ev.refPick")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`
+    : `<div><label class="block text-sm font-medium mb-1.5">${t("ev.artifact")}</label><input id="pin-artifact" placeholder="${t("ev.artifactPh")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`;
+  const contentField = f.kind === "citation"
+    ? `<div><label class="block text-sm font-medium mb-1.5">${t("ev.excerpt")}</label><textarea id="pin-excerpt" rows="3" placeholder="${t("ev.excerptPh")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></textarea><p class="text-xs text-muted mt-1">${t("ev.excerptPrefill")}</p></div>`
+    : `<div><label class="block text-sm font-medium mb-1.5">${t("ev.contentQuoted")}</label><textarea id="pin-content" rows="3" placeholder="${t("ev.excerptPh")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></textarea></div>`;
+  overlay.innerHTML = `
+    <div class="min-h-full flex items-center justify-center p-6">
+    <div class="w-full max-w-md rounded-xl border border-border bg-white shadow-xl p-6 animate-scale-in">
+      <div class="flex items-center justify-between mb-5"><h3 class="font-semibold text-lg">${t("ev.pin")}</h3><button onclick="RC.closeRcModal()" class="p-1 rounded hover:bg-gray-100">${icon("close", "w-5 h-5")}</button></div>
+      <div class="space-y-4">
+        ${kindToggle}
+        ${body}
+        ${contentField}
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium mb-1.5">${t("ev.confidence")}</label>${rcSelect({ id: "pin-confidence", options: [{ value: "0.25", label: "0.25" }, { value: "0.5", label: "0.50" }, { value: "0.75", label: "0.75" }, { value: "0.9", label: "0.90" }], value: "0.5" })}</div>
+          <div><label class="block text-sm font-medium mb-1.5">${t("ev.model")}</label><input id="pin-model" value="GLM-5.3" placeholder="${t("ev.modelPh")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+        </div>
+      </div>
+      <div class="mt-6 flex justify-end gap-2">
+        ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.closeRcModal()" })}
+        ${btn({ label: f.saving ? t("ev.pinning") : t("ev.pin"), variant: "default", onClick: "RC.submitPin()", disabled: f.saving })}
+      </div>
+    </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) RC.closeRcModal(); };
+  const claim = document.getElementById("pin-excerpt") || document.getElementById("pin-content");
+  if (claim) {
+    const src = app.data.board?.[app.state.boardMissionId]?.hyps
+      ?.flatMap((h) => app.data.board[app.state.boardMissionId].evidence[h.id] || [])
+      ?.find((c) => c.id === f.claimId);
+    if (src && document.getElementById("pin-excerpt")) document.getElementById("pin-excerpt").value = src.text;
+  }
+}
