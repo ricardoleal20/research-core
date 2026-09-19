@@ -299,6 +299,12 @@ export interface Proposal {
   status: ProposalStatus;
   decided: ProposalDecision | null;
   supersededBy: string | null; // the proposal whose merge superseded this one
+  // Story 2.6 (AD-1): true when a rollback orphaned this proposal's creation
+  // — it renders as superseded history in the quarantine view (never hidden,
+  // EXPERIENCE.md) and can never be merged. rolledBackSeq names the
+  // rollback event (the "superseded by rollback e-{seq}" stamp).
+  orphanedByRollback?: boolean;
+  rolledBackSeq?: number;
 }
 
 // What a merge produced: the merged proposal and the pending siblings the
@@ -355,6 +361,16 @@ export interface MorningDigest {
   ceilingCents: number;
   rows: DigestRow[]; // <= 10, newest night first
   alerts: DigestAlert[]; // dead-run alert rows
+  connectionAlerts: ConnectionAlert[]; // research connections down (Story 2.6, FR-9.1)
+}
+
+// A connection alert row (Story 2.6, FR-9.1): a research connection (Zotero,
+// arXiv, Semantic Scholar) whose latest state is down — rendered with label
+// + icon, never color alone.
+export interface ConnectionAlert {
+  connection: string;
+  errorCode: string; // code-form reason (bilingual-safe)
+  failedTs: string; // ISO-8601 UTC
 }
 
 // Onboarding — the sixty-second first value (Story 1.9, FR-8.1): one pasted
@@ -464,6 +480,20 @@ export interface TrustStatus {
   missions: MissionMeter[];
   targets: TargetMeter[];
   lastRun: LastRunSpend | null;
+  // The research connections' health (Story 2.6, FR-9.1): the trust center's
+  // health line — latest failure per connection, label + icon, never color
+  // alone. Empty until a connection has been probed.
+  connections?: ConnectionHealth[];
+}
+
+// One research connection's health as read from the log (Story 2.6): up /
+// down with the latest failure's code + timestamp and the latest restore.
+export interface ConnectionHealth {
+  connection: string;
+  up: boolean;
+  lastErrorCode?: string | null;
+  lastErrorTs?: string | null;
+  lastRestoredTs?: string | null;
 }
 
 // ---- Run Timeline Receipts (Story 2.5, FR-6): the drill-down audit ledger ----
@@ -546,4 +576,68 @@ export interface RunReceipt {
   ceilingCents: number;
   models: string[]; // the models the run called, first-call order
   rows: ReceiptRow[]; // seq order — the run's every logged atom
+}
+
+// ---- Checkpoints & rollback (Story 2.6, FR-10.1, AD-1) ----
+
+// One restore point as read from the log: the user named the log head at
+// creation; rolling back returns the read model to that seq.
+export interface Checkpoint {
+  id: string; // the checkpoint.created event id
+  seq: number; // the log head at creation — where a rollback returns to
+  ts: string; // ISO-8601 UTC
+  name: string;
+}
+
+// One rollback in the log — the history the checkpoint control lists under
+// its restore points (never hidden, EXPERIENCE.md).
+export interface RollbackRecord {
+  seq: number; // the checkpoint.rolled_back event's seq
+  ts: string;
+  checkpointId: string;
+  name: string;
+  targetSeq: number;
+  orphanedCount: number;
+}
+
+// Everything the checkpoint control renders (FR-10.1): the current head,
+// the restore points, and the rollback history.
+export interface CheckpointsView {
+  headSeq: number;
+  checkpoints: Checkpoint[];
+  rollbacks: RollbackRecord[];
+}
+
+// One orphaned event, as the rollback confirmation lists it — the superseded
+// history (never hidden, never summarized away).
+export interface OrphanedEvent {
+  seq: number;
+  ts: string;
+  kind: string; // raw event kind, rendered in mono (receipt voice)
+  actor: string; // "user" | "agent" | "system:<component>"
+}
+
+// One orphaned PROPOSAL, by name — the confirmation's non-negotiable content
+// (EXPERIENCE.md: the rollback confirmation names every orphaned proposal).
+export interface OrphanedProposal {
+  proposalId: string;
+  seq: number;
+  targetLabel: string | null; // the target hypothesis's statement — the NAME
+  targetSeq: number | null; // the H-n label seq
+  proposedTo: string | null; // the transition the proposal intended
+  basis: string | null; // the agent's one-line justification
+}
+
+// What a rollback WOULD orphan right now — the confirmation dialog's read.
+export interface RollbackPlan {
+  checkpoint: Checkpoint;
+  orphanedEvents: OrphanedEvent[];
+  orphanedProposals: OrphanedProposal[];
+}
+
+// What a rollback DID orphan — the outcome the post-rollback view renders.
+export interface RollbackOutcome {
+  rollback: RollbackRecord;
+  orphanedEvents: OrphanedEvent[];
+  orphanedProposals: OrphanedProposal[];
 }

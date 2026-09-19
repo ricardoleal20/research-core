@@ -118,6 +118,17 @@ const DICT: Record<string, Record<Lang, string>> = {
   "trust.heartbeats": { es: "latidos cada 30 s", en: "heartbeats every 30 s", pt: "batimentos a cada 30 s", fr: "pulsations toutes les 30 s" },
   "trust.heartbeatsOff": { es: "latidos suspendidos", en: "heartbeats suspended", pt: "batimentos suspensos", fr: "pulsations suspendues" },
   "trust.healthy": { es: "sano", en: "healthy", pt: "saudável", fr: "sain" },
+  // Connections health line (Story 2.6, FR-9.1): the research connectors'
+  // state — label + icon, never color alone.
+  "trust.connections": { es: "Salud de conexiones", en: "Connection health", pt: "Saúde das conexões", fr: "Santé des connexions" },
+  "trust.connectionsSub": {
+    es: "Zotero, arXiv y Semantic Scholar — sondeados en cada latido del planificador",
+    en: "Zotero, arXiv and Semantic Scholar — probed on every scheduler beat",
+    pt: "Zotero, arXiv e Semantic Scholar — sondados a cada batimento do agendador",
+    fr: "Zotero, arXiv et Semantic Scholar — sondés à chaque pulsation du planificateur",
+  },
+  "trust.connUp": { es: "◉ conectada", en: "◉ connected", pt: "◉ conectada", fr: "◉ connectée" },
+  "trust.connDown": { es: "⚠ caída — {code}", en: "⚠ down — {code}", pt: "⚠ caída — {code}", fr: "⚠ coupée — {code}" },
   "trust.confirmStop": { es: "Confirmar", en: "Confirm stop", pt: "Confirmar", fr: "Confirmer l'arrêt" },
   "trust.confirmStopDesc": { es: "Detiene todo el trabajo autónomo de inmediato.", en: "Stops all autonomous work immediately.", pt: "Para todo o trabalho autônomo imediatamente.", fr: "Arrête immédiatement tout travail autonome." },
   "trust.cancel": { es: "Cancelar", en: "Cancel", pt: "Cancelar", fr: "Annuler" },
@@ -301,6 +312,15 @@ const DICT: Record<string, Record<Lang, string>> = {
   },
   "digest.receipts": { es: "recibos", en: "receipts", pt: "recibos", fr: "reçus" },
   "digest.alertLabel": { es: "interruptor de hombre muerto", en: "dead-man switch", pt: "interruptor de homem morto", fr: "interrupteur d'homme mort" },
+  // Connection alert rows (Story 2.6, FR-9.1): a research connection is
+  // down — label + icon, never color alone (DESIGN.md).
+  "digest.connAlertLabel": { es: "⚠ conexión caída", en: "⚠ connection down", pt: "⚠ conexão caída", fr: "⚠ connexion coupée" },
+  "digest.connAlertBody": {
+    es: "«{connection}» — {code} a las {time}",
+    en: "\"{connection}\" — {code} at {time}",
+    pt: "«{connection}» — {code} às {time}",
+    fr: "« {connection} » — {code} à {time}",
+  },
   "digest.alertBody": {
     es: "La corrida {runId} murió con un latido vencido a las {time} — reiniciada",
     en: "Run {runId} died silently at {time} — restarted",
@@ -483,10 +503,34 @@ const DICT: Record<string, Record<Lang, string>> = {
   "board.loadError": { es: "No se pudo cargar el tablero: ", en: "Could not load the board: ", pt: "Não foi possível carregar o quadro: ", fr: "Impossible de charger le tableau : " },
   "board.mission": { es: "Misión", en: "Mission", pt: "Missão", fr: "Mission" },
 
-  // checkpoints (entry point for Story 2.6): the board header control and
-  // its empty restore-points list state — presence and UI only.
+  // checkpoints (Story 2.6, FR-10.1): the board header control — restore
+  // points, the rollback confirmation naming every orphaned proposal (never
+  // a summary, EXPERIENCE.md), and the rollback history.
   "cp.title": { es: "Puntos de control", en: "Checkpoints", pt: "Pontos de controlo", fr: "Points de contrôle" },
   "cp.empty": { es: "Aún no hay puntos de control.", en: "No checkpoints yet.", pt: "Ainda não há pontos de controlo.", fr: "Pas encore de points de contrôle." },
+  "cp.create": { es: "Crear punto de control", en: "Create checkpoint", pt: "Criar ponto de controlo", fr: "Créer un point de contrôle" },
+  "cp.namePlaceholder": { es: "p. ej. antes del ensayo", en: "e.g. pre-trial", pt: "ex. pré-teste", fr: "ex. avant l'essai" },
+  "cp.restorePoints": { es: "Puntos de restauración", en: "Restore points", pt: "Pontos de restauração", fr: "Points de restauration" },
+  "cp.atSeq": { es: "en e-{seq}", en: "at e-{seq}", pt: "em e-{seq}", fr: "à e-{seq}" },
+  "cp.rollback": { es: "Retroceder", en: "Roll back", pt: "Retroceder", fr: "Revenir en arrière" },
+  "cp.confirmTitle": { es: "Confirmar retroceso", en: "Confirm rollback", pt: "Confirmar retrocesso", fr: "Confirmer le retour arrière" },
+  "cp.confirmBody": {
+    es: "El tablero vuelve a «{name}» (e-{seq}). Los {count} eventos posteriores quedan huérfanos: excluidos de las proyecciones, listados como historial superado — nada se borra.",
+    en: "The board returns to \"{name}\" (e-{seq}). The {count} events after it become orphaned: excluded from projections, listed as superseded history — nothing is erased.",
+    pt: "O quadro volta a «{name}» (e-{seq}). Os {count} eventos posteriores ficam órfãos: excluídos das projeções, listados como histórico superado — nada se apaga.",
+    fr: "Le tableau revient à « {name} » (e-{seq}). Les {count} événements suivants deviennent orphelins : exclus des projections, listés comme historiqué dépassé — rien n'est effacé.",
+  },
+  "cp.orphanedProposals": { es: "Propuestas huérfanas", en: "Orphaned proposals", pt: "Propostas órfãs", fr: "Propositions orphelines" },
+  "cp.orphanedNone": { es: "Ninguna propuesta quedará huérfana.", en: "No proposals will be orphaned.", pt: "Nenhuma proposta ficará órfã.", fr: "Aucune proposition ne sera orpheline." },
+  "cp.orphanedTo": { es: "→ {to}", en: "→ {to}", pt: "→ {to}", fr: "→ {to}" },
+  "cp.confirm": { es: "Confirmar retroceso", en: "Confirm rollback", pt: "Confirmar retrocesso", fr: "Confirmer le retour" },
+  "cp.cancel": { es: "Cancelar", en: "Cancel", pt: "Cancelar", fr: "Annuler" },
+  "cp.rolledBack": { es: "Retrocedido a «{name}» — {count} eventos huérfanos", en: "Rolled back to \"{name}\" — {count} events orphaned", pt: "Retrocedido a «{name}» — {count} eventos órfãos", fr: "Revenu à « {name} » — {count} événements orphelins" },
+  "cp.history": { es: "Historial de retrocesos", en: "Rollback history", pt: "Histórico de retrocessos", fr: "Historique des retours" },
+  "cp.historyEntry": { es: "e-{seq} → «{name}» · {count} huérfanos", en: "e-{seq} → \"{name}\" · {count} orphaned", pt: "e-{seq} → «{name}» · {count} órfãos", fr: "e-{seq} → « {name} » · {count} orphelins" },
+  "cp.loadError": { es: "No se pudieron cargar los puntos de control: ", en: "Could not load checkpoints: ", pt: "Não foi possível carregar os pontos de controlo: ", fr: "Impossible de charger les points de contrôle : " },
+  "cp.createError": { es: "No se pudo crear el punto de control: ", en: "Could not create the checkpoint: ", pt: "Não foi possível criar o ponto de controlo: ", fr: "Impossible de créer le point de contrôle : " },
+  "cp.rollbackError": { es: "No se pudo retroceder: ", en: "Could not roll back: ", pt: "Não foi possível retroceder: ", fr: "Impossible de revenir en arrière : " },
 
   // quarantine review (Story 2.2, AD-3/AD-13): agent proposals wait here —
   // nothing changes until a human merges; the basis-stale warning variant;
@@ -506,6 +550,16 @@ const DICT: Record<string, Record<Lang, string>> = {
   },
   "quarantine.pending": { es: "pendientes", en: "pending", pt: "pendentes", fr: "en attente" },
   "quarantine.history": { es: "Historial", en: "History", pt: "Histórico", fr: "Historique" },
+  // Superseded history (Story 2.6, AD-1): proposals a rollback orphaned —
+  // excluded from every projection, never hidden (EXPERIENCE.md).
+  "quarantine.superseded": { es: "Historial superado", en: "Superseded history", pt: "Histórico superado", fr: "Historique dépassé" },
+  "quarantine.supersededSub": {
+    es: "Propuestas que un retroceso dejó huérfanas — excluidas del tablero, nunca ocultas",
+    en: "Proposals a rollback orphaned — excluded from the board, never hidden",
+    pt: "Propostas órfãs de um retrocesso — excluídas do quadro, nunca ocultas",
+    fr: "Propositions orphelines d'un retour arrière — exclues du tableau, jamais cachées",
+  },
+  "quarantine.rolledBackAt": { es: "superada por el retroceso e-{seq}", en: "superseded by rollback e-{seq}", pt: "superada pelo retrocesso e-{seq}", fr: "dépassée par le retour arrière e-{seq}" },
   "quarantine.historyEmpty": {
     es: "Nada decidido aún.",
     en: "Nothing decided yet.",

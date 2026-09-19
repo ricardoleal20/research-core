@@ -10,7 +10,12 @@
   // with their chips + receipt stamps (mono seq/time) — nothing disappears.
   // Read-model only (AD-8): every decision re-folds via `load`, then
   // `ondecided` re-folds the board (a merge is what applies the change).
-  let { ondecided }: { ondecided: () => void } = $props();
+  // Story 2.6: `revision` re-folds this surface too (a rollback orphans
+  // proposals — they land in the superseded-history view, never hidden).
+  let {
+    ondecided,
+    revision = 0,
+  }: { ondecided: () => void; revision?: number } = $props();
 
   let proposals = $state<Proposal[] | null>(null);
   let loadError = $state("");
@@ -42,8 +47,17 @@
   const decided = $derived(
     (proposals ?? []).filter((p) => p.status !== "pending").sort((a, b) => (b.decided?.seq ?? 0) - (a.decided?.seq ?? 0)),
   );
+  // Story 2.6 (AD-1): proposals a rollback orphaned — superseded history,
+  // never hidden. They render in the history view with their superseded
+  // chips plus the rollback stamp naming the event that orphaned them.
+  const orphaned = $derived(
+    (proposals ?? []).filter((p) => p.orphanedByRollback).sort((a, b) => b.seq - a.seq),
+  );
 
   $effect(() => {
+    // Re-fold when the board revision moves — a rollback orphans proposals
+    // (they land here as superseded history) and a merge decides them.
+    void revision;
     load();
   });
 
@@ -198,7 +212,14 @@
 
     {#if historyOpen}
       <!-- The history view (AD-13): decided proposals with their chips +
-           receipt stamps — nothing disappears. -->
+           receipt stamps — nothing disappears. Story 2.6: proposals a
+           rollback orphaned render here as visibly SUPERSEDED history with
+           the rollback stamp — excluded from every projection, never
+           hidden. -->
+      {#if orphaned.length > 0}
+        <p class="q-kicker q-superseded-kicker">{t("quarantine.superseded")}</p>
+        <p class="q-sub q-superseded-sub">{t("quarantine.supersededSub")}</p>
+      {/if}
       {#if decided.length === 0}
         <p class="q-empty">{t("quarantine.historyEmpty")}</p>
       {:else}
@@ -237,6 +258,13 @@
               {/if}
               {#if proposal.status === "superseded"}
                 <p class="q-note">{t("quarantine.supersededNote")}</p>
+              {/if}
+              {#if proposal.orphanedByRollback}
+                <!-- The rollback stamp (Story 2.6, AD-1): the event that
+                     orphaned this proposal — superseded history, never hidden. -->
+                <p class="q-receipt mono">
+                  {t("quarantine.rolledBackAt", { seq: proposal.rolledBackSeq ?? 0 })}
+                </p>
               {/if}
               <!-- Receipt stamp (mono seq/time) — never silent, never anonymous. -->
               {#if proposal.decided}
@@ -289,6 +317,14 @@
     text-transform: uppercase;
     color: var(--rc-ink-muted);
     margin: 0 0 3px;
+  }
+  /* The superseded-history banner (Story 2.6): quiet gray — history, not an
+     alert; the rollback stamps carry the specifics. */
+  .q-superseded-kicker {
+    margin-top: 12px;
+  }
+  .q-superseded-sub {
+    margin-bottom: 8px;
   }
   .q-sub {
     margin: 0;

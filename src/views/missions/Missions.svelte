@@ -311,13 +311,23 @@
     <MorningDigest onran={load} onopenreceipt={(runId: string) => (receiptRunId = runId)} />
     <!-- Board at a glance (FR-2.4, Story 1.8): ALL hypotheses and their
          states in one view, above the per-mission sections — the board
-         surface, with the checkpoint control in its header (Story 2.6's
-         entry point). -->
-    <BoardGlance missions={newestFirst} revision={boardRevision} />
+         surface, with the checkpoint control in its header (Story 2.6:
+         restore points + the rollback confirm flow). A rollback re-folds
+         the missions too — a post-checkpoint mission disappears from the
+         list, honestly. -->
+    <BoardGlance
+      missions={newestFirst}
+      revision={boardRevision}
+      onrollback={() => {
+        load();
+        boardRevision += 1;
+      }}
+    />
     <!-- Quarantine review (Story 2.2, AD-3): agent proposals wait between
          the board and the missions — a merge here is what applies a change,
-         so the board re-folds after every decision. -->
-    <QuarantineReview ondecided={() => (boardRevision += 1)} />
+         so the board re-folds after every decision. Story 2.6: a rollback
+         orphans proposals — they re-fold in as superseded history. -->
+    <QuarantineReview ondecided={() => (boardRevision += 1)} revision={boardRevision} />
     <section class="missions-list" aria-label={t("missions.title")}>
       {#each newestFirst as mission (mission.id)}
         <MissionCard {mission} onopenreceipt={(runId: string) => (receiptRunId = runId)} />

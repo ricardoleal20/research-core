@@ -91,7 +91,7 @@
   <p class="error" role="alert">{loadError}</p>
 {/if}
 
-{#if digest && (digest.rows.length > 0 || digest.alerts.length > 0)}
+{#if digest && (digest.rows.length > 0 || digest.alerts.length > 0 || digest.connectionAlerts.length > 0)}
 <section class="digest" aria-label={t("digest.title")}>
   <!-- The digest hero (digest frame): outcome badge, mono spend line, and
        the gradient spend ring. Never color alone — the mono line always
@@ -158,8 +158,9 @@
       </div>
     {/each}
     {#each digest.alerts as alert (alert.runId)}
-      <!-- The dead-man-switch alert row (FR-9.1 hook): present, wired to the
-           telemetry seam — renders from the stale-heartbeat run.failed case. -->
+      <!-- The dead-man-switch alert row (FR-9.1/FR-4.3, Story 2.6): renders
+           from the run.dead detection event — label + icon (amber), never
+           color alone. -->
       <div class="d-row d-row--alert" role="alert">
         <p class="d-line mono">
           <span class="d-label">{t("digest.alertLabel")}</span>
@@ -180,6 +181,21 @@
         </div>
       </div>
     {/each}
+    {#each digest.connectionAlerts as ca (ca.connection)}
+      <!-- Connection alert row (FR-9.1, Story 2.6): a research connection
+           (Zotero, arXiv, Semantic Scholar) is down — the ⚠ lives in the
+           label (label + icon, never color alone). -->
+      <div class="d-row d-row--alert" role="alert">
+        <p class="d-line mono">
+          <span class="d-label">{t("digest.connAlertLabel")}</span>
+          {t("digest.connAlertBody", {
+            connection: ca.connection,
+            code: ca.errorCode,
+            time: new Date(ca.failedTs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          })}
+        </p>
+      </div>
+    {/each}
     <p class="d-note mono">{t("digest.rowsNote")}</p>
     <div class="d-foot">
       <span class="mono">
@@ -195,7 +211,7 @@
   {/if}
 </section>
 {/if}
-{#if digest && digest.rows.length === 0 && digest.alerts.length === 0}
+{#if digest && digest.rows.length === 0 && digest.alerts.length === 0 && digest.connectionAlerts.length === 0}
   <section class="digest digest--empty" aria-label={t("digest.title")}>
     <p class="micro">{t("digest.micro")}</p>
     <p class="d-empty">{t("digest.empty")}</p>

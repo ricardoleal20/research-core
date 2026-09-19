@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, DigestRow, TrustStatus, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -143,6 +143,13 @@ function mockTrustStatus(): TrustStatus {
     missions: meters,
     targets,
     lastRun: trustState.lastRun,
+    // Story 2.6 (FR-9.1): the connections health line — Zotero down (the
+    // seeded outage), arXiv healed, Semantic Scholar healthy.
+    connections: [
+      { connection: "arxiv", up: true, lastErrorCode: "timeout", lastErrorTs: "2026-09-19T02:44:00Z", lastRestoredTs: "2026-09-19T03:02:00Z" },
+      { connection: "semantic_scholar", up: true },
+      { connection: "zotero", up: false, lastErrorCode: "unreachable", lastErrorTs: "2026-09-19T03:12:00Z" },
+    ],
   };
 }
 
@@ -195,6 +202,73 @@ let mockEventSeq = 0;
 /** The mock's entity-current-seq: the hypothesis's last mutation — its
  *  audit stamp seq (creation, user transition, or applied merge). */
 const hypothesisCurrentSeq = (h: Hypothesis): number => h.audit.seq;
+
+// In-memory checkpoints (mirrors the event-sourced core, Story 2.6, AD-1):
+// a checkpoint snapshots the mock state at creation; rollback restores the
+// snapshot and marks everything created after the checkpoint as superseded
+// history — orphaned proposals read as superseded, never hidden.
+interface MockSnapshot {
+  missions: Mission[];
+  hypotheses: Hypothesis[];
+  proposals: Proposal[];
+}
+
+const seedCpTs = "2026-09-19T03:30:00Z";
+const mockCheckpoints: (Checkpoint & { snapshot: MockSnapshot })[] = [
+  {
+    id: "cp-1-seed", seq: 90, ts: seedCpTs, name: "after onboarding",
+    snapshot: { missions: [], hypotheses: [], proposals: [] },
+  },
+  {
+    id: "cp-2-seed", seq: 120, ts: "2026-09-19T06:10:00Z", name: "pre-trial",
+    snapshot: { missions: [], hypotheses: [], proposals: [] },
+  },
+];
+const mockRollbacks: RollbackRecord[] = [
+  {
+    seq: 130, ts: "2026-09-19T08:02:00Z", checkpointId: "cp-1-seed",
+    name: "after onboarding", targetSeq: 90, orphanedCount: 3,
+  },
+];
+
+const cloneSnapshot = (): MockSnapshot => ({
+  missions: missions.map((m) => ({ ...m })),
+  hypotheses: hypotheses.map((h) => ({ ...h, relations: h.relations.map((r) => ({ ...r })), audit: { ...h.audit } })),
+  proposals: proposals.map((p) => ({ ...p, proposedPayload: { ...p.proposedPayload }, decided: p.decided ? { ...p.decided } : null })),
+});
+
+const restoreSnapshot = (snap: MockSnapshot): void => {
+  missions.length = 0;
+  missions.push(...snap.missions);
+  hypotheses.length = 0;
+  hypotheses.push(...snap.hypotheses);
+  proposals.length = 0;
+  proposals.push(...snap.proposals);
+};
+
+/** The mock's orphaned-listing for one checkpoint: what a rollback would
+ *  orphan — every proposal created after it, by name. */
+const orphanedFor = (cp: Checkpoint): { events: OrphanedEvent[]; proposals: OrphanedProposal[] } => {
+  const events: OrphanedEvent[] = [];
+  const orphans: OrphanedProposal[] = [];
+  for (const h of hypotheses) {
+    if (h.seq > cp.seq && h.audit.seq > cp.seq) {
+      events.push({ seq: h.seq, ts: h.ts, kind: "hypothesis.created", actor: "user" });
+    }
+  }
+  for (const p of proposals) {
+    if (p.seq > cp.seq && !p.orphanedByRollback) {
+      events.push({ seq: p.seq, ts: p.ts, kind: "proposal.created", actor: "agent" });
+      orphans.push({
+        proposalId: p.id, seq: p.seq,
+        targetLabel: p.targetLabel, targetSeq: p.targetSeq,
+        proposedTo: p.proposedPayload.to, basis: p.proposedPayload.basis,
+      });
+    }
+  }
+  events.sort((a, b) => a.seq - b.seq);
+  return { events, proposals: orphans };
+};
 
 /** Mirror of the core's propose seam: derive from/basis from the current
  *  mock state — never asserted by the caller. */
@@ -303,6 +377,12 @@ const seededDigest: MorningDigest = {
   rows: seededRows,
   alerts: [
     { runId: "nightshift-17", missionId: "m26-seed", missionSeq: 26, heartbeatTs: "2026-09-19T02:31:00Z", receiptSeq: 104 },
+  ],
+  // Story 2.6 (FR-9.1): the seeded connection alert — the Zotero connector
+  // is down; arXiv and Semantic Scholar are healthy (label + icon, never
+  // color alone).
+  connectionAlerts: [
+    { connection: "zotero", errorCode: "unreachable", failedTs: "2026-09-19T03:12:00Z" },
   ],
 };
 
@@ -487,6 +567,7 @@ function currentMockDigest(): MorningDigest {
     ceilingCents: rows.reduce((a, r) => a + r.ceilingCents, 0),
     rows,
     alerts: seededDigest.alerts,
+    connectionAlerts: seededDigest.connectionAlerts,
   };
 }
 
@@ -1282,6 +1363,68 @@ export const mockApi = {
     trustState.runtimeState = "running";
     trustState.killedSeq = null;
     return mockTrustStatus();
+  },
+
+  // checkpoints (Story 2.6, FR-10.1) — mirrors the event-sourced core: a
+  // checkpoint snapshots the state; rollback restores the snapshot and marks
+  // post-checkpoint proposals as superseded history (never hidden).
+  createCheckpoint: async (name: string): Promise<Checkpoint> => {
+    await delay();
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("invalid_name: a checkpoint is named — the restore-point list renders names (FR-10.1)");
+    }
+    mockEventSeq += 1;
+    const cp = {
+      id: "cp" + mockEventSeq + "-" + Date.now(),
+      seq: mockEventSeq,
+      ts: nowISO(),
+      name: trimmed,
+      snapshot: cloneSnapshot(),
+    };
+    mockCheckpoints.push(cp);
+    const { snapshot: _snap, ...view } = cp;
+    return view;
+  },
+  listCheckpoints: async (): Promise<CheckpointsView> => {
+    await delay();
+    return {
+      headSeq: mockEventSeq,
+      checkpoints: mockCheckpoints.map(({ snapshot: _s, ...cp }) => ({ ...cp })),
+      rollbacks: mockRollbacks.map((r) => ({ ...r })),
+    };
+  },
+  previewRollback: async (checkpointId: string): Promise<RollbackPlan> => {
+    await delay();
+    const cp = mockCheckpoints.find((c) => c.id === checkpointId);
+    if (!cp) throw new Error(`not_found: no checkpoint with id \`${checkpointId}\``);
+    const { events, proposals: orphans } = orphanedFor(cp);
+    const { snapshot: _s, ...view } = cp;
+    return { checkpoint: view, orphanedEvents: events, orphanedProposals: orphans };
+  },
+  rollbackToCheckpoint: async (checkpointId: string): Promise<RollbackOutcome> => {
+    await delay();
+    const cp = mockCheckpoints.find((c) => c.id === checkpointId);
+    if (!cp) throw new Error(`not_found: no checkpoint with id \`${checkpointId}\``);
+    const { events, proposals: orphans } = orphanedFor(cp);
+    // execute: restore the snapshot, mark the orphans as superseded history
+    restoreSnapshot(cp.snapshot);
+    for (const p of proposals) {
+      if (p.seq > cp.seq && !p.orphanedByRollback) {
+        mockEventSeq += 1;
+        p.status = "superseded";
+        p.orphanedByRollback = true;
+        p.rolledBackSeq = mockEventSeq;
+        p.decided = null;
+      }
+    }
+    mockEventSeq += 1;
+    const record: RollbackRecord = {
+      seq: mockEventSeq, ts: nowISO(), checkpointId: cp.id,
+      name: cp.name, targetSeq: cp.seq, orphanedCount: events.length,
+    };
+    mockRollbacks.push(record);
+    return { rollback: record, orphanedEvents: events, orphanedProposals: orphans };
   },
 
   // danger zone

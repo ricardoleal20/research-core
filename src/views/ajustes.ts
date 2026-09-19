@@ -299,7 +299,38 @@ function trustCards(): string {
   if (!trust) {
     return `<div class="card"><div class="card-head"><div class="card-title">${ico.shield} ${t("sec.trust")}</div></div><div class="empty-row">${t("trust.targetsSub")}</div></div>`;
   }
-  return cardTrustAutonomy() + cardTrustSpend() + cardTrustKill() + cardTrustProviders() + cardTrustTargets();
+  return cardTrustAutonomy() + cardTrustSpend() + cardTrustKill() + cardTrustConnections() + cardTrustProviders() + cardTrustTargets();
+}
+
+// The connections health line (Story 2.6, FR-9.1): Zotero, arXiv and
+// Semantic Scholar — the latest failure per connection, label + icon, never
+// color alone (DESIGN.md). Renders only once a probe has reported.
+function cardTrustConnections(): string {
+  const tr = trust!;
+  const conns = tr.connections ?? [];
+  if (conns.length === 0) return "";
+  const rows = conns
+    .map((c) => {
+      const state = c.up
+        ? `<span class="trust-conn trust-conn-up">${t("trust.connUp")}</span>`
+        : `<span class="trust-conn trust-conn-down">${t("trust.connDown", { code: esc(c.lastErrorCode ?? "unknown") })}</span>`;
+      const meta = !c.up && c.lastErrorTs
+        ? `<div class="trust-row-n small mono">${esc(new Date(c.lastErrorTs).toLocaleString())}</div>`
+        : `<div class="trust-row-n small mono">${esc(c.lastRestoredTs ? new Date(c.lastRestoredTs).toLocaleString() : "")}</div>`;
+      return `<div class="trust-row">
+        <div class="trust-row-l">
+          <div class="trust-row-t mono">${esc(c.connection)}</div>
+          ${meta}
+        </div>
+        ${state}
+      </div>`;
+    })
+    .join("");
+  return `<div class="card" id="card-trust-connections">
+    <div class="card-head"><div class="card-title">${ico.globe} ${t("trust.connections")}</div></div>
+    <div class="micro">${t("trust.connectionsSub")}</div>
+    ${rows}
+  </div>`;
 }
 
 function cardTrustAutonomy(): string {

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -275,6 +275,42 @@ const browserApi = {
     }
     return mockApi.rejectProposal(_proposalId);
   },
+  // Checkpoints (Story 2.6, FR-10.1): the restore-point list goes to the
+  // same-origin read-only API over the shared core; creating, previewing,
+  // and rolling back are mutations — the served browser view refuses them.
+  listCheckpoints: async () => {
+    if (await servedByCore) {
+      return httpJson<CheckpointsView>("/api/checkpoints");
+    }
+    return mockApi.listCheckpoints();
+  },
+  createCheckpoint: async (_name: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage checkpoints from the desktop app / " +
+          "Vista de solo lectura — gestiona los puntos de control desde la app de escritorio",
+      );
+    }
+    return mockApi.createCheckpoint(_name);
+  },
+  previewRollback: async (_checkpointId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage checkpoints from the desktop app / " +
+          "Vista de solo lectura — gestiona los puntos de control desde la app de escritorio",
+      );
+    }
+    return mockApi.previewRollback(_checkpointId);
+  },
+  rollbackToCheckpoint: async (_checkpointId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage checkpoints from the desktop app / " +
+          "Vista de solo lectura — gestiona los puntos de control desde la app de escritorio",
+      );
+    }
+    return mockApi.rollbackToCheckpoint(_checkpointId);
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -448,6 +484,17 @@ export const api = mockActive ? browserApi : {
     invoke<TrustStatus>("configure_ceiling", { scope, scopeId, ceilingCents }),
   killRuntime: () => invoke<TrustStatus>("kill_runtime"),
   resumeRuntime: () => invoke<TrustStatus>("resume_runtime"),
+
+  // checkpoints (event-sourced, Story 2.6, FR-10.1): restore points are
+  // checkpoint.created events carrying the log head; rollback appends
+  // checkpoint.rolled_back — history is never rewritten, the shared fold
+  // cursor does the returning
+  createCheckpoint: (name: string) => invoke<Checkpoint>("create_checkpoint", { name }),
+  listCheckpoints: () => invoke<CheckpointsView>("list_checkpoints"),
+  previewRollback: (checkpointId: string) =>
+    invoke<RollbackPlan>("preview_rollback", { checkpointId }),
+  rollbackToCheckpoint: (checkpointId: string) =>
+    invoke<RollbackOutcome>("rollback_to_checkpoint", { checkpointId }),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),
