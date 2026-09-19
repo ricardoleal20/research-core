@@ -13,6 +13,7 @@ pub mod missions;
 pub mod onboarding;
 pub mod proposals;
 pub mod receipts;
+pub mod search;
 pub mod spend;
 pub mod telemetry;
 pub mod trust;
