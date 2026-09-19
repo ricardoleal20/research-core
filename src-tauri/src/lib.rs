@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod mcp;
 mod missions_commands;
+mod server;
 
 pub mod domain;
 pub mod eventstore;
@@ -34,8 +35,11 @@ pub fn run() {
             app.manage(AppPaths { data_dir: data_dir.clone(), log_dir });
             let db_path = data_dir.join("research-core.sqlite");
             let db = Db::open(&db_path).expect("failed to open database");
-            app.manage(db);
+            app.manage(db.clone());
             app.manage(McpRegistry::new());
+            // In-process server shell (AD-7): the same app in the browser —
+            // same core instance, one writer (AD-14), read-only API.
+            server::spawn(db);
 
             // native macOS menu
             #[cfg(target_os = "macos")]
@@ -148,6 +152,7 @@ pub fn run() {
             commands::test_cli,
             missions_commands::create_mission,
             missions_commands::list_missions,
+            missions_commands::get_mission_runs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

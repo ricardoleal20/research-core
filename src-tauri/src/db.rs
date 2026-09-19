@@ -1,9 +1,15 @@
 use crate::eventstore;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub struct Db(pub Mutex<Connection>);
+/// The one database handle. `Arc` inside so the in-process server shell
+/// (AD-7) reads the SAME core instance the Tauri commands use — one process,
+/// one writer (AD-14); the clone shares the single connection, never opens a
+/// second one.
+#[derive(Clone)]
+pub struct Db(pub Arc<Mutex<Connection>>);
 
 impl Db {
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
@@ -15,7 +21,7 @@ impl Db {
         Self::migrate(&conn)?;
         Self::seed(&conn)?;
         Self::init_eventstore(&conn)?;
-        Ok(Self(Mutex::new(conn)))
+        Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
     /// Create the append-only `events` table and run the one-time legacy

@@ -30,6 +30,15 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 keyring = { version = "3", features = ["apple-native"] }
+# In-process server shell (AD-7): axum inside the Tauri app process, serving
+# the built UI + a read-only API over the shared core. tower-http only for
+# static file serving.
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
+
+[dev-dependencies]
+# oneshot() router tests for the server shell
+tower = { version = "0.5", features = ["util"] }
 
 [features]
 # Enables a simulated LLM/MCP when no provider key is configured (default on).
