@@ -8,6 +8,7 @@ mod missions_commands;
 mod nightshift_commands;
 mod onboarding_commands;
 mod proposals_commands;
+mod trust_commands;
 mod nightshift;
 mod runtime;
 mod server;
@@ -182,6 +183,11 @@ pub fn run() {
             proposals_commands::list_proposals,
             proposals_commands::approve_proposal,
             proposals_commands::reject_proposal,
+            trust_commands::get_trust_status,
+            trust_commands::configure_autonomy,
+            trust_commands::configure_ceiling,
+            trust_commands::kill_runtime,
+            trust_commands::resume_runtime,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
         ])

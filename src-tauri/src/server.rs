@@ -44,6 +44,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             get(hypothesis_evidence),
         )
         .route("/api/digest", get(digest))
+        .route("/api/trust", get(trust))
         .route("/api/proposals", get(all_proposals))
         .route(
             "/api/missions/{mission_id}/proposals",
@@ -110,6 +111,19 @@ async fn hypothesis_evidence(
 /// on run success.
 async fn digest(State(state): State<ServerState>) -> Result<Json<MorningDigest>, StatusCode> {
     morning_digest(&state.db).await.map(Json).map_err(|_| internal())
+}
+
+/// The trust status (Story 2.4, FR-5 — read-only per AD-14): runtime state,
+/// effective dials and ceilings, spend vs ceiling meters, the last run's
+/// spend line. Dial, ceiling, and kill-switch changes stay on the Tauri
+/// command path.
+async fn trust(
+    State(state): State<ServerState>,
+) -> Result<Json<crate::trust::TrustStatus>, StatusCode> {
+    crate::trust::status(&state.db)
+        .await
+        .map(Json)
+        .map_err(|_| internal())
 }
 
 /// The quarantine read model, all missions (Story 2.2, read-only per AD-14
@@ -520,6 +534,59 @@ mod tests {
         // it stays on the Tauri command path
         let res = app(test_db())
             .oneshot(Request::post("/api/digest").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// The trust status route (Story 2.4, FR-5): read-only over the shared
+    /// core — dials, ceilings, meters, runtime state; mutations stay on the
+    /// Tauri command path.
+    #[tokio::test]
+    async fn get_api_trust_renders_the_trust_center_read_only() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            store
+                .append(
+                    NewEvent::mission_created(crate::domain::missions::MissionCreatedPayload {
+                        question: "Does X hold?".into(),
+                        stop_condition: "Stop after $1.".into(),
+                        success_criterion: "A rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 100,
+                        roles: vec![],
+                        schedule: "off".into(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(
+                    NewEvent::ceiling_configured(crate::domain::trust::CeilingConfiguredPayload {
+                        scope: crate::domain::trust::Scope::Global,
+                        scope_id: None,
+                        ceiling_cents: 2000,
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let res = app(db)
+            .oneshot(Request::get("/api/trust").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let status: crate::trust::TrustStatus = body_json(res.into_body()).await;
+        assert_eq!(status.runtime_state, crate::trust::RuntimeState::Running);
+        assert_eq!(status.global_ceiling_cents, Some(2000));
+        assert_eq!(status.missions.len(), 1);
+        assert_eq!(status.missions[0].ceiling_cents, 100);
+        // single writer (AD-14): the kill switch is a mutation — POST is not
+        // even routed
+        let res = app(test_db())
+            .oneshot(Request::post("/api/trust").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);

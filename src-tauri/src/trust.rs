@@ -32,7 +32,7 @@ use crate::domain::trust::{
     RELEASE_PROVIDER_ERROR, RELEASE_RECORDED,
 };
 use crate::eventstore::{EventError, EventStore, NewEvent};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -258,7 +258,7 @@ pub async fn reserve_and_chat(
 // ---------------------------------------------------------------------------
 
 /// The runtime's kill state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeState {
     Running,
@@ -266,7 +266,7 @@ pub enum RuntimeState {
 }
 
 /// One scope's dial setting (global carries no scope id).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeDial {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -275,7 +275,7 @@ pub struct ScopeDial {
 }
 
 /// One scope's ceiling setting.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeCeiling {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -286,7 +286,7 @@ pub struct ScopeCeiling {
 /// One mission's spend meter: current spend vs the effective ceiling (the
 /// creation ceiling, only ever tightened by a configured one), with the
 /// DESIGN.md spend-meter state.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MissionMeter {
     pub mission_id: Uuid,
@@ -297,7 +297,7 @@ pub struct MissionMeter {
 }
 
 /// One compute target's spend meter (no ceiling configured = unbounded).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetMeter {
     pub target: String,
@@ -308,7 +308,7 @@ pub struct TargetMeter {
 
 /// The last run's spend line ("last run: 82¢ of 100¢"): the run the latest
 /// `spend.recorded` landed in, against its ceiling.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastRunSpend {
     pub run_id: String,
@@ -320,7 +320,7 @@ pub struct LastRunSpend {
 /// Everything the trust center renders (FR-5): the runtime state, the
 /// effective dials and ceilings at every scope, current spend vs ceiling per
 /// scope, and the last run's spend line.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustStatus {
     pub runtime_state: RuntimeState,
