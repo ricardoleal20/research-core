@@ -29,6 +29,7 @@ use uuid::Uuid;
 use crate::domain::proposals::{
     MergeApprovedPayload, ProposalCreatedPayload, MERGE_APPROVED, PROPOSAL_CREATED,
 };
+use crate::domain::verifier::{EvidenceVerifiedPayload, EVIDENCE_VERIFIED};
 use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const CLAIM_REGISTERED: &str = "claim.registered";
@@ -302,6 +303,45 @@ pub struct EvidencePin {
     /// (e.g. "Vaswani et al. 2017") — the fold leaves it None; refs live
     /// in SQL, not in the log. Citation pins only.
     pub ref_label: Option<String>,
+    /// The LATEST machine verification of this pin (Story 4.2) — None
+    /// until the first `evidence.verified` event for THIS pin lands
+    /// (unverified). Never confusable with `confidence`: verification is
+    /// existence by code; confidence is a named model's judgment.
+    pub verification: Option<PinVerification>,
+}
+
+/// The LATEST verification status of one pin (Story 4.2, AD-15): a
+/// projection from `evidence.verified` events — the latest result for the
+/// claim's CURRENT pin wins. `status` is the display vocabulary:
+/// `verified` / `failed` come straight from the event's outcome; `stale` is
+/// fold-derived — a result that predates the current pin (the claim was
+/// re-pinned after the verification ran), which renders the re-verify
+/// affordance, never a silent carry-over. A pin with NO verification event
+/// reads `verification: None` — UNVERIFIED, a state entirely distinct from
+/// the agent-assessed confidence (FR-3.6: confidence is a named model's
+/// judgment; verification is existence by code).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinVerification {
+    /// verified | failed | stale (the read model's display vocabulary; the
+    /// event itself only ever carries verified | failed).
+    pub status: VerificationStatus,
+    /// Machine detail code from the event: excerpt_matched / digest_ok /
+    /// not_found / artifact_changed / artifact_missing / fetch_error /
+    /// no_source.
+    pub detail: String,
+    /// What was consulted: `arxiv:<id>`, a URL, or an artifact ref.
+    pub source: String,
+    pub ts: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Verified,
+    Failed,
+    /// Fold-derived: the result predates the current pin — re-verifiable.
+    Stale,
 }
 
 /// A claim as read from the log — the read model the board renders.
@@ -401,6 +441,19 @@ fn apply_pin(
     };
     let claim = &mut claims[i];
     claim.pinned = true;
+    // Story 4.2 on re-pin: a previous pin's verification result NEVER
+    // silently carries over to the new excerpt — but it stays VISIBLE as
+    // `stale` (the result predates the current pin), so the re-verify
+    // affordance renders. Honesty, not amnesia — and never a silent
+    // "verified" for text that was never checked.
+    let carried_stale = claim.pin.as_ref().and_then(|old| {
+        old.verification.as_ref().map(|v| PinVerification {
+            status: VerificationStatus::Stale,
+            detail: v.detail.clone(),
+            source: v.source.clone(),
+            ts: v.ts,
+        })
+    });
     claim.pin = Some(EvidencePin {
         seq,
         ts,
@@ -414,6 +467,7 @@ fn apply_pin(
         confidence: payload.confidence,
         assessing_model: payload.assessing_model,
         ref_label: None,
+        verification: carried_stale,
     });
     Ok(())
 }
@@ -475,6 +529,67 @@ impl EvidenceProjection {
                         ))
                     })?;
                     apply_pin(&mut claims, &index, payload, event.seq, event.ts)?;
+                }
+                EVIDENCE_VERIFIED => {
+                    // Story 4.2 (AD-15): a machine verification result —
+                    // actor system/verifier, never an LLM. The result
+                    // applies to the claim's CURRENT pin only when its
+                    // `pin_seq` matches (a result never silently applies to
+                    // a re-pinned excerpt); a result for an older pin marks
+                    // the current one `stale` when nothing newer holds. The
+                    // LATEST event for the current pin wins — re-verification
+                    // flips failed→verified and never the other way without
+                    // a new event. The constructor's guarantees (detail and
+                    // source non-empty, closed outcome vocabulary) are
+                    // re-checked on read.
+                    let payload: EvidenceVerifiedPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|e| {
+                            EventError::Invalid(format!(
+                                "corrupt {EVIDENCE_VERIFIED} payload at seq {}: {e}",
+                                event.seq
+                            ))
+                        })?;
+                    if payload.detail.trim().is_empty() || payload.source.trim().is_empty() {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {EVIDENCE_VERIFIED} event at seq {}: detail and source are \
+                             never empty — a result says why and names what it consulted",
+                            event.seq
+                        )));
+                    }
+                    let Some(&i) = index.get(&payload.claim_id) else {
+                        continue; // references no known claim — skipped
+                    };
+                    let claim = &mut claims[i];
+                    let Some(pin) = claim.pin.as_mut() else {
+                        continue; // the claim has no pin to verify — skipped
+                    };
+                    if pin.seq == payload.pin_seq {
+                        pin.verification = Some(PinVerification {
+                            status: match payload.outcome {
+                                crate::domain::verifier::VerificationOutcome::Verified => {
+                                    VerificationStatus::Verified
+                                }
+                                crate::domain::verifier::VerificationOutcome::Failed => {
+                                    VerificationStatus::Failed
+                                }
+                            },
+                            detail: payload.detail,
+                            source: payload.source,
+                            ts: event.ts,
+                        });
+                    } else if pin.verification.as_ref().is_some_and(|v| {
+                        matches!(v.status, VerificationStatus::Stale)
+                    }) || pin.verification.is_none() {
+                        // A result for an older version of this pin —
+                        // visible as stale (re-verifiable), never carried as
+                        // verified/failed for text it did not check.
+                        pin.verification = Some(PinVerification {
+                            status: VerificationStatus::Stale,
+                            detail: payload.detail,
+                            source: payload.source,
+                            ts: event.ts,
+                        });
+                    }
                 }
                 PROPOSAL_CREATED => {
                     // Quarantine (AD-3, Story 3.4): a result-pin proposal
@@ -1134,7 +1249,328 @@ mod tests {
             .is_empty());
     }
 
-    // ---------- merged result-pin proposals (Story 3.4, AD-3/AD-13) ----------
+    // ---------- machine verification (Story 4.2, AD-15) ----------
+
+    /// A pinned claim reads UNVERIFIED until the first `evidence.verified`
+    /// event for ITS pin lands — and the verification is a separate axis
+    /// from the agent-assessed confidence (FR-3.6): both render, neither
+    /// drives the other.
+    #[test]
+    fn a_pin_reads_unverified_until_the_first_event_and_keeps_both_axes() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Attention drops recurrence.", h, None).unwrap())
+            .unwrap();
+        let pin = store
+            .append(
+                NewEvent::evidence_pinned_citation(
+                    claim.id,
+                    h,
+                    "ref-1",
+                    "Attention dispenses with recurrence entirely.",
+                    0.82,
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // No verification event yet → unverified (None), while the
+        // confidence + attribution stay on the pin.
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let read = c.pin.as_ref().expect("the pin is present");
+        assert_eq!(read.verification, None, "unverified until the first event");
+        assert_eq!(read.confidence, 0.82);
+        assert_eq!(read.assessing_model, "GLM-5.3");
+
+        // The first event lands → verified, with the detail + source; the
+        // confidence axis is untouched (never replaced by "verified").
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::verifier::VerificationOutcome::Verified,
+                    crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let read = c.pin.as_ref().expect("the pin is present");
+        let v = read.verification.as_ref().expect("verified");
+        assert_eq!(v.status, VerificationStatus::Verified);
+        assert_eq!(v.detail, "excerpt_matched");
+        assert_eq!(v.source, "arxiv:1706.03762");
+        // FR-3.6 separation: the agent-assessed confidence and its
+        // attribution remain exactly what they were — "verified" is the
+        // machine axis, never the confidence label.
+        assert_eq!(read.confidence, 0.82);
+        assert_eq!(read.assessing_model, "GLM-5.3");
+    }
+
+    /// A FAILED verification marks the pin visibly and the pin STAYS — the
+    /// claim remains pinned-but-flagged (honesty, not amnesia). The latest
+    /// event wins: a later success flips failed→verified.
+    #[test]
+    fn a_failed_verification_marks_the_pin_and_reverification_flips_it() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        let pin = store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Excerpt.", 0.5, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        // A failed run (fetch error) — the pin stays in place, flagged.
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::verifier::VerificationOutcome::Failed,
+                    crate::domain::verifier::DETAIL_FETCH_ERROR,
+                    "https://doi.org/10.1000/ghost",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(c.pinned, "a failed verification never deletes the pin");
+        let read = c.pin.as_ref().expect("the pin is present");
+        let v = read.verification.as_ref().expect("flagged");
+        assert_eq!(v.status, VerificationStatus::Failed);
+        assert_eq!(v.detail, "fetch_error");
+
+        // Re-verification succeeds → the latest event wins: failed→verified.
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::verifier::VerificationOutcome::Verified,
+                    crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                    "https://doi.org/10.1000/ghost",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let v = c.pin.as_ref().unwrap().verification.as_ref().unwrap();
+        assert_eq!(v.status, VerificationStatus::Verified);
+    }
+
+    /// A result for an OLDER pin never applies to a re-pinned excerpt: a
+    /// re-pin carries the old result forward as STALE (re-verifiable), and
+    /// a late event for the old pin reads stale too — never a silent
+    /// "verified" for text that was never checked.
+    #[test]
+    fn a_result_for_an_older_pin_reads_stale_never_verified() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        let first = store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "First excerpt.", 0.5, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    first.seq,
+                    crate::domain::verifier::VerificationOutcome::Verified,
+                    crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // Re-pin with a NEW excerpt: the old verified result must not apply.
+        store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Second excerpt.", 0.9, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let read = c.pin.as_ref().expect("the pin is present");
+        assert_eq!(read.excerpt, "Second excerpt.");
+        let v = read.verification.as_ref().expect("the old result stays visible");
+        assert_eq!(v.status, VerificationStatus::Stale, "stale, never verified");
+
+        // A late event for the OLD pin_seq also reads stale (the current
+        // pin was never checked by it).
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    first.seq,
+                    crate::domain::verifier::VerificationOutcome::Verified,
+                    crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let v = c.pin.as_ref().unwrap().verification.as_ref().unwrap();
+        assert_eq!(v.status, VerificationStatus::Stale);
+
+        // A verification of the CURRENT pin wins over the stale marker.
+        let second_seq = c.pin.as_ref().unwrap().seq;
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    second_seq,
+                    crate::domain::verifier::VerificationOutcome::Failed,
+                    crate::domain::verifier::DETAIL_NOT_FOUND,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let v = c.pin.as_ref().unwrap().verification.as_ref().unwrap();
+        assert_eq!(v.status, VerificationStatus::Failed);
+    }
+
+    /// A verification event for a claim with no pin, or an unknown claim,
+    /// pins nothing and fails nothing — skipped, not fatal.
+    #[test]
+    fn a_verification_without_its_pin_or_claim_is_skipped() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let unpinned = store
+            .append(NewEvent::claim_registered("Unpinned claim.", h, None).unwrap())
+            .unwrap();
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    unpinned.id,
+                    h,
+                    42,
+                    crate::domain::verifier::VerificationOutcome::Verified,
+                    crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    Uuid::new_v4(), // no such claim
+                    h,
+                    7,
+                    crate::domain::verifier::VerificationOutcome::Failed,
+                    crate::domain::verifier::DETAIL_NOT_FOUND,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let claims = EvidenceProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert!(!claims[0].pinned);
+        assert_eq!(claims[0].pin, None);
+    }
+
+    /// A corrupt verification event (blank detail, unknown outcome) fails
+    /// the fold loudly — the constructor's guarantees, re-checked on read.
+    #[test]
+    fn a_corrupt_verification_event_fails_the_fold_loudly() {
+        for payload in [
+            serde_json::json!({
+                "outcome": "verified",
+                "detail": "   ",
+                "source": "arxiv:1706.03762",
+            }),
+            serde_json::json!({
+                "outcome": "maybe",
+                "detail": "excerpt_matched",
+                "source": "arxiv:1706.03762",
+            }),
+        ] {
+            let conn = mem_conn();
+            let store = EventStore::new(&conn);
+            let h = seed_hypothesis(&store);
+            let claim = store
+                .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+                .unwrap();
+            let pin = store
+                .append(
+                    NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Excerpt.", 0.5, "GLM-5.3")
+                        .unwrap(),
+                )
+                .unwrap();
+            let mut payload = payload;
+            payload["claim_id"] = serde_json::json!(claim.id.to_string());
+            payload["hypothesis_id"] = serde_json::json!(h.to_string());
+            payload["pin_seq"] = serde_json::json!(pin.seq);
+            store
+                .append(
+                    NewEvent::new(EVIDENCE_VERIFIED, Actor::User, payload)
+                        .unwrap()
+                        .with_causes(vec![claim.id, h]),
+                )
+                .unwrap();
+            let err = EvidenceProjection::fold(&store.events_all().unwrap())
+                .expect_err("a corrupt verification event must fail the fold");
+            assert!(
+                err.to_string().contains("evidence.verified"),
+                "unexpected: {err}"
+            );
+        }
+    }
+
+
 
     /// A merged pin proposal applies its intended numerical pin AT the
     /// approval event — approval order is the application order, and the

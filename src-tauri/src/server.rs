@@ -513,7 +513,7 @@ mod tests {
             let claim = store
                 .append(NewEvent::claim_registered("A claim about X.", hyp.id, None).unwrap())
                 .unwrap();
-            store
+            let pin = store
                 .append(
                     NewEvent::evidence_pinned_citation(
                         claim.id,
@@ -522,6 +522,22 @@ mod tests {
                         "The quoted excerpt.",
                         0.82,
                         "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            // Story 4.2: a machine verification of the pin — the route
+            // serves the same verification status the desktop webview
+            // renders (AD-15, read-only per AD-14).
+            store
+                .append(
+                    NewEvent::evidence_verified(
+                        claim.id,
+                        hyp.id,
+                        pin.seq,
+                        crate::domain::verifier::VerificationOutcome::Verified,
+                        crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                        "arxiv:1706.03762",
                     )
                     .unwrap(),
                 )
@@ -541,6 +557,20 @@ mod tests {
         assert_eq!(claims.len(), 1);
         assert!(claims[0].pinned);
         assert_eq!(claims[0].pin.as_ref().unwrap().assessing_model, "GLM-5.3");
+        // The verification axis renders alongside the confidence axis —
+        // two separate fields, never one driving the other.
+        let verification = claims[0]
+            .pin
+            .as_ref()
+            .unwrap()
+            .verification
+            .as_ref()
+            .expect("the verification status is served");
+        assert_eq!(
+            verification.status,
+            crate::domain::evidence::VerificationStatus::Verified
+        );
+        assert_eq!(verification.detail, "excerpt_matched");
     }
 
     #[tokio::test]

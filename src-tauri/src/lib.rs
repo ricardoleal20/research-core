@@ -12,6 +12,7 @@ mod nightshift_commands;
 mod onboarding_commands;
 mod proposals_commands;
 mod trust_commands;
+mod verifier_commands;
 mod nightshift;
 mod runtime;
 mod search_commands;
@@ -193,6 +194,7 @@ pub fn run() {
             evidence_commands::pin_claim_to_citation,
             evidence_commands::pin_claim_to_numerical,
             evidence_commands::list_evidence,
+            verifier_commands::run_pin_verification,
             export_commands::export_workspace,
             export_commands::inspect_export,
             proposals_commands::list_proposals,
