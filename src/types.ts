@@ -205,22 +205,25 @@ export interface Hypothesis {
 // event reads as UNPINNED (FR-3.4) and renders the amber chip.
 export type PinKind = "citation" | "numerical";
 
-// One citation pin (AD-5 shape): the library ref it cites, the excerpt it
-// quotes, the sha-256 digest of that excerpt (computed at construction —
-// never trusted from callers), and the agent-assessed confidence
-// attributed to the assessing model (FR-3.6) — never "verified".
+// One evidence pin (AD-5 shape): the source it anchors to (a library ref
+// for citations, an artifact_ref for numerical pins — FR-3.3), the pinned
+// content (`excerpt` — the quoted passage or the values), the sha-256
+// digest of that content (computed at construction — never trusted from
+// callers), and the agent-assessed confidence attributed to the assessing
+// model (FR-3.6) — never "verified".
 export interface EvidencePin {
   seq: number; // the evidence.pinned event's seq (latest per claim wins)
   ts: string;
   claimId: string;
   hypothesisId: string;
   kind: PinKind;
-  refId: string;
+  refId: string | null; // the library ref a citation pin cites; null for numerical
+  artifactRef: string | null; // the artifact a numerical pin anchors to; null for citations
   excerpt: string;
-  digest: string; // sha-256 hex of the excerpt
+  digest: string; // sha-256 hex of the pinned content
   confidence: number; // 0.0–1.0, agent-assessed
   assessingModel: string; // e.g. "GLM-5.3" — the confidence's attribution
-  refLabel: string | null; // author-year from the library (shell enrichment)
+  refLabel: string | null; // author-year from the library (citation pins only)
 }
 
 export interface Claim {

@@ -309,6 +309,14 @@ const DICT: Record<string, Record<Lang, string>> = {
   "ev.loadError": { es: "No se pudo cargar el evidencia: ", en: "Could not load evidence: ", pt: "Não foi possível carregar o evidência: ", fr: "Impossible de charger les preuves : " },
   "ev.required": { es: "El extracto, la referencia y el modelo son obligatorios.", en: "Excerpt, reference, and model are required.", pt: "Excerto, referência e modelo são obrigatórios.", fr: "Extrait, référence et modèle sont requis." },
   "ev.claimRequired": { es: "La afirmación no puede quedar vacía.", en: "The claim text is required.", pt: "O texto da alegação é obrigatório.", fr: "Le texte de l'affirmation est requis." },
+
+  // numerical pins (FR-3.3, Story 1.8) — the artifact anatomy: chart icon,
+  // artifact name, mono digest fragment.
+  "ev.pinnedToArtifact": { es: "anclada a artefacto", en: "pinned to artifact", pt: "ancorada a artefacto", fr: "ancrée à l'artefact" },
+  "ev.pinArtifact": { es: "Anclar a artefacto", en: "Pin to artifact", pt: "Ancorar a artefacto", fr: "Ancrer à l'artefact" },
+  "ev.artifact": { es: "Artefacto numérico", en: "Numerical artifact", pt: "Artefacto numérico", fr: "Artefact numérique" },
+  "ev.artifactPh": { es: "p. ej. runs/007/table-3.csv", en: "e.g. runs/007/table-3.csv", pt: "ex. runs/007/table-3.csv", fr: "ex. runs/007/table-3.csv" },
+  "ev.contentQuoted": { es: "Contenido anclado", en: "Anchored content", pt: "Conteúdo ancorado", fr: "Contenu ancré" },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

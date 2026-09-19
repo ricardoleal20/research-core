@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "../../api";
   import { t } from "../../i18n";
-  import type { Claim, Hypothesis, HypothesisStatus, RelationChip, RelationKind, Ref } from "../../types";
+  import type { Claim, Hypothesis, HypothesisStatus, PinKind, RelationChip, RelationKind, Ref } from "../../types";
 
   // Hypothesis card (DESIGN.md components.hypothesis-card): statement,
   // lifecycle chip top-right, relation chips inline, audit-stamp strip in
@@ -121,12 +121,14 @@
   let claimError = $state("");
   let claimSubmitted = $state(false);
 
-  // Pin-to-citation control (FR-3.1/3.5/3.6): pick a library ref, confirm
-  // the excerpt, state the agent-assessed confidence + assessing model.
-  let pinningClaimId = $state<string | null>(null);
+  // Pin control (FR-3.1 citation, FR-3.3 numerical): pick the source (a
+  // library ref or an artifact), confirm the pinned content, state the
+  // agent-assessed confidence + assessing model.
+  let pinningClaim = $state<{ id: string; kind: PinKind } | null>(null);
   let refs = $state<Ref[]>([]);
   let refsLoaded = $state(false);
   let pinRefId = $state("");
+  let pinArtifactRef = $state("");
   let pinExcerpt = $state("");
   let pinConfidence = $state("0.8");
   let pinModel = $state("");
@@ -139,7 +141,7 @@
   const unpinnedCount = $derived(claims.filter((c) => !c.pinned).length);
   const pinConfidenceNum = $derived(Number(pinConfidence));
   const pinValid = $derived(
-    pinRefId !== "" &&
+    (pinningClaim?.kind === "citation" ? pinRefId !== "" : pinArtifactRef.trim() !== "") &&
       pinExcerpt.trim() !== "" &&
       pinModel.trim() !== "" &&
       !Number.isNaN(pinConfidenceNum) &&
@@ -182,16 +184,18 @@
     }
   }
 
-  /** Open the pin form for one claim: load the library refs (once) and
-   *  prefill the excerpt with the claim text — the user confirms or edits
-   *  it (the "confirm the excerpt" step). */
-  async function openPin(claim: Claim) {
-    pinningClaimId = claim.id;
+  /** Open the pin form for one claim: `kind` picks the anatomy (citation:
+   *  a library ref; numerical: an artifact ref). The content prefills
+   *  with the claim text — the user confirms or edits it. Citation pins
+   *  load the library refs (once). */
+  async function openPin(claim: Claim, kind: PinKind) {
+    pinningClaim = { id: claim.id, kind };
     pinRefId = "";
+    pinArtifactRef = "";
     pinExcerpt = claim.text;
     pinError = "";
     pinSubmitted = false;
-    if (!refsLoaded) {
+    if (kind === "citation" && !refsLoaded) {
       try {
         const project = await api.getActiveProject();
         refs = await api.listRefs(project.id);
@@ -203,21 +207,32 @@
   }
 
   async function pin() {
-    if (!pinningClaimId) return;
+    if (!pinningClaim) return;
     pinSubmitted = true;
     if (!pinValid) return;
     pinning = true;
     pinError = "";
     try {
-      await api.pinClaimToCitation(
-        pinningClaimId,
-        hypothesis.id,
-        pinRefId,
-        pinExcerpt,
-        pinConfidenceNum,
-        pinModel.trim(),
-      );
-      pinningClaimId = null;
+      if (pinningClaim.kind === "citation") {
+        await api.pinClaimToCitation(
+          pinningClaim.id,
+          hypothesis.id,
+          pinRefId,
+          pinExcerpt,
+          pinConfidenceNum,
+          pinModel.trim(),
+        );
+      } else {
+        await api.pinClaimToNumerical(
+          pinningClaim.id,
+          hypothesis.id,
+          pinArtifactRef.trim(),
+          pinExcerpt,
+          pinConfidenceNum,
+          pinModel.trim(),
+        );
+      }
+      pinningClaim = null;
       await loadEvidence();
     } catch (e) {
       pinError = t("ev.pinError") + e;
@@ -295,58 +310,109 @@
           <p class="hc-claim-text">{claim.text}</p>
           {#if claim.pinned && claim.pin}
             {@const pin = claim.pin}
-            <!-- Citation pin (DESIGN.md citation-pin anatomy): source icon,
-                 author-year, confidence dot labeled with the assessing
-                 model — "GLM-5.3 · 82%", never "verified" (FR-3.6). -->
-            <div class="hc-pin">
-              <span class="hc-pin-main">
-                <svg class="hc-pin-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-                  <path
-                    d="M3 2.5A1.5 1.5 0 0 0 1.5 4v3A1.5 1.5 0 0 0 3 8.5h1.5a4.5 4.5 0 0 1-3 4.16V14c3.9-.35 6.5-3.3 6.5-7.5V4A1.5 1.5 0 0 0 6.5 2.5H3Zm8.5 0A1.5 1.5 0 0 0 10 4v3a1.5 1.5 0 0 0 1.5 1.5H13a4.5 4.5 0 0 1-3 4.16V14c3.9-.35 6.5-3.3 6.5-7.5V4A1.5 1.5 0 0 0 15 2.5h-3.5Z"
-                    fill="currentColor"
-                  />
-                </svg>
-                <span class="hc-pin-pinned">{t("ev.pinnedTo")}</span>
-                <span class="hc-pin-ref">{pin.refLabel ?? pin.refId}</span>
-              </span>
-              <span
-                class="hc-pin-conf"
-                title={`${pin.assessingModel} · ${pct(pin.confidence)}`}
-              >
+            {#if pin.kind === "numerical"}
+              <!-- Numerical pin (FR-3.3, DESIGN.md numerical-pin anatomy):
+                   chart icon, artifact name, confidence dot labeled with
+                   the assessing model, digest fragment in mono — the same
+                   attribution rules as a citation pin (FR-3.6). -->
+              <div class="hc-pin">
+                <span class="hc-pin-main">
+                  <svg class="hc-pin-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                    <path
+                      d="M2.5 13.5h11M3.5 13V8.5m3 4.5V5.5m3 7.5v-6m3 6V3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  <span class="hc-pin-pinned">{t("ev.pinnedToArtifact")}</span>
+                  <span class="hc-pin-ref">{pin.artifactRef}</span>
+                </span>
                 <span
-                  class="hc-dot"
-                  style={`background:${confidenceColor(pin.confidence)}`}
-                  aria-hidden="true"
-                ></span>
-                {pin.assessingModel} · {pct(pin.confidence)}
-              </span>
-              <!-- The computed digest, in mono (AD-5): the pin is bound to
-                   exactly the excerpt it quotes. -->
-              <span class="hc-pin-digest mono" title={pin.digest}>
-                {t("ev.digest")} {pin.digest}
-              </span>
-            </div>
-            <blockquote class="hc-excerpt" title={t("ev.excerptQuoted")}>
-              {pin.excerpt}
-            </blockquote>
+                  class="hc-pin-conf"
+                  title={`${pin.assessingModel} · ${pct(pin.confidence)}`}
+                >
+                  <span
+                    class="hc-dot"
+                    style={`background:${confidenceColor(pin.confidence)}`}
+                    aria-hidden="true"
+                  ></span>
+                  {pin.assessingModel} · {pct(pin.confidence)}
+                </span>
+                <!-- The computed digest, in mono (AD-5): the pin is bound
+                     to exactly the content it anchors. -->
+                <span class="hc-pin-digest mono" title={pin.digest}>
+                  {t("ev.digest")} {pin.digest}
+                </span>
+              </div>
+              <blockquote class="hc-excerpt" title={t("ev.contentQuoted")}>
+                {pin.excerpt}
+              </blockquote>
+            {:else}
+              <!-- Citation pin (DESIGN.md citation-pin anatomy): source icon,
+                   author-year, confidence dot labeled with the assessing
+                   model — "GLM-5.3 · 82%", never "verified" (FR-3.6). -->
+              <div class="hc-pin">
+                <span class="hc-pin-main">
+                  <svg class="hc-pin-icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                    <path
+                      d="M3 2.5A1.5 1.5 0 0 0 1.5 4v3A1.5 1.5 0 0 0 3 8.5h1.5a4.5 4.5 0 0 1-3 4.16V14c3.9-.35 6.5-3.3 6.5-7.5V4A1.5 1.5 0 0 0 6.5 2.5H3Zm8.5 0A1.5 1.5 0 0 0 10 4v3a1.5 1.5 0 0 0 1.5 1.5H13a4.5 4.5 0 0 1-3 4.16V14c3.9-.35 6.5-3.3 6.5-7.5V4A1.5 1.5 0 0 0 15 2.5h-3.5Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                  <span class="hc-pin-pinned">{t("ev.pinnedTo")}</span>
+                  <span class="hc-pin-ref">{pin.refLabel ?? pin.refId}</span>
+                </span>
+                <span
+                  class="hc-pin-conf"
+                  title={`${pin.assessingModel} · ${pct(pin.confidence)}`}
+                >
+                  <span
+                    class="hc-dot"
+                    style={`background:${confidenceColor(pin.confidence)}`}
+                    aria-hidden="true"
+                  ></span>
+                  {pin.assessingModel} · {pct(pin.confidence)}
+                </span>
+                <!-- The computed digest, in mono (AD-5): the pin is bound to
+                     exactly the excerpt it quotes. -->
+                <span class="hc-pin-digest mono" title={pin.digest}>
+                  {t("ev.digest")} {pin.digest}
+                </span>
+              </div>
+              <blockquote class="hc-excerpt" title={t("ev.excerptQuoted")}>
+                {pin.excerpt}
+              </blockquote>
+            {/if}
           {:else}
             <div class="hc-claim-foot">
               <!-- Unpinned amber chip (FR-3.4): the claim carries no
                    evidence pin — flagged, never hidden. -->
               <span class="hc-unpinned">{t("ev.unpinned")}</span>
-              <button
-                class="hc-pin-btn"
-                type="button"
-                onclick={() => openPin(claim)}
-              >
-                {t("ev.pin")}
-              </button>
+              <span class="hc-pin-actions">
+                <button
+                  class="hc-pin-btn"
+                  type="button"
+                  onclick={() => openPin(claim, "citation")}
+                >
+                  {t("ev.pin")}
+                </button>
+                <button
+                  class="hc-pin-btn"
+                  type="button"
+                  onclick={() => openPin(claim, "numerical")}
+                >
+                  {t("ev.pinArtifact")}
+                </button>
+              </span>
             </div>
-            {#if pinningClaimId === claim.id}
-              <!-- Pin-to-citation form (FR-3.1/3.5/3.6): pick a library
-                   ref, confirm the excerpt (prefilled with the claim
-                   text), state confidence + assessing model. The digest is
-                   computed in the core — never sent from here. -->
+            {#if pinningClaim?.id === claim.id}
+              <!-- Pin form (FR-3.1 citation / FR-3.3 numerical): pick the
+                   source (library ref or artifact), confirm the pinned
+                   content (prefilled with the claim text), state confidence
+                   + assessing model. The digest is computed in the core —
+                   never sent from here. -->
               <form
                 class="hc-pin-form"
                 onsubmit={(e) => {
@@ -354,16 +420,28 @@
                   pin();
                 }}
               >
-                <select
-                  class="hc-select hc-pin-ref"
-                  bind:value={pinRefId}
-                  aria-label={t("ev.refPick")}
-                >
-                  <option value="" disabled selected>{t("ev.refPick")}</option>
-                  {#each refs as r (r.id)}
-                    <option value={r.id}>{r.authors} {r.year} · {r.title}</option>
-                  {/each}
-                </select>
+                {#if pinningClaim.kind === "citation"}
+                  <select
+                    class="hc-select hc-pin-ref"
+                    bind:value={pinRefId}
+                    aria-label={t("ev.refPick")}
+                  >
+                    <option value="" disabled selected>{t("ev.refPick")}</option>
+                    {#each refs as r (r.id)}
+                      <option value={r.id}>{r.authors} {r.year} · {r.title}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <input
+                    class="hc-artifact-input"
+                    class:invalid={pinSubmitted && pinArtifactRef.trim() === ""}
+                    type="text"
+                    bind:value={pinArtifactRef}
+                    placeholder={t("ev.artifactPh")}
+                    aria-label={t("ev.artifact")}
+                    aria-invalid={pinSubmitted && pinArtifactRef.trim() === ""}
+                  />
+                {/if}
                 <textarea
                   class="hc-excerpt-input"
                   class:invalid={pinSubmitted && pinExcerpt.trim() === ""}
@@ -731,9 +809,26 @@
   .hc-excerpt-input.invalid,
   .hc-claim-input.invalid,
   .hc-conf-input.invalid,
-  .hc-model-input.invalid {
+  .hc-model-input.invalid,
+  .hc-artifact-input.invalid {
     border-color: var(--rc-danger-ink);
     background: #fff1f2;
+  }
+  .hc-artifact-input {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12.5px;
+    color: var(--rc-ink);
+    background: var(--rc-surface);
+    border: 1px solid var(--rc-border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    min-height: 34px;
+    outline: none;
+  }
+  .hc-artifact-input::placeholder {
+    color: var(--rc-ink-muted);
   }
   .hc-pin-hint {
     margin: 0;
@@ -793,6 +888,10 @@
   }
 
   /* Pin / add-claim buttons: quiet secondary actions. */
+  .hc-pin-actions {
+    display: inline-flex;
+    gap: 6px;
+  }
   .hc-pin-btn {
     font-family: inherit;
     font-size: 12px;

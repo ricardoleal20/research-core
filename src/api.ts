@@ -110,6 +110,22 @@ const browserApi = {
     }
     return mockApi.pinClaimToCitation(claimId, hypothesisId, refId, excerpt, confidence, assessingModel);
   },
+  pinClaimToNumerical: async (
+    claimId: string,
+    hypothesisId: string,
+    artifactRef: string,
+    content: string,
+    confidence: number,
+    assessingModel: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage evidence from the desktop app / " +
+          "Vista de solo lectura — gestiona la evidencia desde la app de escritorio"
+      );
+    }
+    return mockApi.pinClaimToNumerical(claimId, hypothesisId, artifactRef, content, confidence, assessingModel);
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -220,6 +236,22 @@ export const api = mockActive ? browserApi : {
       hypothesisId,
       refId,
       excerpt,
+      confidence,
+      assessingModel,
+    }),
+  pinClaimToNumerical: (
+    claimId: string,
+    hypothesisId: string,
+    artifactRef: string,
+    content: string,
+    confidence: number,
+    assessingModel: string,
+  ) =>
+    invoke<Claim>("pin_claim_to_numerical", {
+      claimId,
+      hypothesisId,
+      artifactRef,
+      content,
       confidence,
       assessingModel,
     }),

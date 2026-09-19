@@ -398,11 +398,58 @@ export const mockApi = {
       hypothesisId,
       kind: "citation",
       refId: trimmedRef,
+      artifactRef: null,
       excerpt,
       digest,
       confidence,
       assessingModel: assessingModel.trim(),
       refLabel: `${ref.authors} ${ref.year}`,
+    };
+    return { ...claim };
+  },
+  // FR-3.3 (Story 1.8): a numerical pin anchors the claim to an artifact
+  // (file/figure/table) by artifact_ref + the sha-256 of the pinned
+  // content — computed here (AD-5), never trusted from the caller.
+  pinClaimToNumerical: async (
+    claimId: string,
+    hypothesisId: string,
+    artifactRef: string,
+    content: string,
+    confidence: number,
+    assessingModel: string,
+  ) => {
+    await delay();
+    const claim = claims.find((c) => c.id === claimId);
+    if (!claim) throw new Error(`not_found: no claim with id \`${claimId}\``);
+    const trimmedArtifact = artifactRef.trim();
+    if (!trimmedArtifact) {
+      throw new Error("evidence.artifact_ref must not be empty — a numerical pin names the artifact it anchors to (FR-3.3)");
+    }
+    if (!content.trim()) {
+      throw new Error("evidence.excerpt must not be empty — a pin anchors the content it rests on");
+    }
+    if (typeof confidence !== "number" || Number.isNaN(confidence) || confidence < 0 || confidence > 1) {
+      throw new Error(`invalid confidence \`${confidence}\` — agent-assessed confidence is a number in [0.0, 1.0] (FR-3.6)`);
+    }
+    if (!assessingModel.trim()) {
+      throw new Error("evidence.assessing_model must not be empty — confidence is attributed to the assessing model, never anonymous (FR-3.6)");
+    }
+    const digest = await sha256Hex(content);
+    claimSeq += 1;
+    claim.pinned = true;
+    claim.pin = {
+      seq: claimSeq,
+      ts: nowISO(),
+      claimId: claim.id,
+      hypothesisId,
+      kind: "numerical",
+      refId: null,
+      artifactRef: trimmedArtifact,
+      excerpt: content,
+      digest,
+      confidence,
+      assessingModel: assessingModel.trim(),
+      refLabel: null,
     };
     return { ...claim };
   },
