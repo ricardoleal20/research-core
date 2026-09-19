@@ -17,6 +17,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::jobs::{JobLifecyclePayload, JOB_FAILED, JOB_FINISHED};
 use crate::domain::missions::{MissionStatus, MissionsProjection};
 use crate::domain::nightshift::{RUN_FAILED, RUN_FINISHED, RUN_STARTED};
 use crate::domain::proposals::{ProposalStatus, ProposalsProjection};
@@ -77,6 +78,29 @@ pub struct DigestRow {
     /// target — the row's "receipts →" link opens this run's receipt.
     pub run_id: String,
     pub last_run_ts: DateTime<Utc>,
+    /// Remote job completions in the window (Story 3.4, FR-11.5): the
+    /// morning digest reports them with one-line verdicts — a night where
+    /// only jobs ran (no scan) still earns its row.
+    pub jobs_finished: u32,
+    pub jobs_failed: u32,
+    /// The latest completed job's one-line verdict (target · job ·
+    /// finished/failed) — the structured form the UI composes its bilingual
+    /// line from. `None` when no job completed in the window.
+    pub job_verdict: Option<DigestJobVerdict>,
+}
+
+/// One remote job completion's verdict line (Story 3.4): which target, which
+/// job, finished or failed (with the reason — no job ends silently, AD-12).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DigestJobVerdict {
+    /// The named compute target the job ran on.
+    pub target: String,
+    /// The job's id (its `job.submitted` event id) — the UI renders it short.
+    pub job_id: Uuid,
+    pub failed: bool,
+    /// The failure reason, in code form (present iff failed).
+    pub reason: Option<String>,
 }
 
 impl DigestRow {
@@ -96,6 +120,23 @@ impl DigestRow {
             self.proposals_pending,
             if self.proposals_pending == 1 { "" } else { "s" },
         );
+        // Remote job completions (Story 3.4): the verdict names them — a
+        // night the cluster worked while the researcher slept.
+        if self.jobs_finished > 0 {
+            line.push_str(&format!(
+                " · {} job{} finished",
+                self.jobs_finished,
+                if self.jobs_finished == 1 { "" } else { "s" },
+            ));
+        }
+        if let Some(job) = &self.job_verdict {
+            if job.failed {
+                line.push_str(&format!(
+                    " · job failed: {}",
+                    job.reason.as_deref().unwrap_or("unknown")
+                ));
+            }
+        }
         if self.ceiling_reached {
             line.push_str(" · cost ceiling reached · no further runs");
         }
@@ -163,6 +204,11 @@ struct MissionNight {
     last_run_ts: Option<DateTime<Utc>>,
     receipt_seq: i64,
     latest_run_id: Option<String>,
+    // Remote job completions (Story 3.4, FR-11.5): the morning digest
+    // reports them with one-line verdicts.
+    jobs_finished: u32,
+    jobs_failed: u32,
+    latest_job_verdict: Option<DigestJobVerdict>,
 }
 
 impl MissionNight {
@@ -189,6 +235,28 @@ impl MissionNight {
             }
             _ => {}
         }
+    }
+
+    /// Note one remote job completion (Story 3.4): `job.finished` /
+    /// `job.failed` events carry the mission, target, and job in their
+    /// payload — the digest's one-line verdict renders from them.
+    fn note_job(&mut self, event: &StoredEvent) {
+        let Ok(payload) = serde_json::from_value::<JobLifecyclePayload>(event.payload.clone())
+        else {
+            return; // a corrupt job event never breaks the digest
+        };
+        let failed = event.kind == JOB_FAILED;
+        if failed {
+            self.jobs_failed += 1;
+        } else {
+            self.jobs_finished += 1;
+        }
+        self.latest_job_verdict = Some(DigestJobVerdict {
+            target: payload.target,
+            job_id: payload.job_id,
+            failed,
+            reason: payload.reason,
+        });
     }
 }
 
@@ -291,6 +359,25 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
         if event.ts <= window_start || event.ts > now {
             continue;
         }
+        // Remote job completions (Story 3.4): the same window, the same
+        // per-mission tally — job.finished / job.failed carry their mission.
+        if matches!(event.kind.as_str(), JOB_FINISHED | JOB_FAILED) {
+            if let Some(mission_id) = event
+                .payload
+                .get("mission_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+            {
+                let i = *index
+                    .entry(mission_id)
+                    .or_insert_with(|| {
+                        nights.push((mission_id, MissionNight::default()));
+                        nights.len() - 1
+                    });
+                nights[i].1.note_job(event);
+            }
+            continue;
+        }
         let Some(mission_id) = run_event_mission(event) else {
             continue;
         };
@@ -308,7 +395,9 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
     let mut total_spend = 0u64;
     let mut total_ceiling = 0u64;
     for (mission_id, night) in &nights {
-        if night.started == 0 {
+        // A night with only remote job completions (no scan run) still
+        // earns its row (Story 3.4) — the digest reports job completions.
+        if night.started == 0 && night.jobs_finished == 0 && night.jobs_failed == 0 {
             continue; // run terminal events without a start in-window (edge)
         }
         let Some(mission) = missions.iter().find(|m| m.id == *mission_id) else {
@@ -338,6 +427,9 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
             receipt_seq: night.receipt_seq,
             run_id: night.latest_run_id.clone().unwrap_or_default(),
             last_run_ts: night.last_run_ts.unwrap_or(now),
+            jobs_finished: night.jobs_finished,
+            jobs_failed: night.jobs_failed,
+            job_verdict: night.latest_job_verdict.clone(),
         });
     }
 
@@ -762,5 +854,95 @@ mod tests {
         let digest = render_digest(&store.events_all().unwrap(), now).unwrap();
         assert_eq!(digest.outcome, DigestOutcome::PartialSuccess);
         assert_eq!(digest.rows.len(), 2);
+    }
+
+    // ---- remote job completions (Story 3.4, FR-11.5) ----
+
+    /// A night where only remote jobs ran (no scan) still earns its row:
+    /// the digest reports the completions with a one-line verdict — target,
+    /// job, finished/failed.
+    #[test]
+    fn remote_job_completions_render_rows_with_one_line_verdicts() {
+        use crate::domain::jobs::{
+            JobLifecyclePayload, JobResources, JobSpec, JOB_FINISHED,
+        };
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let now = Utc.with_ymd_and_hms(2026, 9, 19, 9, 4, 0).unwrap();
+        let mission = seed_mission(&store, "Does the cluster's run hold up?");
+        // a job that ran and finished overnight on a remote target
+        let submitted = append_at(
+            &store,
+            NewEvent::job_submitted(crate::domain::jobs::JobSubmittedPayload {
+                mission_id: mission.id,
+                target: "cluster-1".into(),
+                handle: "h-1".into(),
+                spec: JobSpec {
+                    cmd: "python3".into(),
+                    args: vec!["train.py".into()],
+                    env: Default::default(),
+                    resources: Some(JobResources { cpus: None, memory_mb: None }),
+                    workdir: None,
+                },
+            })
+            .unwrap(),
+            night(now, 200),
+        );
+        append_at(
+            &store,
+            NewEvent::job_finished(JobLifecyclePayload {
+                mission_id: mission.id,
+                job_id: submitted.id,
+                target: "cluster-1".into(),
+                code: Some(0),
+                reason: None,
+            })
+            .unwrap(),
+            night(now, 90),
+        );
+        // no run.* events at all — the jobs alone earn the row
+        let digest = render_digest(&store.events_all().unwrap(), now).unwrap();
+        assert_eq!(digest.rows.len(), 1, "a jobs-only night still earns its row");
+        let row = &digest.rows[0];
+        assert_eq!(row.jobs_finished, 1);
+        assert_eq!(row.jobs_failed, 0);
+        let verdict = row.job_verdict.as_ref().expect("the one-line job verdict");
+        assert_eq!(verdict.target, "cluster-1");
+        assert_eq!(verdict.job_id, submitted.id);
+        assert!(!verdict.failed);
+        assert_eq!(verdict.reason, None);
+        // the verdict line names the completion
+        let line = row.verdict_line();
+        assert!(line.contains("1 job finished"), "the verdict line: {line}");
+        assert!(!line.contains('\n'));
+        // and a failed job carries its reason — no job ends silently
+        append_at(
+            &store,
+            NewEvent::job_failed(JobLifecyclePayload {
+                mission_id: mission.id,
+                job_id: submitted.id,
+                target: "cluster-1".into(),
+                code: Some(3),
+                reason: Some("exit_code_3".into()),
+            })
+            .unwrap(),
+            night(now, 80),
+        );
+        let digest = render_digest(&store.events_all().unwrap(), now).unwrap();
+        let row = &digest.rows[0];
+        assert_eq!(row.jobs_finished, 1);
+        assert_eq!(row.jobs_failed, 1);
+        let verdict = row.job_verdict.as_ref().unwrap();
+        assert!(verdict.failed);
+        assert_eq!(verdict.reason.as_deref(), Some("exit_code_3"));
+        let line = row.verdict_line();
+        assert!(line.contains("job failed: exit_code_3"), "the verdict line: {line}");
+        // out of the window, out of the digest
+        let digest = render_digest(
+            &store.events_all().unwrap(),
+            now + chrono::Duration::hours(30),
+        )
+        .unwrap();
+        assert!(digest.rows.is_empty());
     }
 }

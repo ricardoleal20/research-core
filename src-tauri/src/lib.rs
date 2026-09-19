@@ -180,6 +180,7 @@ pub fn run() {
             jobs_commands::submit_job,
             jobs_commands::poll_jobs,
             jobs_commands::fetch_job,
+            jobs_commands::fetch_job_results,
             nightshift_commands::get_morning_digest,
             nightshift_commands::run_night_shift_now,
             nightshift_commands::set_mission_schedule,

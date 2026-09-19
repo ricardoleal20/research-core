@@ -31,6 +31,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::domain::evidence::{
+    excerpt_digest, EvidencePinnedPayload, PinKind, EVIDENCE_PINNED,
+};
 use crate::domain::hypotheses::{
     HypothesisStatus, HypothesisStatusChangedPayload, HypothesesProjection,
     HYPOTHESIS_CREATED, HYPOTHESIS_RELATED, HYPOTHESIS_STATUS_CHANGED,
@@ -44,9 +47,11 @@ pub const MERGE_SUPERSEDED: &str = "merge.superseded";
 pub const PROPOSAL_VOIDED: &str = "proposal.voided";
 
 /// The closed vocabulary of proposalable event kinds (AD-15): the domain
-/// changes an agent may propose. v1: hypothesis lifecycle transitions. The
+/// changes an agent may propose. v1: hypothesis lifecycle transitions, and
+/// evidence pins (Story 3.4, FR-11.5) — a fetched job result proposes a
+/// numerical pin; the merge applies it (auto-pinning is v0.2.0). The
 /// proposal constructor rejects anything else at the edge.
-pub const PROPOSAL_TARGETS: &[&str] = &[HYPOTHESIS_STATUS_CHANGED];
+pub const PROPOSAL_TARGETS: &[&str] = &[HYPOTHESIS_STATUS_CHANGED, EVIDENCE_PINNED];
 
 /// A proposal's lifecycle status (AD-13). `Pending` is the only initial
 /// state; every deciding event (`merge.approved`, `merge.rejected`,
@@ -249,6 +254,15 @@ fn validate_proposed_payload(
                     ))
                 })
         }
+        EVIDENCE_PINNED => {
+            serde_json::from_value::<EvidencePinnedPayload>(payload.clone())
+                .map(|_| ())
+                .map_err(|e| {
+                    EventError::Invalid(format!(
+                        "proposal.proposed_payload does not parse as a `{kind}` payload: {e}"
+                    ))
+                })
+        }
         _ => Err(EventError::Invalid(format!(
             "proposal.target: `{kind}` is not a proposalable event kind (AD-3)"
         ))),
@@ -331,6 +345,8 @@ pub enum ProposalError {
         basis_seq: i64,
         current_seq: i64,
     },
+    #[error("digest_mismatch: proposal `{0}` carries an intended evidence.pinned whose digest does not match its own excerpt — the pin candidate was tampered with; it can never merge (AD-5)")]
+    DigestMismatch(Uuid),
     #[error(transparent)]
     Store(#[from] EventError),
 }
@@ -633,6 +649,28 @@ impl ProposalsProjection {
             .filter(|p| p.mission_id == Some(mission_id))
             .collect())
     }
+
+    /// The LIVE result proposals of one job (Story 3.4, FR-11.5): proposals
+    /// whose `proposal.created` event is cause-linked to the job — the
+    /// fetch-results read (and the idempotency check's basis). A rollback
+    /// that orphaned a job's proposals un-blocks a re-fetch (the orphaned
+    /// ones never happened, AD-1).
+    pub fn live_for_job(
+        events: &[StoredEvent],
+        job_id: Uuid,
+    ) -> Result<Vec<Proposal>, EventError> {
+        let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+        let live = cursor.live_owned(events);
+        let ids: std::collections::HashSet<Uuid> = live
+            .iter()
+            .filter(|e| e.kind == PROPOSAL_CREATED && e.causes.contains(&job_id))
+            .map(|e| e.id)
+            .collect();
+        Ok(Self::fold(events)?
+            .into_iter()
+            .filter(|p| ids.contains(&p.id))
+            .collect())
+    }
 }
 
 /// Move a pending proposal to its decided state, or fail loudly — a deciding
@@ -715,6 +753,73 @@ pub fn propose_transition(
         .expect("the proposal was just appended"))
 }
 
+/// Propose a numerical evidence pin (Story 3.4, FR-11.5, AD-3/AD-5): the
+/// fetch-results seam. The intended `evidence.pinned` event is built through
+/// ITS typed constructor — the sha-256 digest of the content is COMPUTED
+/// there, at proposal time, never a parameter — and the basis is derived
+/// from the target hypothesis's CURRENT state (AD-13, never blind). The
+/// proposal is cause-linked to the producing event (`cause` — the job's
+/// terminal event) plus the passed links (the job and its mission), so the
+/// receipts drill-down and the idempotency check can find it. Like every
+/// proposal it lands EXCLUDED from projections until a human merges it —
+/// fully automatic result pinning does not exist in v1 (auto-pinning is
+/// v0.2.0).
+pub fn propose_evidence_pin(
+    store: &EventStore<'_>,
+    run_id: &str,
+    claim_id: Uuid,
+    hypothesis_id: Uuid,
+    artifact_ref: &str,
+    content: &str,
+    confidence: f64,
+    assessing_model: &str,
+    cause: Uuid,
+    links: Vec<Uuid>,
+) -> Result<Proposal, ProposalError> {
+    let events = store.events_all()?;
+    let hyps = HypothesesProjection::fold(&events)?;
+    if !hyps.iter().any(|h| h.id == hypothesis_id) {
+        return Err(ProposalError::TargetNotFound(hypothesis_id));
+    }
+    // The basis: the seq of the hypothesis state the pin proposal derives
+    // from — its current projection state (AD-13).
+    let basis_seq = entity_current_seq(&events, hypothesis_id)
+        .ok_or(ProposalError::TargetNotFound(hypothesis_id))?;
+    // The intended pin, through its own typed constructor (AD-5): the digest
+    // is computed here, at proposal time, from the content — never trusted
+    // from a caller.
+    let intended = NewEvent::evidence_pinned_numerical(
+        claim_id,
+        hypothesis_id,
+        artifact_ref,
+        content,
+        confidence,
+        assessing_model,
+    )?;
+    let event = NewEvent::proposal_created(
+        run_id,
+        &intended,
+        hypothesis_id,
+        basis_seq,
+        cause,
+    )?
+    // The proposal is cause-linked to the producing event, the job, and the
+    // mission (AD-2) — the runs drill-down and the per-job idempotency check
+    // read these causes.
+    .with_causes({
+        let mut causes = vec![cause];
+        causes.extend(links);
+        causes.push(hypothesis_id);
+        causes
+    });
+    let stored = store.append(event)?;
+    let proposals = ProposalsProjection::fold(&store.events_all()?)?;
+    Ok(proposals
+        .into_iter()
+        .find(|p| p.id == stored.id)
+        .expect("the proposal was just appended"))
+}
+
 /// Approve (merge) a proposal (AD-13) — the ONLY path to a `merge.approved`
 /// event. Validates the proposal is pending and its basis against the
 /// CURRENT entity state: if the entity advanced past `basis_seq` the merge
@@ -740,6 +845,31 @@ pub fn approve(
             proposal_id,
             status: proposal.status,
         });
+    }
+    // AD-5 at merge-check time (Story 3.4): an intended evidence.pinned must
+    // carry the sha-256 of its own excerpt — the constructor computes it, so
+    // only a hand-tampered proposal can mismatch. Corrupt candidates never
+    // merge (force does not help — this is not a stale basis, it is a pin
+    // that would anchor content it does not quote).
+    if proposal.proposed_kind == EVIDENCE_PINNED {
+        let Ok(intended) = serde_json::from_value::<EvidencePinnedPayload>(
+            proposal.proposed_payload.clone(),
+        ) else {
+            // cannot happen through the constructor (it validates the parse);
+            // a raw-appended proposal that no longer parses is tampered
+            return Err(ProposalError::DigestMismatch(proposal_id));
+        };
+        if intended.digest != excerpt_digest(&intended.excerpt)
+            || intended.kind != PinKind::Numerical
+            || intended
+                .artifact_ref
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(ProposalError::DigestMismatch(proposal_id));
+        }
     }
     let current = entity_current_seq(&events, proposal.target_entity)
         .ok_or(ProposalError::TargetNotFound(proposal.target_entity))?;
@@ -1322,6 +1452,299 @@ mod tests {
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].target_entity, h1.id);
         assert!(ProposalsProjection::fold_for(&store.events_all().unwrap(), Uuid::new_v4())
+            .unwrap()
+            .is_empty());
+    }
+
+    // ---------- evidence-pin proposals (Story 3.4, FR-11.5) ----------
+
+    use crate::domain::evidence::{excerpt_digest, EvidenceProjection, EVIDENCE_PINNED};
+
+    /// The fetch-results seam: an anchor claim + one proposal whose intended
+    /// payload is a numerical pin with the digest computed at proposal time,
+    /// basis derived from the hypothesis's current state, cause-linked to
+    /// the producing event + the job + the mission.
+    #[test]
+    fn propose_evidence_pin_derives_the_basis_and_computes_the_digest() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let h = seed_hypothesis(&store, m);
+        let claim = store
+            .append(NewEvent::claim_registered("Result artifact.", h.id, None).unwrap())
+            .unwrap();
+        let content = "benchmark: 42.7 mean, ±0.4, n=12";
+        let p = propose_evidence_pin(
+            &store,
+            "fetch-1",
+            claim.id,
+            h.id,
+            "jobs/abc/stdout",
+            content,
+            0.5,
+            "GLM-5.3",
+            h.id, // the producing event (a job terminal in the real flow)
+            vec![Uuid::new_v4(), m], // the job + the mission
+        )
+        .unwrap();
+        assert_eq!(p.status, ProposalStatus::Pending);
+        assert_eq!(p.run_id, "fetch-1");
+        assert_eq!(p.target_entity, h.id);
+        assert_eq!(p.proposed_kind, EVIDENCE_PINNED);
+        assert_eq!(p.basis_seq, h.seq, "basis = the hypothesis's current state seq");
+        // the intended pin: kind numerical, digest computed at proposal time
+        assert_eq!(
+            p.proposed_payload["kind"],
+            json!("numerical"),
+            "the intended payload: {p:?}"
+        );
+        assert_eq!(p.proposed_payload["artifact_ref"], json!("jobs/abc/stdout"));
+        assert_eq!(p.proposed_payload["excerpt"], json!(content));
+        assert_eq!(p.proposed_payload["digest"], json!(excerpt_digest(content)));
+        assert_eq!(p.proposed_payload["assessing_model"], json!("GLM-5.3"));
+        // cause-linked: the producing event, the job, the mission, the target
+        let created = store
+            .events_all()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.id == p.id)
+            .unwrap();
+        assert!(created.causes.contains(&m), "cause-linked to the mission");
+        assert_eq!(created.actor, Actor::Agent { run_id: "fetch-1".into() });
+        // excluded until merged: the claim still reads unpinned
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(!c.pinned, "AD-3: a pending pin proposal pins nothing");
+        // a ghost target hypothesis is refused
+        let err = propose_evidence_pin(
+            &store,
+            "fetch-1",
+            claim.id,
+            Uuid::new_v4(),
+            "jobs/abc/stdout",
+            content,
+            0.5,
+            "GLM-5.3",
+            h.id,
+            vec![],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not_found"), "unexpected: {err}");
+    }
+
+    /// Merging the pin proposal applies the numerical pin — through the
+    /// fold, at the approval event; the intended event NEVER lands in the
+    /// log as its own event (auto-pinning is structurally absent, v0.2.0).
+    #[test]
+    fn merging_a_pin_proposal_pins_the_claim_without_appending_the_pin() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let h = seed_hypothesis(&store, m);
+        let claim = store
+            .append(NewEvent::claim_registered("Result artifact.", h.id, None).unwrap())
+            .unwrap();
+        let content = "gain: 12.3%, p<0.01, n=48";
+        let p = propose_evidence_pin(
+            &store,
+            "fetch-1",
+            claim.id,
+            h.id,
+            "jobs/abc/stdout",
+            content,
+            0.5,
+            "GLM-5.3",
+            h.id,
+            vec![m],
+        )
+        .unwrap();
+        // the structural guarantee, part 1: no evidence.pinned event exists
+        // in the log — the pin proposal carries its intended payload only
+        assert!(
+            !store
+                .events_all()
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == EVIDENCE_PINNED),
+            "the intended pin never lands as its own event"
+        );
+        let merge = approve(&store, p.id, false).unwrap();
+        assert_eq!(merge.proposal.status, ProposalStatus::Merged);
+        // part 2: still no evidence.pinned event — the fold applies the
+        // intended pin AT the merge (AD-13), and no actor=agent path ever
+        // appends one
+        let all = store.events_all().unwrap();
+        assert!(
+            !all.iter().any(|e| e.kind == EVIDENCE_PINNED),
+            "the merge applies the pin in-fold — the log holds the proposal + the approval only"
+        );
+        // the claim reads pinned with the full AD-5 numerical anatomy
+        let [c] = EvidenceProjection::fold(&all)
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(c.pinned);
+        let pin = c.pin.as_ref().expect("the merged pin");
+        assert_eq!(pin.kind, crate::domain::evidence::PinKind::Numerical);
+        assert_eq!(pin.artifact_ref.as_deref(), Some("jobs/abc/stdout"));
+        assert_eq!(pin.digest, excerpt_digest(content));
+        assert_eq!(pin.confidence, 0.5);
+        assert_eq!(pin.assessing_model, "GLM-5.3");
+        let merge_event = all
+            .iter()
+            .find(|e| e.kind == MERGE_APPROVED)
+            .unwrap();
+        assert_eq!(pin.seq, merge_event.seq, "the merged pin carries the merge's seq");
+        // and the hypothesis fold is undisturbed — a pin proposal never
+        // transitions anything
+        let hyps = HypothesesProjection::fold(&all).unwrap();
+        assert_eq!(hyps[0].status, crate::domain::hypotheses::HypothesisStatus::Proposed);
+    }
+
+    /// AD-13 on pin proposals: a hypothesis that advanced past the basis
+    /// refuses the merge with `basis_stale:` unless forced — and a forced
+    /// merge records the marker, exactly like a transition proposal.
+    #[test]
+    fn a_stale_pin_proposal_merges_only_past_the_recorded_marker() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let h = seed_hypothesis(&store, m);
+        let claim = store
+            .append(NewEvent::claim_registered("Result artifact.", h.id, None).unwrap())
+            .unwrap();
+        let p = propose_evidence_pin(
+            &store,
+            "fetch-1",
+            claim.id,
+            h.id,
+            "jobs/abc/stdout",
+            "values",
+            0.5,
+            "GLM-5.3",
+            h.id,
+            vec![m],
+        )
+        .unwrap();
+        // the hypothesis advances past the pin proposal's basis
+        user_transitions(&store, h.id, Proposed, Testing, "user ran the suite first");
+        let head = store.head_seq().unwrap();
+        let err = approve(&store, p.id, false).unwrap_err();
+        assert!(err.to_string().contains("basis_stale"), "unexpected: {err}");
+        assert_eq!(store.head_seq().unwrap(), head, "the refusal is a dry run");
+        // the pending read model carries the derived stale flag
+        let pending = ProposalsProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == p.id)
+            .unwrap();
+        assert!(pending.basis_stale, "the pending card renders the warning variant");
+        // forced: the marker is recorded, and the pin still applies
+        let outcome = approve(&store, p.id, true).unwrap();
+        assert!(outcome.proposal.basis_stale, "the marker the UI must surface");
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(c.pinned, "the forced merge still pins");
+    }
+
+    /// AD-5 at merge-check time: a hand-tampered intended payload — a
+    /// digest that does not match its own excerpt — is refused with the
+    /// typed `digest_mismatch:` error and can NEVER merge (force is for
+    /// stale bases, not corrupt pins).
+    #[test]
+    fn a_tampered_pin_candidate_is_refused_at_merge_check_time() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let h = seed_hypothesis(&store, m);
+        let claim = store
+            .append(NewEvent::claim_registered("Result artifact.", h.id, None).unwrap())
+            .unwrap();
+        // a raw-appended proposal whose intended digest matches DIFFERENT
+        // content than the excerpt it quotes — the constructor cannot
+        // produce this; only a hand-built payload can
+        let tampered = json!({
+            "claim_id": claim.id.to_string(),
+            "hypothesis_id": h.id.to_string(),
+            "kind": "numerical",
+            "artifact_ref": "jobs/abc/stdout",
+            "excerpt": "gain: 12.3%, n=48",
+            "digest": excerpt_digest("entirely different numbers"),
+            "confidence": 0.5,
+            "assessing_model": "GLM-5.3",
+        });
+        let intended = NewEvent::new(
+            EVIDENCE_PINNED,
+            Actor::User,
+            tampered,
+        )
+        .unwrap();
+        let p = store
+            .append(
+                NewEvent::proposal_created("fetch-1", &intended, h.id, h.seq, h.id)
+                    .unwrap(),
+            )
+            .unwrap();
+        let head = store.head_seq().unwrap();
+        let err = approve(&store, p.id, false).unwrap_err();
+        assert!(err.to_string().contains("digest_mismatch"), "unexpected: {err}");
+        // force does not help — a corrupt candidate never merges
+        let err = approve(&store, p.id, true).unwrap_err();
+        assert!(err.to_string().contains("digest_mismatch"), "unexpected: {err}");
+        assert_eq!(store.head_seq().unwrap(), head, "nothing was appended");
+        // and nothing was pinned
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(!c.pinned);
+    }
+
+    /// The vocabulary is closed but now carries both kinds: a transition
+    /// proposal and a pin proposal coexist in one quarantine view.
+    #[test]
+    fn transition_and_pin_proposals_coexist_in_quarantine() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let h = seed_hypothesis(&store, m);
+        let claim = store
+            .append(NewEvent::claim_registered("Result artifact.", h.id, None).unwrap())
+            .unwrap();
+        let t = propose_transition(&store, "run-7", h.id, Testing, "the scan suggests testing")
+            .unwrap();
+        let p = propose_evidence_pin(
+            &store,
+            "fetch-1",
+            claim.id,
+            h.id,
+            "jobs/abc/stdout",
+            "values",
+            0.5,
+            "GLM-5.3",
+            h.id,
+            vec![m],
+        )
+        .unwrap();
+        let all = ProposalsProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|x| x.id == t.id && x.proposed_kind == HYPOTHESIS_STATUS_CHANGED));
+        assert!(all.iter().any(|x| x.id == p.id && x.proposed_kind == EVIDENCE_PINNED));
+        // live_for_job scopes to the job's proposals (the idempotency read)
+        assert_eq!(
+            ProposalsProjection::live_for_job(&store.events_all().unwrap(), m).unwrap().len(),
+            1,
+            "the mission id was passed as the job link in this fixture"
+        );
+        assert!(ProposalsProjection::live_for_job(&store.events_all().unwrap(), Uuid::new_v4())
             .unwrap()
             .is_empty());
     }

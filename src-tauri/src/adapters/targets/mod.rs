@@ -58,7 +58,7 @@ pub enum TargetJobStatus {
 /// A finished job's artifacts (FR-11.5's fetch): captured stdout/stderr
 /// and the exit code when there was one. Story 3.4 turns these into
 /// quarantined evidence proposals; here they surface on the job row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobResult {
     pub code: Option<i32>,

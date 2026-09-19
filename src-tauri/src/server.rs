@@ -54,6 +54,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
             get(mission_proposals),
         )
         .route("/api/missions/{mission_id}/jobs", get(mission_jobs))
+        .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
         .route("/api/host-allowlist", get(host_allowlist))
         .with_state(ServerState { db })
@@ -200,6 +201,23 @@ async fn mission_jobs(
     let c = state.db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
     crate::domain::jobs::JobsProjection::fold_for(&events, mission_id)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The result proposals of one job (Story 3.4, FR-11.5 — read-only per
+/// AD-14: fetching results into quarantine stays on the Tauri command
+/// path). Decided proposals included — history is honest.
+async fn job_result_proposals(
+    State(state): State<ServerState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Vec<Proposal>>, StatusCode> {
+    let job_id: Uuid = job_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    crate::jobs_commands::list_job_result_proposals_inner(&events, job_id)
         .map(Json)
         .map_err(|_| internal())
 }
@@ -559,6 +577,112 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// The job result-proposals route (Story 3.4, FR-11.5): read-only over
+    /// the shared core — the fetch itself stays on the Tauri command path
+    /// (single writer, AD-14).
+    #[tokio::test]
+    async fn get_api_job_result_proposals_lists_the_jobs_quarantine_read_only() {
+        let db = test_db();
+        let (mission_id, job_id) = {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Watch,
+                    spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
+                    roles: vec![],
+                })
+                .unwrap())
+                .unwrap();
+            let hyp = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            let claim = store
+                .append(NewEvent::claim_registered("Result artifact.", hyp.id, None).unwrap())
+                .unwrap();
+            let job = store
+                .append(NewEvent::job_submitted(crate::domain::jobs::JobSubmittedPayload {
+                    mission_id: mission.id,
+                    target: "local".into(),
+                    handle: "h-1".into(),
+                    spec: crate::domain::jobs::JobSpec {
+                        cmd: "echo".into(),
+                        args: vec!["done".into()],
+                        env: Default::default(),
+                        resources: None,
+                        workdir: None,
+                    },
+                })
+                .unwrap())
+                .unwrap();
+            store
+                .append(NewEvent::job_finished(crate::domain::jobs::JobLifecyclePayload {
+                    mission_id: mission.id,
+                    job_id: job.id,
+                    target: "local".into(),
+                    code: Some(0),
+                    reason: None,
+                })
+                .unwrap())
+                .unwrap();
+            crate::domain::proposals::propose_evidence_pin(
+                &store,
+                "fetch-1",
+                claim.id,
+                hyp.id,
+                "jobs/abc/stdout",
+                "accuracy: 0.912, n=5",
+                0.5,
+                "GLM-5.3",
+                job.id,
+                vec![job.id, mission.id],
+            )
+            .unwrap();
+            (mission.id, job.id)
+        };
+        // the job's result proposals, read-only
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/jobs/{job_id}/result-proposals"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let proposals: Vec<Proposal> = body_json(res.into_body()).await;
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].proposed_kind,
+            crate::domain::evidence::EVIDENCE_PINNED
+        );
+        assert_eq!(proposals[0].mission_id, Some(mission_id));
+        // another job's route is empty (scoped), and a non-uuid is a 400
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/jobs/{}/result-proposals", Uuid::new_v4()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(body_json::<Vec<Proposal>>(res.into_body()).await.is_empty());
+        let res = app(db)
+            .oneshot(
+                Request::get("/api/jobs/not-a-uuid/result-proposals")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     /// The run receipt route (Story 2.5, FR-6.1): read-only over the shared

@@ -26,6 +26,9 @@ use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::domain::proposals::{
+    MergeApprovedPayload, ProposalCreatedPayload, MERGE_APPROVED, PROPOSAL_CREATED,
+};
 use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const CLAIM_REGISTERED: &str = "claim.registered";
@@ -322,12 +325,108 @@ pub struct Claim {
     pub pin: Option<EvidencePin>,
 }
 
+/// Apply one pin payload to its claim (shared by the direct
+/// `evidence.pinned` arm and the merged-proposal application, Story 3.4):
+/// AD-5 on read — the digest must be the sha-256 of the excerpt the pin
+/// itself quotes; kind-specific source presence and FR-3.6 attribution and
+/// bounds are re-checked (the constructor's guarantees, re-checked on
+/// read). A pin referencing no known claim pins nothing (skipped).
+fn apply_pin(
+    claims: &mut [Claim],
+    index: &HashMap<Uuid, usize>,
+    payload: EvidencePinnedPayload,
+    seq: i64,
+    ts: chrono::DateTime<Utc>,
+) -> Result<(), EventError> {
+    // AD-5 on read: the digest must be the sha-256 of the
+    // excerpt the pin itself quotes — a tampered excerpt
+    // (or a pasted-in digest of other text) is corrupt.
+    if payload.digest != excerpt_digest(&payload.excerpt) {
+        return Err(EventError::Invalid(format!(
+            "corrupt {EVIDENCE_PINNED} event at seq {seq}: digest does not match \
+             its own excerpt — the pin was tampered with"
+        )));
+    }
+    // AD-5 on read, kind-specific source: a citation pin
+    // names its library ref, a numerical pin names its
+    // artifact — the constructors' guarantees, re-checked.
+    let (ref_id, artifact_ref) = match payload.kind {
+        PinKind::Citation => {
+            let Some(ref_id) = payload
+                .ref_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                return Err(EventError::Invalid(format!(
+                    "corrupt {EVIDENCE_PINNED} event at seq {seq}: a citation pin \
+                     without its library ref"
+                )));
+            };
+            (Some(ref_id.to_string()), None)
+        }
+        PinKind::Numerical => {
+            let Some(artifact_ref) = payload
+                .artifact_ref
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                return Err(EventError::Invalid(format!(
+                    "corrupt {EVIDENCE_PINNED} event at seq {seq}: a numerical pin \
+                     without its artifact_ref (FR-3.3)"
+                )));
+            };
+            (None, Some(artifact_ref.to_string()))
+        }
+    };
+    // FR-3.6 on read: attribution and bounds are structural
+    // — every pin names its assessing model, and confidence
+    // stays in [0, 1].
+    if payload.assessing_model.trim().is_empty() {
+        return Err(EventError::Invalid(format!(
+            "corrupt {EVIDENCE_PINNED} event at seq {seq}: assessing_model is empty \
+             — confidence is never anonymous (FR-3.6)"
+        )));
+    }
+    if !(0.0..=1.0).contains(&payload.confidence) || payload.confidence.is_nan() {
+        return Err(EventError::Invalid(format!(
+            "corrupt {EVIDENCE_PINNED} event at seq {seq}: confidence {} is outside \
+             [0.0, 1.0]",
+            payload.confidence
+        )));
+    }
+    let Some(&i) = index.get(&payload.claim_id) else {
+        return Ok(()); // references no known claim — skipped
+    };
+    let claim = &mut claims[i];
+    claim.pinned = true;
+    claim.pin = Some(EvidencePin {
+        seq,
+        ts,
+        claim_id: payload.claim_id,
+        hypothesis_id: payload.hypothesis_id,
+        kind: payload.kind,
+        ref_id,
+        artifact_ref,
+        excerpt: payload.excerpt,
+        digest: payload.digest,
+        confidence: payload.confidence,
+        assessing_model: payload.assessing_model,
+        ref_label: None,
+    });
+    Ok(())
+}
+
 /// Pure fold of the log into claim read models (AD-1). Events fold in
 /// `seq` order; corrupt payloads fail loudly. Pin events verify their own
 /// digest against their own excerpt (AD-5): a tampered excerpt — payload
 /// digest ≠ sha-256(payload excerpt) — is corrupt and fails the fold, and
 /// so is a pin missing its attribution or carrying an out-of-range
 /// confidence (the constructor's guarantees, re-checked on read).
+/// Story 3.4 (AD-3/AD-13): a MERGED result-pin proposal applies its
+/// intended numerical pin at the approval event — approval order is the
+/// application order; the intended event itself never lands in the log.
 pub struct EvidenceProjection;
 
 impl EvidenceProjection {
@@ -338,6 +437,9 @@ impl EvidenceProjection {
         let events = &cursor.live_owned(events);
         let mut claims: Vec<Claim> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
+        // Quarantine index (AD-3, Story 3.4): result-pin proposals by event
+        // id, so a merge.approved can resolve and apply the intended pin.
+        let mut pin_proposals: HashMap<Uuid, ProposalCreatedPayload> = HashMap::new();
         for event in events {
             match event.kind.as_str() {
                 CLAIM_REGISTERED => {
@@ -372,87 +474,55 @@ impl EvidenceProjection {
                             event.seq
                         ))
                     })?;
-                    // AD-5 on read: the digest must be the sha-256 of the
-                    // excerpt the pin itself quotes — a tampered excerpt
-                    // (or a pasted-in digest of other text) is corrupt.
-                    if payload.digest != excerpt_digest(&payload.excerpt) {
-                        return Err(EventError::Invalid(format!(
-                            "corrupt {EVIDENCE_PINNED} event at seq {}: digest does not match \
-                             its own excerpt — the pin was tampered with",
-                            event.seq
-                        )));
-                    }
-                    // AD-5 on read, kind-specific source: a citation pin
-                    // names its library ref, a numerical pin names its
-                    // artifact — the constructors' guarantees, re-checked.
-                    let (ref_id, artifact_ref) = match payload.kind {
-                        PinKind::Citation => {
-                            let Some(ref_id) = payload
-                                .ref_id
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                            else {
-                                return Err(EventError::Invalid(format!(
-                                    "corrupt {EVIDENCE_PINNED} event at seq {}: a citation pin \
-                                     without its library ref",
-                                    event.seq
-                                )));
-                            };
-                            (Some(ref_id.to_string()), None)
+                    apply_pin(&mut claims, &index, payload, event.seq, event.ts)?;
+                }
+                PROPOSAL_CREATED => {
+                    // Quarantine (AD-3, Story 3.4): a result-pin proposal
+                    // records intent only — the intended pin stays EXCLUDED
+                    // from this fold (and every projection) until a
+                    // merge.approved lands. Indexed here so the merge
+                    // application below can resolve it.
+                    if let Ok(payload) =
+                        serde_json::from_value::<ProposalCreatedPayload>(event.payload.clone())
+                    {
+                        if payload.proposed_kind == EVIDENCE_PINNED {
+                            pin_proposals.insert(event.id, payload);
                         }
-                        PinKind::Numerical => {
-                            let Some(artifact_ref) = payload
-                                .artifact_ref
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                            else {
-                                return Err(EventError::Invalid(format!(
-                                    "corrupt {EVIDENCE_PINNED} event at seq {}: a numerical pin \
-                                     without its artifact_ref (FR-3.3)",
-                                    event.seq
-                                )));
-                            };
-                            (None, Some(artifact_ref.to_string()))
-                        }
-                    };
-                    // FR-3.6 on read: attribution and bounds are structural
-                    // — every pin names its assessing model, and confidence
-                    // stays in [0, 1].
-                    if payload.assessing_model.trim().is_empty() {
-                        return Err(EventError::Invalid(format!(
-                            "corrupt {EVIDENCE_PINNED} event at seq {}: assessing_model is empty \
-                             — confidence is never anonymous (FR-3.6)",
+                    }
+                }
+                MERGE_APPROVED => {
+                    // The application point (AD-13, Story 3.4): the approval
+                    // applies the proposal's intended numerical pin to its
+                    // claim — in this event's seq order, i.e. by approval
+                    // order. The merged pin carries the MERGE's seq/ts (the
+                    // human's act, never a silent agent append — the
+                    // intended event itself never lands in the log). AD-5 on
+                    // read: the intended payload's digest is re-verified
+                    // here; the approve() path refuses a tampered candidate
+                    // first (digest_mismatch:).
+                    let payload: MergeApprovedPayload = serde_json::from_value(
+                        event.payload.clone(),
+                    )
+                    .map_err(|e| {
+                        EventError::Invalid(format!(
+                            "corrupt {MERGE_APPROVED} payload at seq {}: {e}",
                             event.seq
-                        )));
-                    }
-                    if !(0.0..=1.0).contains(&payload.confidence) || payload.confidence.is_nan() {
-                        return Err(EventError::Invalid(format!(
-                            "corrupt {EVIDENCE_PINNED} event at seq {}: confidence {} is outside \
-                             [0.0, 1.0]",
-                            event.seq, payload.confidence
-                        )));
-                    }
-                    let Some(&i) = index.get(&payload.claim_id) else {
-                        continue; // references no known claim — skipped
+                        ))
+                    })?;
+                    let Some(proposal) = pin_proposals.get(&payload.proposal_id) else {
+                        continue; // references no known pin proposal — skipped
                     };
-                    let claim = &mut claims[i];
-                    claim.pinned = true;
-                    claim.pin = Some(EvidencePin {
-                        seq: event.seq,
-                        ts: event.ts,
-                        claim_id: payload.claim_id,
-                        hypothesis_id: payload.hypothesis_id,
-                        kind: payload.kind,
-                        ref_id,
-                        artifact_ref,
-                        excerpt: payload.excerpt,
-                        digest: payload.digest,
-                        confidence: payload.confidence,
-                        assessing_model: payload.assessing_model,
-                        ref_label: None,
-                    });
+                    let intended: EvidencePinnedPayload =
+                        serde_json::from_value(proposal.proposed_payload.clone()).map_err(
+                            |e| {
+                                EventError::Invalid(format!(
+                                    "corrupt proposed payload of proposal {} applied at seq \
+                                     {}: {e}",
+                                    payload.proposal_id, event.seq
+                                ))
+                            },
+                        )?;
+                    apply_pin(&mut claims, &index, intended, event.seq, event.ts)?;
                 }
                 _ => {}
             }
@@ -1060,6 +1130,141 @@ mod tests {
     fn an_empty_log_folds_to_no_claims() {
         let conn = mem_conn();
         assert!(EvidenceProjection::fold(&EventStore::new(&conn).events_all().unwrap())
+            .unwrap()
+            .is_empty());
+    }
+
+    // ---------- merged result-pin proposals (Story 3.4, AD-3/AD-13) ----------
+
+    /// A merged pin proposal applies its intended numerical pin AT the
+    /// approval event — approval order is the application order, and the
+    /// pin carries the MERGE's seq/ts (the human's act). The intended
+    /// evidence.pinned event never lands in the log as its own event.
+    #[test]
+    fn a_merged_pin_proposal_applies_at_the_approval_event() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Result artifact `jobs/7/stdout`.", h, None).unwrap())
+            .unwrap();
+        let content = "accuracy: 0.912, ±0.006, n=5 seeds";
+        let intended = NewEvent::evidence_pinned_numerical(
+            claim.id,
+            h,
+            "jobs/7/stdout",
+            content,
+            0.5,
+            "GLM-5.3",
+        )
+        .unwrap();
+        let proposal = store
+            .append(
+                NewEvent::proposal_created("fetch-7", &intended, h, claim.seq + 1, claim.id)
+                    .unwrap(),
+            )
+            .unwrap();
+        // pending: nothing is pinned (AD-3)
+        let [pending] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(!pending.pinned);
+        // the merge (the only construction site is crate-private — the
+        // command path calls approve(); the fold contract is the same)
+        let merge = store
+            .append(NewEvent::merge_approved(proposal.id, false, false).unwrap())
+            .unwrap();
+        let [pinned] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(pinned.pinned, "the merge applied the intended pin");
+        let pin = pinned.pin.as_ref().unwrap();
+        assert_eq!(pin.kind, PinKind::Numerical);
+        assert_eq!(pin.artifact_ref.as_deref(), Some("jobs/7/stdout"));
+        assert_eq!(pin.digest, excerpt_digest(content));
+        assert_eq!(pin.confidence, 0.5);
+        assert_eq!(pin.assessing_model, "GLM-5.3");
+        assert_eq!(pin.seq, merge.seq, "the merged pin carries the merge's seq");
+        assert_eq!(pin.ts, merge.ts);
+        // the intended event itself never landed — only the proposal + the
+        // approval exist in the log
+        assert!(
+            !store
+                .events_all()
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == EVIDENCE_PINNED),
+            "no evidence.pinned event was appended — the fold applied the intent"
+        );
+    }
+
+    /// AD-5 on read for merged intents: a hand-merge of a TAMPERED intended
+    /// payload (digest ≠ its own excerpt) fails the fold loudly — the same
+    /// guarantee the direct pin events carry, extended to the proposal path
+    /// (the approve() path refuses it first with digest_mismatch:).
+    #[test]
+    fn a_merged_tampered_pin_intent_fails_the_fold_loudly() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        let digest_of_other_content = excerpt_digest("entirely different numbers");
+        let tampered = json!({
+            "claim_id": claim.id.to_string(),
+            "hypothesis_id": h.to_string(),
+            "kind": "numerical",
+            "artifact_ref": "jobs/7/stdout",
+            "excerpt": "accuracy: 0.912, n=5",
+            "digest": digest_of_other_content,
+            "confidence": 0.5,
+            "assessing_model": "GLM-5.3",
+        });
+        let intended = NewEvent::new(EVIDENCE_PINNED, Actor::User, tampered).unwrap();
+        let proposal = store
+            .append(
+                NewEvent::proposal_created("fetch-7", &intended, h, claim.seq + 1, claim.id)
+                    .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(NewEvent::merge_approved(proposal.id, true, false).unwrap())
+            .unwrap();
+        let err = EvidenceProjection::fold(&store.events_all().unwrap())
+            .expect_err("a tampered merged intent must fail the fold");
+        assert!(err.to_string().contains("tampered"), "unexpected: {err}");
+    }
+
+    /// A pin proposal whose claim never registered (a ghost anchor) pins
+    /// nothing when merged — skipped, not fatal, mirroring direct pins.
+    #[test]
+    fn a_merged_pin_intent_for_a_ghost_claim_pins_nothing() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let intended = NewEvent::evidence_pinned_numerical(
+            Uuid::new_v4(), // no such claim
+            h,
+            "jobs/7/stdout",
+            "values",
+            0.5,
+            "GLM-5.3",
+        )
+        .unwrap();
+        let proposal = store
+            .append(
+                NewEvent::proposal_created("fetch-7", &intended, h, 2, h).unwrap(),
+            )
+            .unwrap();
+        store
+            .append(NewEvent::merge_approved(proposal.id, false, false).unwrap())
+            .unwrap();
+        assert!(EvidenceProjection::fold(&store.events_all().unwrap())
             .unwrap()
             .is_empty());
     }

@@ -25,12 +25,14 @@ use crate::adapters::targets::{
     ComputeTarget, JobHandle, JobResult, TargetError, TargetInfo, TargetJobStatus, TargetRegistry,
 };
 use crate::db::Db;
+use crate::domain::hypotheses::HypothesesProjection;
 use crate::domain::jobs::{
     fold_declared_targets, fold_host_allowlist, DeclaredTarget, Job, JobPhase,
     JobSubmittedPayload, JobsProjection, JobLifecyclePayload, TargetDeclaredPayload,
     DEFAULT_TARGET_KIND, DEFAULT_TARGET_NAME,
 };
 use crate::domain::missions::MissionsProjection;
+use crate::domain::proposals::{propose_evidence_pin, Proposal, ProposalsProjection};
 use crate::domain::trust::TargetSpendRecordedPayload;
 use crate::eventstore::{EventError, EventStore, NewEvent, StoredEvent};
 use tauri::State;
@@ -528,6 +530,215 @@ pub(crate) async fn fetch_job_inner(db: &Db, job_id: Uuid) -> Result<JobResult, 
     adapter
         .fetch(&JobHandle::new(job.handle))
         .map_err(|e| EventError::Invalid(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Fetch results → quarantined evidence (Story 3.4, FR-11.5, AD-3/AD-5)
+// ---------------------------------------------------------------------------
+
+/// The neutral confidence of a fetched result's pin candidate (AD-5): v1
+/// has no verification engine (v0.2.0+), so the runtime does not assess
+/// support at fetch time — the candidate carries the neutral 0.5,
+/// ATTRIBUTED to the configured model (never anonymous, FR-3.6). The
+/// human's merge is the act of judgment; a later re-pin can carry a real
+/// assessment.
+pub(crate) const RESULT_PIN_CONFIDENCE: f64 = 0.5;
+
+/// What `fetch_job_results` produced (Story 3.4): the captured output and
+/// the quarantined proposals it landed as — one per meaningful artifact,
+/// each awaiting `merge.approved` like every other proposal (AD-3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchedJobResults {
+    pub job: Job,
+    /// The captured output (the adapter's fetch of the terminal job).
+    pub results: JobResult,
+    /// The job's result proposals — freshly created ones plus any that
+    /// already existed (an idempotent re-fetch appends nothing).
+    pub proposals: Vec<Proposal>,
+    /// How many proposals THIS fetch created (0 on an idempotent re-fetch).
+    pub created: usize,
+}
+
+/// Fetch a finished job's results as QUARANTINED EVIDENCE (Story 3.4,
+/// FR-11.5, AD-3/AD-5): the runtime fetches the result artifacts (the
+/// target adapter's `fetch`), and each MEANINGFUL artifact (v1: a non-empty
+/// stdout — the captured output is the artifact) lands as one
+/// `proposal.created` whose intended payload is an `evidence.pinned` of
+/// kind numerical — `artifact_ref` naming the artifact, the sha-256 digest
+/// of the content COMPUTED at proposal time (AD-5), confidence attributed
+/// to the configured model. Fully automatic result pinning does not exist
+/// in v1: the proposals await a human `merge.approved` like every other
+/// proposal (auto-pinning is v0.2.0).
+///
+/// The v1 TARGETING RULE: a pin attaches to a claim/hypothesis (AD-5), so
+/// each artifact first registers an UNPINNED claim (actor=user — the user's
+/// fetch command; it renders amber until the merge pins it, FR-3.4) on the
+/// mission's FIRST hypothesis (creation order), and the proposal targets
+/// that hypothesis — the merge pins the claim. A rejection leaves the
+/// claim honestly unpinned.
+///
+/// Idempotent: a second fetch appends nothing when proposals already exist
+/// for the job (cause-linked), and returns them.
+#[tauri::command]
+pub async fn fetch_job_results(
+    db: State<'_, Db>,
+    job_id: String,
+) -> Result<FetchedJobResults, String> {
+    let job_id: Uuid = job_id
+        .parse()
+        .map_err(|e| format!("invalid job id `{job_id}`: {e}"))?;
+    fetch_job_results_inner(db.inner(), job_id)
+        .await
+        .map_err(err)
+}
+
+pub(crate) async fn fetch_job_results_inner(
+    db: &Db,
+    job_id: Uuid,
+) -> Result<FetchedJobResults, EventError> {
+    // Resolve the job + its adapter + the attribution fields under one read.
+    let (job, adapter, assessing_model) = {
+        let conn = db.0.lock().await;
+        let events = EventStore::new(&conn).events_all()?;
+        let job = JobsProjection::fold(&events)?
+            .into_iter()
+            .find(|j| j.id == job_id)
+            .ok_or_else(|| EventError::Invalid(format!("not_found: no job with id `{job_id}`")))?;
+        // Only a `job.finished` job produced result artifacts — a failed
+        // job's output is its reasoned terminal, not evidence.
+        if job.phase != JobPhase::Finished {
+            return Err(EventError::Invalid(format!(
+                "job_not_finished: the job is {} — results land as evidence proposals only \
+                 when a job finishes",
+                match job.phase {
+                    JobPhase::Queued => "queued",
+                    JobPhase::Running => "running",
+                    JobPhase::Failed => "failed",
+                    JobPhase::Finished => unreachable!(),
+                }
+            )));
+        }
+        let declared = fold_declared_targets(&events);
+        let kind = resolve_kind(&declared, &job.target).ok_or_else(|| {
+            EventError::Invalid(format!(
+                "unknown_target: `{}` — its adapter kind is gone",
+                job.target
+            ))
+        })?;
+        let adapter = TargetRegistry::v1()
+            .adapter(&kind)
+            .map_err(|e| EventError::Invalid(e.to_string()))?;
+        // Attribution (FR-3.6): the configured model — the adapter that
+        // would assess the candidate. The simulated fallback names itself.
+        let settings = crate::adapters::providers::ProviderSettings::load(&conn);
+        let assessing_model = if settings.model.trim().is_empty() {
+            "simulated".to_string()
+        } else {
+            settings.model.trim().to_string()
+        };
+        (job, adapter, assessing_model)
+    };
+    // Fetch the artifacts outside the lock (the adapter's own seam).
+    let results = adapter
+        .fetch(&JobHandle::new(job.handle.clone()))
+        .map_err(|e| EventError::Invalid(e.to_string()))?;
+    // The append phase, under one lock: idempotency check, the anchor
+    // claims, and one proposal per meaningful artifact.
+    let (proposals, created) = {
+        let conn = db.0.lock().await;
+        let store = EventStore::new(&conn);
+        let events = store.events_all()?;
+        // Idempotency: proposals already cause-linked to this job — a
+        // second fetch appends nothing and returns them.
+        let existing = ProposalsProjection::live_for_job(&events, job.id)?;
+        if !existing.is_empty() {
+            (existing, 0)
+        } else if results.stdout.trim().is_empty() {
+            // No meaningful artifact — an honest empty fetch (nothing to
+            // pin; the job still finished and its terminal is stamped).
+            (Vec::new(), 0)
+        } else {
+            // The v1 targeting rule: the mission's FIRST hypothesis
+            // (creation order) carries the result.
+            let hyps = HypothesesProjection::fold_for(&events, job.mission_id)?;
+            let Some(hyp) = hyps.first() else {
+                return Err(EventError::Invalid(format!(
+                    "no_hypothesis: the mission has no hypothesis to pin results onto — a \
+                     result pin targets the mission's first hypothesis (v1)"
+                )));
+            };
+            // The producing event: the job's `job.finished` (the terminal
+            // that made the artifacts fetchable); the submitted event is
+            // the fallback identity.
+            let cause = events
+                .iter()
+                .filter(|e| e.kind == crate::domain::jobs::JOB_FINISHED)
+                .find(|e| {
+                    e.payload
+                        .get("job_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|s| s == job.id.to_string())
+                        .unwrap_or(false)
+                })
+                .map(|e| e.id)
+                .unwrap_or(job.id);
+            let artifact_ref = format!("jobs/{}/stdout", job.id.simple());
+            let run_id = format!("fetch-{}", job.id.simple());
+            // The anchor claim (AD-5 — a pin attaches to a claim): the
+            // fetch's user command registers it UNPINNED; the merge pins it.
+            let claim = store.append(NewEvent::claim_registered(
+                format!(
+                    "Result artifact `{artifact_ref}` from job e-{} on `{}`",
+                    job.seq, job.target
+                ),
+                hyp.id,
+                None,
+            )?)?;
+            let proposal = propose_evidence_pin(
+                &store,
+                &run_id,
+                claim.id,
+                hyp.id,
+                &artifact_ref,
+                &results.stdout,
+                RESULT_PIN_CONFIDENCE,
+                &assessing_model,
+                cause,
+                vec![job.id, job.mission_id],
+            )
+            .map_err(|e| EventError::Invalid(e.to_string()))?;
+            // A proposal is a mission-scoped event — evaluate the
+            // terminators right after it lands (AD-12).
+            let _ = crate::domain::nightshift::evaluate_terminals(&store);
+            (vec![proposal], 1)
+        }
+    };
+    // The re-folded job — the log is the only truth.
+    let job = {
+        let conn = db.0.lock().await;
+        let events = EventStore::new(&conn).events_all()?;
+        JobsProjection::fold(&events)?
+            .into_iter()
+            .find(|j| j.id == job_id)
+            .ok_or_else(|| EventError::Invalid(format!("not_found: no job with id `{job_id}`")))?
+    };
+    Ok(FetchedJobResults {
+        job,
+        results,
+        proposals,
+        created,
+    })
+}
+
+/// The result proposals of one job (read-only — the server shell's route):
+/// every proposal cause-linked to the job, decided ones included (history
+/// is honest, nothing disappears).
+pub(crate) fn list_job_result_proposals_inner(
+    events: &[StoredEvent],
+    job_id: Uuid,
+) -> Result<Vec<Proposal>, EventError> {
+    ProposalsProjection::live_for_job(events, job_id)
 }
 
 /// Declare a named compute target (shared by the command and tests): the
@@ -1140,5 +1351,244 @@ mod tests {
             JobsProjection::fold_for(&all, a).unwrap()
         };
         assert_eq!(jobs_a[0].phase, JobPhase::Finished);
+    }
+
+    // ---- fetch results → quarantined evidence (Story 3.4, FR-11.5) ----
+
+    use crate::domain::evidence::{excerpt_digest, EvidenceProjection, EVIDENCE_PINNED};
+    use crate::domain::proposals::{self, ProposalStatus};
+
+    async fn create_mission_with_hypothesis(db: &Db) -> (Uuid, Uuid) {
+        let mission = create_mission(db).await;
+        let conn = db.0.lock().await;
+        let hyp = EventStore::new(&conn)
+            .append(NewEvent::hypothesis_created("The cluster's run holds up.", mission).unwrap())
+            .unwrap()
+            .id;
+        (mission, hyp)
+    }
+
+    /// Submit an `echo` job, wait past its lifetime, land its terminal.
+    async fn finished_echo_job(db: &Db, mission: Uuid, text: &str) -> Job {
+        let job = submit_job_inner(db, mission, "local", spec("echo", &[text]))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        poll_live_jobs(db, Some(mission)).await.unwrap();
+        let conn = db.0.lock().await;
+        let all = EventStore::new(&conn).events_all().unwrap();
+        JobsProjection::fold_for(&all, mission)
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == job.id)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fetch_results_lands_quarantined_numerical_pin_candidates() {
+        let db = test_db();
+        let (mission, hyp) = create_mission_with_hypothesis(&db).await;
+        // attribution comes from the current provider config (FR-3.6)
+        {
+            let conn = db.0.lock().await;
+            crate::db::set_setting(&conn, "model", "glm-test").unwrap();
+        }
+        let job = finished_echo_job(&db, mission, "accuracy: 0.912, n=5").await;
+        assert_eq!(job.phase, JobPhase::Finished);
+
+        let fetched = fetch_job_results_inner(&db, job.id).await.unwrap();
+        assert_eq!(fetched.created, 1, "one proposal per meaningful artifact");
+        assert_eq!(fetched.proposals.len(), 1);
+        assert_eq!(fetched.results.stdout.trim(), "accuracy: 0.912, n=5");
+        let p = &fetched.proposals[0];
+        assert_eq!(p.status, ProposalStatus::Pending);
+        assert_eq!(p.proposed_kind, EVIDENCE_PINNED);
+        assert_eq!(p.target_entity, hyp, "the v1 targeting rule: the mission's first hypothesis");
+        assert_eq!(p.mission_id, Some(mission));
+        // the intended pin candidate: artifact_ref + digest computed at
+        // proposal time (AD-5) + attributed confidence
+        let artifact_ref = format!("jobs/{}/stdout", job.id.simple());
+        assert_eq!(p.proposed_payload["artifact_ref"], serde_json::json!(artifact_ref));
+        assert_eq!(p.proposed_payload["excerpt"], serde_json::json!(fetched.results.stdout));
+        assert_eq!(
+            p.proposed_payload["digest"],
+            serde_json::json!(excerpt_digest(&fetched.results.stdout))
+        );
+        assert_eq!(p.proposed_payload["kind"], serde_json::json!("numerical"));
+        assert_eq!(p.proposed_payload["confidence"], serde_json::json!(RESULT_PIN_CONFIDENCE));
+        assert_eq!(p.proposed_payload["assessing_model"], serde_json::json!("glm-test"));
+        // cause-linked to the job + the mission (AD-2), actor = the fetch run
+        let created = events(&db)
+            .await
+            .into_iter()
+            .find(|e| e.id == p.id)
+            .unwrap();
+        assert!(created.causes.contains(&job.id), "cause-linked to the job");
+        assert!(created.causes.contains(&mission), "cause-linked to the mission");
+        assert_eq!(
+            created.actor,
+            crate::eventstore::Actor::Agent { run_id: format!("fetch-{}", job.id.simple()) }
+        );
+        // the anchor claim: registered UNPINNED on the first hypothesis
+        // (FR-3.4 — amber until the merge pins it)
+        let claims = {
+            let conn = db.0.lock().await;
+            let all = EventStore::new(&conn).events_all().unwrap();
+            EvidenceProjection::fold_for(&all, hyp).unwrap()
+        };
+        assert_eq!(claims.len(), 1);
+        assert!(!claims[0].pinned, "the candidate waits in quarantine (AD-3)");
+        assert_eq!(claims[0].hypothesis_id, hyp);
+        // THE STRUCTURAL GUARANTEE: no evidence.pinned event ever lands from
+        // the fetch path — the pin applies only through a merged proposal
+        // (auto-pinning is v0.2.0); in particular no actor=agent append
+        assert!(
+            !events(&db).await.iter().any(|e| e.kind == EVIDENCE_PINNED),
+            "fetch appends proposals, never pins"
+        );
+        // the proposal surfaces in the mission's runs drill-down (AD-2)
+        let runs = {
+            let conn = db.0.lock().await;
+            let all = EventStore::new(&conn).events_all().unwrap();
+            MissionsProjection::runs_for(&all, mission)
+        };
+        assert!(runs.iter().any(|r| r.kind == "proposal.created"));
+    }
+
+    #[tokio::test]
+    async fn merging_the_result_proposal_pins_the_numerical_evidence() {
+        let db = test_db();
+        let (mission, hyp) = create_mission_with_hypothesis(&db).await;
+        let job = finished_echo_job(&db, mission, "gain: 12.3%, n=48").await;
+        let fetched = fetch_job_results_inner(&db, job.id).await.unwrap();
+        let p = fetched.proposals[0].clone();
+        // the human merges — the only path to a pin
+        let outcome = {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            proposals::approve(&store, p.id, false)
+                .map_err(|e| EventError::Invalid(e.to_string()))
+                .unwrap()
+        };
+        assert_eq!(outcome.proposal.status, ProposalStatus::Merged);
+        // still no evidence.pinned event in the log — the fold applies the
+        // intended pin at the approval (AD-13)
+        assert!(
+            !events(&db).await.iter().any(|e| e.kind == EVIDENCE_PINNED),
+            "the merge applies the pin in-fold; nothing auto-pins"
+        );
+        let claims = {
+            let conn = db.0.lock().await;
+            let all = EventStore::new(&conn).events_all().unwrap();
+            EvidenceProjection::fold_for(&all, hyp).unwrap()
+        };
+        assert_eq!(claims.len(), 1);
+        let claim = &claims[0];
+        assert!(claim.pinned, "the merge pinned the result claim");
+        let pin = claim.pin.as_ref().unwrap();
+        assert_eq!(pin.kind, crate::domain::evidence::PinKind::Numerical);
+        assert_eq!(
+            pin.artifact_ref.as_deref(),
+            Some(format!("jobs/{}/stdout", job.id.simple()).as_str())
+        );
+        assert_eq!(pin.digest, excerpt_digest(&fetched.results.stdout));
+        assert_eq!(pin.assessing_model, "simulated", "the unconfigured fallback names itself");
+        // and the hypothesis board is untouched — a pin never transitions
+        let hyps = {
+            let conn = db.0.lock().await;
+            let all = EventStore::new(&conn).events_all().unwrap();
+            crate::domain::hypotheses::HypothesesProjection::fold_for(&all, mission).unwrap()
+        };
+        assert_eq!(
+            hyps[0].status,
+            crate::domain::hypotheses::HypothesisStatus::Proposed
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_fetch_appends_nothing() {
+        let db = test_db();
+        let (mission, _hyp) = create_mission_with_hypothesis(&db).await;
+        let job = finished_echo_job(&db, mission, "values").await;
+        let first = fetch_job_results_inner(&db, job.id).await.unwrap();
+        assert_eq!(first.created, 1);
+        let head = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).head_seq().unwrap()
+        };
+        // the idempotent re-fetch: the proposals come back, nothing appends
+        let second = fetch_job_results_inner(&db, job.id).await.unwrap();
+        assert_eq!(second.created, 0, "a second fetch appends nothing");
+        assert_eq!(second.proposals.len(), 1);
+        assert_eq!(second.proposals[0].id, first.proposals[0].id);
+        let head_after = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).head_seq().unwrap()
+        };
+        assert_eq!(head_after, head, "no claim, no proposal — nothing appended");
+    }
+
+    #[tokio::test]
+    async fn fetch_results_needs_a_finished_job_and_a_hypothesis() {
+        let db = test_db();
+        let (mission, _hyp) = create_mission_with_hypothesis(&db).await;
+        // a live job: typed refusal, nothing appended
+        let job = submit_job_inner(&db, mission, "local", spec("sleep", &["1"]))
+            .await
+            .unwrap();
+        let head = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).head_seq().unwrap()
+        };
+        let err = fetch_job_results_inner(&db, job.id).await.unwrap_err();
+        assert!(err.to_string().contains("job_not_finished"), "unexpected: {err}");
+        assert_eq!(
+            {
+                let conn = db.0.lock().await;
+                EventStore::new(&conn).head_seq().unwrap()
+            },
+            head
+        );
+        // a failed job produced no result artifacts either — its reasoned
+        // terminal is the record, not evidence
+        tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+        poll_live_jobs(&db, Some(mission)).await.unwrap();
+        let failed = submit_job_inner(&db, mission, "local", spec("sh", &["-c", "exit 3"]))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        poll_live_jobs(&db, Some(mission)).await.unwrap();
+        let err = fetch_job_results_inner(&db, failed.id).await.unwrap_err();
+        assert!(err.to_string().contains("job_not_finished"), "unexpected: {err}");
+        // a finished job on a mission with NO hypothesis: the targeting rule
+        // refuses honestly — nothing to pin onto
+        let bare = create_mission(&db).await;
+        let done = finished_echo_job(&db, bare, "orphan values").await;
+        let err = fetch_job_results_inner(&db, done.id).await.unwrap_err();
+        assert!(err.to_string().contains("no_hypothesis"), "unexpected: {err}");
+        // an unknown job id is honest about it
+        let err = fetch_job_results_inner(&db, Uuid::new_v4()).await.unwrap_err();
+        assert!(err.to_string().contains("not_found"), "unexpected: {err}");
+    }
+
+    /// A finished job with no meaningful artifact (empty stdout) is an
+    /// honest empty fetch: zero proposals, no error, nothing pinned.
+    #[tokio::test]
+    async fn a_job_with_no_output_proposes_nothing() {
+        let db = test_db();
+        let (mission, _hyp) = create_mission_with_hypothesis(&db).await;
+        // `sleep 0` finishes silently — stdout is empty
+        let job = submit_job_inner(&db, mission, "local", spec("sleep", &["0"]))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        poll_live_jobs(&db, Some(mission)).await.unwrap();
+        let fetched = fetch_job_results_inner(&db, job.id).await.unwrap();
+        assert_eq!(fetched.created, 0);
+        assert!(fetched.proposals.is_empty());
+        assert!(
+            !events(&db).await.iter().any(|e| e.kind == "claim.registered"),
+            "no artifact, no anchor claim"
+        );
     }
 }
