@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow } from "./types";
+import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -249,10 +249,33 @@ const allowedNext: Record<HypothesisStatus, HypothesisStatus[]> = {
 // Mock library refs (mirrors the core's seeded refs) so the citation
 // pin's reference picker flows in the dev browser.
 const mockRefs: Ref[] = [
-  { id: "r1", project_id: "p1", collection_id: null, title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", isbn: "", attachment: null, status: "read", tags: "transformer,attention", used: 1, citation_count: 2, created_at: nowISO() },
-  { id: "r2", project_id: "p1", collection_id: null, title: "Neural Machine Translation by Jointly Learning to Align and Translate", authors: "Bahdanau et al.", year: 2015, venue: "ICLR", doi: "10.48550/arXiv.1409.0473", url: "https://arxiv.org/abs/1409.0473", isbn: "", attachment: null, status: "read", tags: "attention,NLP", used: 1, citation_count: 1, created_at: nowISO() },
-  { id: "r3", project_id: "p1", collection_id: null, title: "Scaling Laws for Neural Language Models", authors: "Kaplan et al.", year: 2020, venue: "arXiv", doi: "10.48550/arXiv.2001.08361", url: "https://arxiv.org/abs/2001.08361", isbn: "", attachment: null, status: "read", tags: "scaling,NLP", used: 1, citation_count: 1, created_at: nowISO() },
-  { id: "r4", project_id: "p1", collection_id: null, title: "A Survey on Large Language Models", authors: "Zhao et al.", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2303.18223", url: "https://arxiv.org/abs/2303.18223", isbn: "", attachment: null, status: "unread", tags: "survey,LLM", used: 0, citation_count: 0, created_at: nowISO() },
+  { id: "r1", project_id: "p1", collection_id: null, title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", isbn: "", attachment: null, status: "read", tags: "transformer,attention", used: 1, citation_count: 2, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+  { id: "r2", project_id: "p1", collection_id: null, title: "Neural Machine Translation by Jointly Learning to Align and Translate", authors: "Bahdanau et al.", year: 2015, venue: "ICLR", doi: "10.48550/arXiv.1409.0473", url: "https://arxiv.org/abs/1409.0473", isbn: "", attachment: null, status: "read", tags: "attention,NLP", used: 1, citation_count: 1, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+  { id: "r3", project_id: "p1", collection_id: null, title: "Scaling Laws for Neural Language Models", authors: "Kaplan et al.", year: 2020, venue: "arXiv", doi: "10.48550/arXiv.2001.08361", url: "https://arxiv.org/abs/2001.08361", isbn: "", attachment: null, status: "read", tags: "scaling,NLP", used: 1, citation_count: 1, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+  { id: "r4", project_id: "p1", collection_id: null, title: "A Survey on Large Language Models", authors: "Zhao et al.", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2303.18223", url: "https://arxiv.org/abs/2303.18223", isbn: "", attachment: null, status: "unread", tags: "survey,LLM", used: 0, citation_count: 0, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+];
+
+// The Zotero connection state (FR-9.1 seed): the connector starts DOWN —
+// the honest unreachable state the first import attempt surfaces; the
+// retry simulates Zotero answering (the deterministic seeded import for
+// vite dev).
+let zoteroConnectorUp = false;
+
+// The seeded Zotero library the deterministic import pulls in: one item
+// duplicates r1 by DOI (the honest "already present" skip), two are new.
+const seededZoteroItems: {
+  key: string;
+  title: string;
+  authors: string;
+  year: number;
+  venue: string;
+  doi: string;
+  url: string;
+  tags: string;
+}[] = [
+  { key: "ZITEM1", title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", tags: "transformer" },
+  { key: "ZITEM2", title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces", authors: "Gu & Dao", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2312.00752", url: "https://arxiv.org/abs/2312.00752", tags: "ssm,efficiency" },
+  { key: "ZITEM3", title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks", authors: "Lewis et al.", year: 2020, venue: "NeurIPS", doi: "10.48550/arXiv.2005.11401", url: "https://arxiv.org/abs/2005.11401", tags: "rag,retrieval" },
 ];
 
 /** sha-256 hex of an excerpt — the mock mirrors the core's digest so the
@@ -1162,6 +1185,10 @@ async function mockFirstValue(paper: {
         used: 0,
         citation_count: 0,
         created_at: nowISO(),
+        source: "arxiv",
+        removed: false,
+        arxiv_id: paper.arxivId,
+        timeline: [],
       });
     }
   }
@@ -1261,11 +1288,212 @@ export const mockApi = {
   getDashboard: async () => { await delay(); return { refs_total: 24, refs_used: 11, active_actions: 3, reviews: 2 }; },
 
   // refs
-  listRefs: async () => { await delay(); return [...mockRefs]; },
+  listRefs: async (_projectId?: string, filter?: string | null) => {
+    await delay();
+    let refs = [...mockRefs];
+    if (filter === "active") refs = refs.filter((r) => !r.removed);
+    else if (filter === "removed" || filter === "archived") refs = refs.filter((r) => r.removed);
+    return refs;
+  },
   getRef: async () => { throw new Error("not in mock"); },
   createRef: async (r: any) => r as Ref,
   updateRef: async () => {},
   deleteRef: async () => {},
+
+  // ---- Evented references CRUD (FR-15, Epic 5) — the mock mirrors the
+  // core's domain/library: adds append ref.added semantics (dedup by
+  // url/doi/zotero key with the honest already_in_library refusal),
+  // removal is the auditable archived state (never destructive), restore
+  // is the un-event, and a removed ref is never pinnable.
+  addRefFromArxiv: async (url: string): Promise<Ref> => {
+    await delay(300);
+    const arxivId = parseMockArxivUrl(url);
+    const seed = seedPaper(arxivId);
+    const urlNorm = `https://arxiv.org/abs/${arxivId}`;
+    const doi = `10.48550/arXiv.${arxivId}`;
+    const dup = mockRefs.find((r) => r.url === urlNorm || r.doi === doi);
+    if (dup) {
+      throw new Error(
+        `already_in_library: \`${dup.title}\` — this reference is already in the library (added via ${dup.source ?? "arxiv"})`,
+      );
+    }
+    mockEventSeq += 1;
+    const ref: Ref = {
+      id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
+      project_id: "p1",
+      collection_id: null,
+      title: seed.title,
+      authors: seed.authors,
+      year: seed.year ?? new Date().getFullYear(),
+      venue: "arXiv",
+      doi,
+      url: urlNorm,
+      isbn: "",
+      attachment: null,
+      status: "unread",
+      tags: `arXiv,${arxivId}`,
+      used: 0,
+      citation_count: 0,
+      created_at: nowISO(),
+      source: "arxiv",
+      removed: false,
+      arxiv_id: arxivId,
+      timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
+    };
+    mockRefs.push(ref);
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
+  addRefManual: async (
+    title: string,
+    authors: string,
+    year: number | null,
+    venue: string,
+    doi: string,
+    url: string,
+    tags: string,
+  ): Promise<Ref> => {
+    await delay();
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      throw new Error(
+        "invalid_ref: ref.title must not be empty — a reference is titled (Required to launch / Requerido)",
+      );
+    }
+    const trimmedDoi = doi.trim();
+    const trimmedUrl = url.trim();
+    if (!trimmedDoi && !trimmedUrl) {
+      throw new Error("invalid_ref: a manual reference carries at least one identifier (doi or url)");
+    }
+    const dup = mockRefs.find(
+      (r) =>
+        (trimmedDoi && r.doi === trimmedDoi) || (trimmedUrl && r.url === trimmedUrl),
+    );
+    if (dup) {
+      throw new Error(
+        `already_in_library: \`${dup.title}\` — this reference is already in the library (added via ${dup.source ?? "manual"})`,
+      );
+    }
+    mockEventSeq += 1;
+    const ref: Ref = {
+      id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
+      project_id: "p1",
+      collection_id: null,
+      title: trimmedTitle,
+      authors: authors.trim(),
+      year: year ?? new Date().getFullYear(),
+      venue: venue.trim(),
+      doi: trimmedDoi,
+      url: trimmedUrl,
+      isbn: "",
+      attachment: null,
+      status: "unread",
+      tags: tags.trim(),
+      used: 0,
+      citation_count: 0,
+      created_at: nowISO(),
+      source: "manual",
+      removed: false,
+      timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
+    };
+    mockRefs.push(ref);
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
+  // The seeded Zotero connection is DOWN (the FR-9.1 seed) — the first
+  // import attempt surfaces it honestly; the retry simulates the connector
+  // answering (the deterministic seeded import for vite dev).
+  importRefsFromZotero: async (): Promise<ZoteroImportResult> => {
+    await delay(400);
+    if (!zoteroConnectorUp) {
+      zoteroConnectorUp = true;
+      throw new Error(
+        "zotero_unreachable: unreachable — the Zotero connector is not answering; is Zotero running with the local API enabled? / el conector de Zotero no responde; ¿está Zotero en ejecución con la API local activada?",
+      );
+    }
+    const result: ZoteroImportResult = {
+      imported: 0,
+      skipped: 0,
+      failed: 0,
+      refs: [],
+      skippedItems: [],
+      failedItems: [],
+    };
+    for (const item of seededZoteroItems) {
+      const title = item.title.trim();
+      if (!title) {
+        result.failed += 1;
+        result.failedItems.push(`${item.key} — no title`);
+        continue;
+      }
+      const dup = mockRefs.find(
+        (r) =>
+          (item.doi && r.doi === item.doi) ||
+          (item.url && r.url === item.url) ||
+          r.zotero_item_key === item.key,
+      );
+      if (dup) {
+        result.skipped += 1;
+        result.skippedItems.push(
+          `${dup.title} — already in the library (${dup.source ?? "zotero"})`,
+        );
+        continue;
+      }
+      mockEventSeq += 1;
+      const ref: Ref = {
+        id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
+        project_id: "p1",
+        collection_id: null,
+        title,
+        authors: item.authors,
+        year: item.year,
+        venue: item.venue,
+        doi: item.doi,
+        url: item.url,
+        isbn: "",
+        attachment: null,
+        status: "unread",
+        tags: `zotero${item.tags ? "," + item.tags : ""}`,
+        used: 0,
+        citation_count: 0,
+        created_at: nowISO(),
+        source: "zotero",
+        removed: false,
+        zotero_item_key: item.key,
+        timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
+      };
+      mockRefs.push(ref);
+      result.imported += 1;
+      result.refs.push({ ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) });
+    }
+    return result;
+  },
+  removeRef: async (refId: string): Promise<Ref> => {
+    await delay();
+    const ref = mockRefs.find((r) => r.id === refId);
+    if (!ref) throw new Error(`not_found: no reference with id \`${refId}\` in the library`);
+    if (ref.removed) {
+      throw new Error(
+        `invalid_state: the reference \`${refId}\` is already removed — restore it first (FR-15.7)`,
+      );
+    }
+    mockEventSeq += 1;
+    ref.removed = true;
+    ref.timeline = [...(ref.timeline ?? []), { seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.removed" }];
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
+  restoreRef: async (refId: string): Promise<Ref> => {
+    await delay();
+    const ref = mockRefs.find((r) => r.id === refId);
+    if (!ref) throw new Error(`not_found: no reference with id \`${refId}\` in the library`);
+    if (!ref.removed) {
+      throw new Error(
+        `invalid_state: the reference \`${refId}\` is not removed — nothing to restore`,
+      );
+    }
+    mockEventSeq += 1;
+    ref.removed = false;
+    ref.timeline = [...(ref.timeline ?? []), { seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.restored" }];
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
   searchRefs: async (_pid: string, q: string) => {
     await delay();
     const needle = q.trim().toLowerCase();
@@ -1593,6 +1821,13 @@ export const mockApi = {
     if (!trimmedRef || !ref) {
       throw new Error(`invalid_ref: \`${trimmedRef}\` — no reference with this id in the library`);
     }
+    // FR-15.5 (Epic 5): a removed ref is never pinnable — the typed
+    // refusal, mirrored from the core's pin validation.
+    if (ref.removed) {
+      throw new Error(
+        `ref_removed: \`${trimmedRef}\` — this reference was removed from the library and cannot be pinned (restore it first, FR-15.5)`,
+      );
+    }
     if (!excerpt.trim()) {
       throw new Error("evidence.excerpt must not be empty — a pin quotes the passage it rests on");
     }
@@ -1624,9 +1859,10 @@ export const mockApi = {
       confidence,
       assessingModel: assessingModel.trim(),
       refLabel: `${ref.authors} ${ref.year}`,
+      refRemoved: false,
       verification: carriedStale,
     };
-    return { ...claim };
+    return { ...claim, pin: { ...claim.pin } };
   },
   // FR-3.3 (Story 1.8): a numerical pin anchors the claim to an artifact
   // (file/figure/table) by artifact_ref + the sha-256 of the pinned
@@ -1682,7 +1918,19 @@ export const mockApi = {
     await delay();
     return claims
       .filter((c) => c.hypothesisId === hypothesisId)
-      .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
+      .map((c) => ({
+        ...c,
+        // FR-15.6: the pin stays pinned; the "source removed" flag reads
+        // the ref's CURRENT archived state (it clears on restore).
+        pin: c.pin
+          ? {
+              ...c.pin,
+              refRemoved: c.pin.refId
+                ? (mockRefs.find((r) => r.id === c.pin!.refId)?.removed ?? false)
+                : false,
+            }
+          : null,
+      }));
   },
   // Pin verification (Story 4.2, FR-14.1): the mock mirrors the core's
   // no-LLM check — re-read each pin's source from the seeded corpus and

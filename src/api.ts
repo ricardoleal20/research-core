@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport } from "./types";
+import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // A type alias (not an interface) so it stays assignable to Tauri's
@@ -35,6 +35,72 @@ async function httpJson<T>(path: string): Promise<T> {
 
 const browserApi = {
   ...mockApi,
+  // The references library (FR-15, Epic 5): the read goes to the
+  // same-origin read-only API over the shared core (the evented library
+  // fold — legacy baseline + ref.added/removed/restored); every mutation
+  // below is refused in the served read-only browser view (AD-14) and
+  // served by the in-memory mock in plain `vite` dev.
+  listRefs: async (projectId: string, filter?: string | null) => {
+    if (await servedByCore) {
+      const params = new URLSearchParams({ projectId });
+      if (filter) params.set("filter", filter);
+      return httpJson<Ref[]>(`/api/refs?${params.toString()}`);
+    }
+    return mockApi.listRefs(projectId, filter);
+  },
+  addRefFromArxiv: async (_url: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.addRefFromArxiv(_url);
+  },
+  addRefManual: async (
+    _title: string,
+    _authors: string,
+    _year: number | null,
+    _venue: string,
+    _doi: string,
+    _url: string,
+    _tags: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.addRefManual(_title, _authors, _year, _venue, _doi, _url, _tags);
+  },
+  importRefsFromZotero: async () => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.importRefsFromZotero();
+  },
+  removeRef: async (_refId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.removeRef(_refId);
+  },
+  restoreRef: async (_refId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.restoreRef(_refId);
+  },
   listMissions: async () =>
     (await servedByCore) ? httpJson<Mission[]>("/api/missions") : mockApi.listMissions(),
   getMissionRuns: async (missionId: string) =>
@@ -451,13 +517,34 @@ export const api = mockActive ? browserApi : {
   // dashboard
   getDashboard: (projectId: string) => invoke<any>("get_dashboard", { projectId }),
 
-  // refs
-  listRefs: (projectId: string, filter?: string) => invoke<Ref[]>("list_refs", { projectId, filter: filter ?? null }),
+  // refs — the read re-folds the evented library projection (legacy
+  // baseline + ref.* events, FR-15); the legacy create_ref/update_ref/
+  // delete_ref relational commands stay dead (AD-16) — the mutations are
+  // the evented pair below.
+  listRefs: (projectId: string, filter?: string | null) =>
+    invoke<Ref[]>("list_refs", { projectId, filter: filter ?? null }),
   getRef: (id: string) => invoke<Ref>("get_ref", { id }),
   createRef: (r: any) => invoke<Ref>("create_ref", r),
   updateRef: (r: any) => invoke<void>("update_ref", r),
   deleteRef: (id: string) => invoke<void>("delete_ref", { id }),
   searchRefs: (projectId: string, q: string) => invoke<Ref[]>("search_refs", { projectId, q }),
+  // evented references CRUD (FR-15, Epic 5): arXiv paste (the shared
+  // fetch adapter behind the onboarding first-value flow), manual entry
+  // (title + one identifier), the deduped Zotero import, and the
+  // auditable remove/restore pair.
+  addRefFromArxiv: (url: string) => invoke<Ref>("add_ref_from_arxiv", { url }),
+  addRefManual: (
+    title: string,
+    authors: string,
+    year: number | null,
+    venue: string,
+    doi: string,
+    url: string,
+    tags: string,
+  ) => invoke<Ref>("add_ref_manual", { title, authors, year, venue, doi, url, tags }),
+  importRefsFromZotero: () => invoke<ZoteroImportResult>("import_refs_from_zotero"),
+  removeRef: (refId: string) => invoke<Ref>("remove_ref", { refId }),
+  restoreRef: (refId: string) => invoke<Ref>("restore_ref", { refId }),
   searchRefsExternal: (q: string) => invoke<any[]>("search_refs_external", { q }),
   listCollections: (projectId: string) => invoke<any[]>("list_collections", { projectId }),
 

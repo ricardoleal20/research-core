@@ -30,6 +30,35 @@ export interface Ref {
   citation_count: number;
   created_at: string;
   usages?: Usage[];
+  // Evented library state (FR-15, Epic 5): the source of the ref.added
+  // event (arxiv | zotero | manual, derived for legacy baseline rows), the
+  // archived flag while a ref.removed event masks the ref, the Zotero/arXiv
+  // identity, and the ref's own mini-timeline (receipt voice).
+  source?: string;
+  removed?: boolean;
+  zotero_item_key?: string | null;
+  arxiv_id?: string | null;
+  timeline?: RefAuditEntry[];
+}
+
+// One entry of a ref's own mini-timeline — the audit trail the detail
+// drawer renders (mono, seq + ts + actor).
+export interface RefAuditEntry {
+  seq: number;
+  ts: string;
+  actor: string; // "user" | "agent:<run_id>" | "system:<component>"
+  kind: string; // ref.added | ref.removed | ref.restored
+}
+
+// The honest Zotero import summary (FR-15.2): imported / skipped / failed
+// counts — no item is silently dropped.
+export interface ZoteroImportResult {
+  imported: number;
+  skipped: number;
+  failed: number;
+  refs: Ref[];
+  skippedItems: string[];
+  failedItems: string[];
 }
 
 export interface Usage {
@@ -265,6 +294,7 @@ export interface EvidencePin {
   confidence: number; // 0.0–1.0, agent-assessed
   assessingModel: string; // e.g. "GLM-5.3" — the confidence's attribution
   refLabel: string | null; // author-year from the library (citation pins only)
+  refRemoved?: boolean | null; // FR-15.6: the pinned ref was removed — "source removed" flag
   verification: PinVerification | null; // latest machine verification; null = unverified
 }
 
