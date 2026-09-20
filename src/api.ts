@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
+
+// One attachment as picked, shaped for both transports: the desktop sends
+// the picked {name, path} pairs (the core reads + classifies + stores
+// locally); the pure-vite browser mock sends the client-read {name,
+// content} pairs instead. Never both.
+export type AttachmentPick = { name: string; path?: string | null; content?: string | null };
 
 // A type alias (not an interface) so it stays assignable to Tauri's
 // `InvokeArgs` (Record<string, unknown>) via the implicit index signature.
@@ -35,6 +41,78 @@ async function httpJson<T>(path: string): Promise<T> {
 
 const browserApi = {
   ...mockApi,
+  // Chat intelligence (Stories 5.4–5.6): the skills list is a read (the
+  // served view renders the chat header's selector over the same-origin
+  // API); every send, scope/skill change, and attachment mutation is
+  // refused in the served read-only view (AD-14) — the pure-vite mock
+  // keeps all of it working in-browser.
+  listSkills: async (): Promise<Skill[]> => {
+    if (await servedByCore) return httpJson<Skill[]>("/api/skills");
+    return mockApi.listSkills();
+  },
+  createChat: async (
+    _projectId: string,
+    _kind: string,
+    _title: string,
+    _missionId?: string | null,
+    _skill?: string | null,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.createChat(_projectId, _kind, _title, _missionId, _skill);
+  },
+  sendMessage: async (_chatId: string, _content: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — send messages from the desktop app / " +
+          "Vista de solo lectura — envía mensajes desde la app de escritorio",
+      );
+    }
+    return mockApi.sendMessage(_chatId, _content);
+  },
+  setChatScope: async (_chatId: string, _missionId: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.setChatScope(_chatId, _missionId);
+  },
+  setChatSkill: async (_chatId: string, _skill: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.setChatSkill(_chatId, _skill);
+  },
+  addChatAttachments: async (
+    _chatId: string,
+    _files: AttachmentPick[],
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — attach files from the desktop app / " +
+          "Vista de solo lectura — adjunta archivos desde la app de escritorio",
+      );
+    }
+    return mockApi.addChatAttachments(_chatId, _files);
+  },
+  removeChatAttachment: async (_chatId: string, _attachmentId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage attachments from the desktop app / " +
+          "Vista de solo lectura — gestiona los adjuntos desde la app de escritorio",
+      );
+    }
+    return mockApi.removeChatAttachment(_chatId, _attachmentId);
+  },
   // The references library (FR-15, Epic 5): the read goes to the
   // same-origin read-only API over the shared core (the evented library
   // fold — legacy baseline + ref.added/removed/restored); every mutation
@@ -559,12 +637,49 @@ export const api = mockActive ? browserApi : {
   updateAction: (a: any) => invoke<void>("update_action", a),
   deleteAction: (id: string) => invoke<void>("delete_action", { id }),
 
-  // chats
+  // chats — the scoped surface (Stories 5.4–5.6): mission scope + skill per
+  // conversation, messages carrying the scope, attachments as digest-stored
+  // refs; every binding movement is evented in the core (chat.scoped /
+  // chat.skill_set / chat.attachment_*)
   listChats: (projectId: string, kind?: string) => invoke<Chat[]>("list_chats", { projectId, kind: kind ?? null }),
-  createChat: (projectId: string, kind: string, title: string) => invoke<Chat>("create_chat", { projectId, kind, title }),
+  createChat: (
+    projectId: string,
+    kind: string,
+    title: string,
+    missionId?: string | null,
+    skill?: string | null,
+  ) =>
+    invoke<Chat>("create_chat", {
+      projectId,
+      kind,
+      title,
+      missionId: missionId ?? null,
+      skill: skill ?? null,
+    }),
   getChat: (id: string) => invoke<Chat>("get_chat", { id }),
   sendMessage: (chatId: string, content: string) => invoke<any>("send_message", { chatId, content }),
   deleteChat: (id: string) => invoke<void>("delete_chat", { id }),
+  setChatScope: (chatId: string, missionId: string | null) =>
+    invoke<Chat>("set_chat_scope", { chatId, missionId }),
+  setChatSkill: (chatId: string, skill: string | null) =>
+    invoke<Chat>("set_chat_skill", { chatId, skill }),
+  // skills (Story 5.6): the registry is data — the curated six plus
+  // user-added; addSkill grows the pool without code changes
+  listSkills: () => invoke<Skill[]>("list_skills"),
+  addSkill: (name: string, provider: string, model: string, systemPrompt: string, tools: string[]) =>
+    invoke<Skill>("add_skill", { name, provider, model, systemPrompt, tools }),
+  // attachments (Story 5.5): the desktop file picker + the attach/remove
+  // pair; the core reads, classifies (text/pdf/binary), digests, and
+  // stores locally — content leaves only inside the provider call (NFR-12)
+  pickAttachmentFiles: () =>
+    invoke<{ name: string; path: string }[]>("pick_attachment_files"),
+  addChatAttachments: (chatId: string, files: { name: string; path: string }[]) =>
+    invoke<{ attached: ChatAttachment[]; refused: { name: string; reason: string }[] }>(
+      "add_chat_attachments",
+      { chatId, files },
+    ),
+  removeChatAttachment: (chatId: string, attachmentId: string) =>
+    invoke<ChatAttachment[]>("remove_chat_attachment", { chatId, attachmentId }),
 
   // agents
   listAgents: () => invoke<Agent[]>("list_agents"),
