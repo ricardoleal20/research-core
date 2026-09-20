@@ -1316,6 +1316,7 @@ const DICT: Record<string, Record<Lang, string>> = {
   "rc.refs.remove": { es: "Eliminar de la biblioteca", en: "Remove from library", pt: "Remover da biblioteca", fr: "Retirer de la bibliothèque" },
   "rc.refs.removing": { es: "Eliminando…", en: "Removing…", pt: "A remover…", fr: "Retrait…" },
   "rc.refs.confirmRemove": { es: "¿Eliminar esta referencia? El historial se conserva — se archiva y deja ser anclable; puedes restaurarla.", en: "Remove this reference? History is kept — it archives and stops being pinnable; you can restore it.", pt: "Remover esta referência? O histórico é conservado — fica arquivada e deixa de ser ancorável; podes restaurá-la.", fr: "Retirer cette référence ? L'historique est conservé — elle est archivée et n'est plus ancrable ; vous pouvez la restaurer." },
+  "rc.refs.confirmBtn": { es: "Confirmar eliminación", en: "Confirm removal", pt: "Confirmar remoção", fr: "Confirmer le retrait" },
   "rc.refs.restore": { es: "Restaurar", en: "Restore", pt: "Restaurar", fr: "Restaurer" },
   "rc.refs.removeError": { es: "No se pudo: ", en: "Could not: ", pt: "Não foi possível: ", fr: "Impossible : " },
   "rc.refs.timeline": { es: "Auditoría", en: "Audit trail", pt: "Auditoria", fr: "Piste d'audit" },
