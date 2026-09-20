@@ -1,4 +1,5 @@
 mod agent;
+mod chat_commands;
 mod checkpoints_commands;
 mod commands;
 mod db;
@@ -147,11 +148,18 @@ pub fn run() {
             commands::toggle_action,
             commands::update_action,
             commands::delete_action,
-            commands::list_chats,
-            commands::create_chat,
-            commands::get_chat,
-            commands::send_message,
-            commands::delete_chat,
+            chat_commands::list_chats,
+            chat_commands::create_chat,
+            chat_commands::get_chat,
+            chat_commands::send_message,
+            chat_commands::delete_chat,
+            chat_commands::set_chat_scope,
+            chat_commands::set_chat_skill,
+            chat_commands::list_skills,
+            chat_commands::add_skill,
+            chat_commands::pick_attachment_files,
+            chat_commands::add_chat_attachments,
+            chat_commands::remove_chat_attachment,
             commands::list_agents,
             commands::toggle_agent,
             commands::list_mcp_servers,

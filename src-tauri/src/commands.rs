@@ -215,81 +215,10 @@ pub async fn delete_action(db: State<'_, Db>, id: String) -> Result<(), String> 
 }
 
 // ---------- Chats ----------
-#[tauri::command]
-pub async fn list_chats(db: State<'_, Db>, project_id: String, kind: Option<String>) -> Result<Vec<Value>, String> {
-    let c = db.0.lock().await;
-    match kind {
-        Some(k) => db::query_all(&c, "SELECT * FROM chats WHERE project_id=?1 AND kind=?2 ORDER BY updated_at DESC", &[&project_id, &k]).map_err(err),
-        None => db::query_all(&c, "SELECT * FROM chats WHERE project_id=?1 ORDER BY updated_at DESC", &[&project_id]).map_err(err),
-    }
-}
-#[tauri::command]
-pub async fn create_chat(db: State<'_, Db>, project_id: String, kind: String, title: String) -> Result<Value, String> {
-    let id = uid();
-    let c = db.0.lock().await;
-    c.execute("INSERT INTO chats(id,project_id,kind,title,preview,created_at,updated_at) VALUES(?1,?2,?3,?4,'',?5,?6)",
-        params![id, project_id, kind, title, now(), now()]).map_err(err)?;
-    db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&id]).map(|o| o.unwrap_or(Value::Null)).map_err(err)
-}
-#[tauri::command]
-pub async fn get_chat(db: State<'_, Db>, id: String) -> Result<Value, String> {
-    let c = db.0.lock().await;
-    let chat = db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&id]).map_err(err)?;
-    let messages = db::query_all(&c, "SELECT * FROM messages WHERE chat_id=?1 ORDER BY created_at", &[&id]).unwrap_or_default();
-    let mut out = chat.unwrap_or(Value::Null);
-    if let Value::Object(ref mut m) = out { m.insert("messages".into(), Value::Array(messages)); }
-    Ok(out)
-}
-#[tauri::command]
-pub async fn send_message(db: State<'_, Db>, chat_id: String, content: String) -> Result<Value, String> {
-    let c = db.0.lock().await;
-    let chat = db::query_one(&c, "SELECT project_id, kind FROM chats WHERE id=?1", &[&chat_id]).map_err(err)?.ok_or("chat not found")?;
-    let project_id = chat.get("project_id").and_then(|v| v.as_str()).ok_or("no project")?.to_string();
-    let kind = chat.get("kind").and_then(|v| v.as_str()).unwrap_or("asistente").to_string();
-    // store user message
-    let user_id = uid();
-    c.execute("INSERT INTO messages(id,chat_id,role,content,created_at) VALUES(?1,?2,'user',?3,?4)",
-        params![user_id, chat_id, &content, now()]).map_err(err)?;
-    c.execute("UPDATE chats SET preview=?2, updated_at=?3 WHERE id=?1", params![chat_id, &content, now()]).map_err(err)?;
-    drop(c);
-
-    if kind == "review" {
-        // run a review and return an agent message summarizing it
-        let result = agent::run_review(&db, &project_id, &content).await?;
-        let score = result.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let number = result.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
-        let agent_text = format!("Revisión #{} completa. Puntaje **{}/10**. Guardé la revisión y creé actions para los hallazgos de alta/media severidad.", number, score);
-        let c = db.0.lock().await;
-        let mid = uid();
-        c.execute("INSERT INTO messages(id,chat_id,role,content,classify_tag,meta,created_at) VALUES(?1,?2,'agent',?3,'review',?4,?5)",
-            params![mid, chat_id, &agent_text, result.to_string(), now()]).map_err(err)?;
-        c.execute("UPDATE chats SET updated_at=?2 WHERE id=?1", params![chat_id, now()]).map_err(err)?;
-        return Ok(json!({ "user_id": user_id, "agent_id": mid, "agent_content": agent_text, "review": result }));
-    }
-
-    // asistente: load history and reply
-    let c = db.0.lock().await;
-    let msgs_rows = db::query_all(&c, "SELECT role, content FROM messages WHERE chat_id=?1 ORDER BY created_at", &[&chat_id]).unwrap_or_default();
-    drop(c);
-    let history: Vec<agent::ChatMsg> = msgs_rows.into_iter().filter_map(|r| {
-        let role = r.get("role")?.as_str()?.to_string();
-        let content = r.get("content")?.as_str()?.to_string();
-        Some(agent::ChatMsg { role, content })
-    }).collect();
-    let (reply, tag) = agent::assistant_reply(&db, &project_id, history).await?;
-    let c = db.0.lock().await;
-    let mid = uid();
-    c.execute("INSERT INTO messages(id,chat_id,role,content,classify_tag,created_at) VALUES(?1,?2,'agent',?3,?4,?5)",
-        params![mid, chat_id, &reply, tag, now()]).map_err(err)?;
-    c.execute("UPDATE chats SET updated_at=?2 WHERE id=?1", params![chat_id, now()]).map_err(err)?;
-    Ok(json!({ "user_id": user_id, "agent_id": mid, "agent_content": reply, "tag": tag }))
-}
-#[tauri::command]
-pub async fn delete_chat(db: State<'_, Db>, id: String) -> Result<(), String> {
-    let c = db.0.lock().await;
-    c.execute("DELETE FROM chats WHERE id=?1", params![id]).map_err(err)?;
-    Ok(())
-}
+// The chat surface lives in chat_commands.rs (Epic 5): mission scoping with
+// board context, attachments, and the per-conversation skill — the
+// chats/messages tables are the legacy baseline, the scope/skill/attachment
+// movements are events in the log.
 
 // ---------- Agents ----------
 #[tauri::command]

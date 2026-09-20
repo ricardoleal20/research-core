@@ -5,6 +5,12 @@
 // provider calls is appended by the layer (AD-10), not here.
 use crate::adapters::providers::{self, simulated, ChatRequest, Message};
 use crate::db::{self, Db};
+use crate::domain::chat::{
+    assemble_attachments_context, assemble_board_context, AttachmentContext, BoardContext,
+    SKILL_MARKER, SKILL_END,
+};
+use crate::domain::missions::RoleConfig;
+use crate::domain::skills::Skill;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,14 +18,107 @@ use serde_json::{json, Value};
 /// The chat-message shape the UI speaks — the provider layer's `Message`.
 pub type ChatMsg = Message;
 
+/// The scoped context one assistant call carries (Stories 5.4–5.6): the
+/// mission board context when the conversation is mission-scoped, the
+/// per-conversation skill, and the conversation's attachments. Everything
+/// is optional — a General, skill-less, attachment-less conversation is the
+/// plain assistant of before.
+#[derive(Debug, Clone, Default)]
+pub struct AssistantCall {
+    /// The mission's board context (FR-16.5) — label, question, hypotheses
+    /// and pins; None for General chats (no board context at all).
+    pub board: Option<BoardContext>,
+    /// The per-conversation skill (FR-16.8); None = the plain persona.
+    pub skill: Option<Skill>,
+    /// The conversation's attachments (FR-16.2) with their extracted text.
+    pub attachments: Vec<AttachmentContext>,
+}
+
+/// The assistant system prompt (pure): the persona (the skill's role when
+/// one is active, the plain assistant otherwise), the project, the
+/// reference list between the simulated provider's markers, and — appended
+/// after — the board-context and attachments blocks between their own
+/// markers. Single source of truth: the markers are the contract the mock
+/// reads back.
+pub fn assistant_system_prompt(
+    proj_name: &str,
+    refs_list: &str,
+    call: &AssistantCall,
+) -> String {
+    let (persona, skill_line) = match &call.skill {
+        Some(skill) => {
+            let name = skill.name.trim();
+            let tools = if skill.tools.is_empty() {
+                "ninguna".to_string()
+            } else {
+                skill.tools.join(", ")
+            };
+            (
+                skill.system_prompt.trim().to_string(),
+                format!(" {SKILL_MARKER}{name}{SKILL_END} Herramientas permitidas: {tools}."),
+            )
+        }
+        None => (
+            "Eres el Asistente de Research Core, un copiloto de escritura académica.".into(),
+            String::new(),
+        ),
+    };
+    let mut system = format!(
+        "{persona} Proyecto activo: «{proj_name}».{skill_line} {}{}\nRedacta en español, tono académico sobrio. Sé conciso y útil. \
+        Cuando propongas texto para el manuscrito, inclúyelo en un bloque citado.",
+        simulated::REFS_LIST_MARKER,
+        refs_list,
+    );
+    let board = assemble_board_context(call.board.as_ref());
+    if !board.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&board);
+    }
+    let attachments = assemble_attachments_context(&call.attachments);
+    if !attachments.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&attachments);
+    }
+    system
+}
+
+/// Resolve the layer an assistant call runs on (AD-9, Story 5.6): a skill
+/// with its own (provider, model) pair resolves through the SAME
+/// `for_role` path the mission roles use; a skill with an empty provider —
+/// the default set's shape — runs on the configured layer exactly as the
+/// plain assistant and the default drafter do today (provider mode and
+/// simulated fallback included).
+pub fn resolve_assistant_layer(
+    db: &Db,
+    conn: &rusqlite::Connection,
+    skill: Option<&Skill>,
+) -> Result<providers::ProviderLayer, String> {
+    match skill {
+        Some(s) if !s.provider.trim().is_empty() => {
+            providers::ProviderLayer::for_role(
+                db,
+                conn,
+                &RoleConfig {
+                    name: s.name.clone(),
+                    provider: s.provider.clone(),
+                    model: s.model.clone(),
+                },
+            )
+            .map_err(|e| e.to_string())
+        }
+        _ => providers::ProviderLayer::resolve(db, conn).map_err(|e| e.to_string()),
+    }
+}
+
 /// Reply in an assistant chat. Returns (content, classify_tag).
 pub async fn assistant_reply(
     db: &Db,
     project_id: &str,
     history: Vec<ChatMsg>,
+    call: AssistantCall,
 ) -> Result<(String, Option<String>), String> {
     let conn = db.0.lock().await;
-    let layer = providers::ProviderLayer::resolve(db, &conn).map_err(|e| e.to_string())?;
+    let layer = resolve_assistant_layer(db, &conn, call.skill.as_ref())?;
     let project = db::query_one(&conn, "SELECT name, folder FROM projects WHERE id=?1", &[&project_id]).ok().flatten();
     let refs = db::query_all(&conn,
         "SELECT title, authors, year, venue FROM refs WHERE project_id=?1 ORDER BY year DESC LIMIT 20",
@@ -35,25 +134,24 @@ pub async fn assistant_reply(
     }).collect();
 
     // The reference list travels in the system prompt between the simulated
-    // provider's markers (single source of truth — the mock reads them back).
-    let system = format!(
-        "Eres el Asistente de Research Core, un copiloto de escritura académica. \
-        Proyecto activo: «{}». {}{}\nRedacta en español, tono académico sobrio. Sé conciso y útil. \
-        Cuando propongas texto para el manuscrito, inclúyelo en un bloque citado.",
-        proj_name,
-        simulated::REFS_LIST_MARKER,
-        ref_list.join("\n"),
-    );
+    // provider's markers (single source of truth — the mock reads them back);
+    // the board context and attachments ride in their own marker blocks.
+    let system = assistant_system_prompt(proj_name, &ref_list.join("\n"), &call);
 
     let mut messages = vec![Message::system(system)];
     messages.extend(history);
     // The trust dispatch (Story 2.4, AD-10): user-initiated, so the dial does
     // not gate it — but the kill switch and the ceilings do, and a real call
-    // still needs its runtime reservation.
+    // still needs its runtime reservation. A skilled call tags its spend with
+    // the skill's role name (per-role receipts, Story 2.1).
+    let mut req = ChatRequest::new(messages).with_temperature(0.4);
+    if let Some(skill) = &call.skill {
+        req = req.with_role(skill.name.clone());
+    }
     let resp = crate::trust::reserve_and_chat(
         db,
         &layer,
-        ChatRequest::new(messages).with_temperature(0.4),
+        req,
         assistant_plan(&layer, "assistant"),
     )
     .await
