@@ -80,20 +80,15 @@ pub async fn get_dashboard(db: State<'_, Db>, project_id: String) -> Result<Valu
 }
 
 // ---------- Refs ----------
+// The library read re-folds the evented library projection (FR-15, Epic 5):
+// the legacy `refs` table is the implicit baseline, `ref.added` /
+// `ref.removed` / `ref.restored` events apply on top — archived refs read
+// with their `removed` flag. The legacy `create_ref`/`delete_ref` paths
+// stay dead (AD-16): mutations are evented in domain/library.
 #[tauri::command]
-pub async fn list_refs(db: State<'_, Db>, project_id: String, filter: Option<String>) -> Result<Vec<Value>, String> {
+pub async fn list_refs(db: State<'_, Db>, project_id: String, filter: Option<String>) -> Result<Vec<crate::domain::library::LibraryRef>, String> {
     let c = db.0.lock().await;
-    let sql = match filter.as_deref().unwrap_or("all") {
-        "used" => "SELECT * FROM refs WHERE project_id=?1 AND used=1 ORDER BY year DESC",
-        "unused" => "SELECT * FROM refs WHERE project_id=?1 AND used=0 ORDER BY year DESC",
-        f if f.starts_with("status:") => {
-            let st = f.trim_start_matches("status:");
-            let s = format!("SELECT * FROM refs WHERE project_id=?1 AND status='{st}' ORDER BY year DESC");
-            return db::query_all(&c, &s, &[&project_id]).map_err(err);
-        }
-        _ => "SELECT * FROM refs WHERE project_id=?1 ORDER BY year DESC",
-    };
-    db::query_all(&c, sql, &[&project_id]).map_err(err)
+    crate::library_commands::list_refs_inner(&c, Some(&project_id), filter.as_deref())
 }
 #[tauri::command]
 pub async fn get_ref(db: State<'_, Db>, id: String) -> Result<Value, String> {

@@ -6,6 +6,7 @@ mod evidence_commands;
 mod export_commands;
 mod hypotheses_commands;
 mod jobs_commands;
+mod library_commands;
 mod mcp;
 mod missions_commands;
 mod nightshift_commands;
@@ -215,6 +216,15 @@ pub fn run() {
             readiness_commands::get_readiness_report,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
+            // library (evented references CRUD, FR-15, Epic 5): the adds
+            // (arXiv paste / manual / Zotero import) and the auditable
+            // remove/restore pair — mutations are evented in domain/library
+            // (AD-16); the legacy create_ref/delete_ref paths stay dead.
+            library_commands::add_ref_from_arxiv,
+            library_commands::add_ref_manual,
+            library_commands::import_refs_from_zotero,
+            library_commands::remove_ref,
+            library_commands::restore_ref,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

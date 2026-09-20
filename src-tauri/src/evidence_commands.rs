@@ -11,6 +11,7 @@
 use crate::db::Db;
 use crate::domain::evidence::{Claim, EvidenceProjection};
 use crate::domain::hypotheses::HypothesesProjection;
+use crate::domain::library::{LibraryProjection, LibraryRef};
 use crate::eventstore::{EventStore, NewEvent};
 use rusqlite::Connection;
 use tauri::State;
@@ -25,37 +26,24 @@ fn parse_id(raw: &str, what: &str) -> Result<Uuid, String> {
         .map_err(|e| format!("invalid {what} id `{raw}`: {e}"))
 }
 
-/// The library ref a pin cites, as a short author-year label
-/// (e.g. "Vaswani et al. 2017") — the enrichment the card's citation pin
-/// renders. None when the ref row no longer exists.
-fn ref_label(conn: &Connection, ref_id: &str) -> Result<Option<String>, String> {
-    let label = conn
-        .query_row(
-            "SELECT authors, year, title FROM refs WHERE id = ?1",
-            [ref_id],
-            |r| {
-                let authors: Option<String> = r.get(0)?;
-                let year: Option<i64> = r.get(1)?;
-                let title: Option<String> = r.get(2)?;
-                Ok(match (authors, year) {
-                    (Some(a), Some(y)) if !a.trim().is_empty() => format!("{} {}", a.trim(), y),
-                    (Some(a), _) if !a.trim().is_empty() => a.trim().to_string(),
-                    (_, Some(y)) => format!("{} ({})", title.unwrap_or_default().trim(), y),
-                    _ => title.unwrap_or_default().trim().to_string(),
-                })
-            },
-        )
-        .map_err(err)?;
-    Ok(Some(label).filter(|l| !l.is_empty()))
-}
-
-/// Enrich a folded claim's pin with its ref label from the library.
-/// Citation pins only — a numerical pin's label is its artifact name
-/// (the `artifact_ref` itself), never a library author-year.
-fn enrich(conn: &Connection, claim: &mut Claim) -> Result<(), String> {
+/// Enrich a folded claim's pin with its ref label and removed flag from
+/// the library fold (legacy table + event log). Citation pins only — a
+/// numerical pin's label is its artifact name (the `artifact_ref`
+/// itself), never a library author-year. FR-15.6: the pin STAYS pinned
+/// when its ref is removed — it renders flagged "source removed" instead.
+fn enrich(claim: &mut Claim, library: &[LibraryRef]) -> Result<(), String> {
     if let Some(pin) = claim.pin.as_mut() {
         if let Some(ref_id) = pin.ref_id.as_deref() {
-            pin.ref_label = ref_label(conn, ref_id)?;
+            if let Some(r) = library.iter().find(|r| r.id == ref_id) {
+                let label = match (r.authors.trim(), r.year) {
+                    (a, Some(y)) if !a.is_empty() => format!("{a} {y}"),
+                    (a, _) if !a.is_empty() => a.to_string(),
+                    (_, Some(y)) => format!("{} ({})", r.title.trim(), y),
+                    _ => r.title.trim().to_string(),
+                };
+                pin.ref_label = (!label.is_empty()).then_some(label);
+                pin.ref_removed = r.removed;
+            }
         }
     }
     Ok(())
@@ -63,15 +51,17 @@ fn enrich(conn: &Connection, claim: &mut Claim) -> Result<(), String> {
 
 /// The shared read: all claims of one hypothesis (pinned and unpinned —
 /// FR-3.4 marks the difference), folded from the log and enriched with
-/// ref labels. Also the server shell's read path (AD-7, read-only).
+/// ref labels + removed flags from the library fold. Also the server
+/// shell's read path (AD-7, read-only).
 pub(crate) fn list_evidence_inner(
     conn: &Connection,
     hypothesis_id: Uuid,
 ) -> Result<Vec<Claim>, String> {
     let events = EventStore::new(conn).events_all().map_err(err)?;
     let mut claims = EvidenceProjection::fold_for(&events, hypothesis_id).map_err(err)?;
+    let library = LibraryProjection::fold(conn, &events).map_err(err)?;
     for claim in claims.iter_mut() {
-        enrich(conn, claim)?;
+        enrich(claim, &library)?;
     }
     Ok(claims)
 }
@@ -196,18 +186,26 @@ fn pin_claim_to_citation_inner(
     assessing_model: String,
 ) -> Result<(), String> {
     require_claim(conn, claim_id, hypothesis_id)?;
-    // FR-3.1: the ref must exist in the library — a pin never cites a ghost.
+    // FR-3.1: the ref must exist in the library fold — a pin never cites a
+    // ghost. FR-15.5 (Epic 5): a REMOVED ref is never pinnable — the
+    // refusal is a typed `ref_removed:` error, distinct from an unknown id.
     let ref_id = ref_id.trim();
     if ref_id.is_empty() {
         return Err("invalid_ref: `` — a citation pin names its library ref".into());
     }
-    let known: i64 = conn
-        .query_row("SELECT COUNT(*) FROM refs WHERE id = ?1", [ref_id], |r| r.get(0))
-        .map_err(err)?;
-    if known == 0 {
-        return Err(format!(
-            "invalid_ref: `{ref_id}` — no reference with this id in the library"
-        ));
+    match crate::library_commands::library_state(conn, ref_id)? {
+        None => {
+            return Err(format!(
+                "invalid_ref: `{ref_id}` — no reference with this id in the library"
+            ));
+        }
+        Some(r) if r.removed => {
+            return Err(format!(
+                "ref_removed: `{ref_id}` — this reference was removed from the library and \
+                 cannot be pinned (restore it first, FR-15.5)"
+            ));
+        }
+        _ => {}
     }
     let event = NewEvent::evidence_pinned_citation(
         claim_id,
@@ -522,6 +520,98 @@ mod tests {
         )
         .expect_err("out-of-range confidence must be refused");
         assert!(e.contains("confidence"), "unexpected: {e}");
+        drop(c);
+        cleanup(&path);
+    }
+
+    /// FR-15.5 (Epic 5, Story 5.3): a removed ref is never pinnable — the
+    /// refusal is the typed `ref_removed:` error; restore makes it pinnable
+    /// again. Nothing is appended by the refused pin.
+    #[test]
+    fn a_removed_ref_is_never_pinnable_and_restore_reenables() {
+        let (db, path) = test_db();
+        let h = seed_hypothesis(&db);
+        let c = db.0.blocking_lock();
+        let store = EventStore::new(&c);
+        let claim = store
+            .append(RawNewEvent::claim_registered("A claim.", h, None).unwrap())
+            .unwrap();
+        let ref_id = one_ref_id(&c);
+
+        // remove the ref (auditable event), then attempt the pin
+        crate::library_commands::remove_ref_inner(&c, &ref_id).unwrap();
+        let head = store.head_seq().unwrap();
+        let e = pin_claim_to_citation_inner(
+            &c,
+            claim.id,
+            h,
+            ref_id.clone(),
+            "Excerpt.".into(),
+            0.8,
+            "GLM-5.3".into(),
+        )
+        .expect_err("a removed ref must never be pinnable");
+        assert!(e.starts_with("ref_removed:"), "unexpected: {e}");
+        assert_eq!(store.head_seq().unwrap(), head, "nothing was appended");
+
+        // restore → the same pin lands cleanly
+        crate::library_commands::restore_ref_inner(&c, &ref_id).unwrap();
+        pin_claim_to_citation_inner(
+            &c,
+            claim.id,
+            h,
+            ref_id,
+            "Excerpt.".into(),
+            0.8,
+            "GLM-5.3".into(),
+        )
+        .unwrap();
+        drop(c);
+        cleanup(&path);
+    }
+
+    /// FR-15.6/15.7 (Epic 5, Story 5.3): existing pins STAY pinned when
+    /// their ref is removed — history is not rewritten — and render the
+    /// "source removed" flag (`ref_removed` on the pin read); restoring
+    /// clears the flag.
+    #[test]
+    fn existing_pins_stay_pinned_with_the_source_removed_flag() {
+        let (db, path) = test_db();
+        let h = seed_hypothesis(&db);
+        let c = db.0.blocking_lock();
+        let store = EventStore::new(&c);
+        let claim = store
+            .append(RawNewEvent::claim_registered("A claim.", h, None).unwrap())
+            .unwrap();
+        let ref_id = one_ref_id(&c);
+        pin_claim_to_citation_inner(
+            &c,
+            claim.id,
+            h,
+            ref_id.clone(),
+            "Attention dispenses with recurrence.".into(),
+            0.82,
+            "GLM-5.3".into(),
+        )
+        .unwrap();
+
+        // the pin reads clean before the removal
+        let claims = list_evidence_inner(&c, h).unwrap();
+        assert!(claims[0].pin.as_ref().unwrap().ref_label.is_some());
+        assert!(!claims[0].pin.as_ref().unwrap().ref_removed);
+
+        // remove → the pin stays, flagged
+        crate::library_commands::remove_ref_inner(&c, &ref_id).unwrap();
+        let claims = list_evidence_inner(&c, h).unwrap();
+        assert!(claims[0].pinned, "the pin is never rewritten away");
+        let pin = claims[0].pin.as_ref().unwrap();
+        assert!(pin.ref_removed, "the source-removed flag renders");
+        assert!(pin.ref_label.is_some(), "the label stays for history");
+
+        // restore → the flag clears
+        crate::library_commands::restore_ref_inner(&c, &ref_id).unwrap();
+        let claims = list_evidence_inner(&c, h).unwrap();
+        assert!(!claims[0].pin.as_ref().unwrap().ref_removed);
         drop(c);
         cleanup(&path);
     }

@@ -299,10 +299,17 @@ pub struct EvidencePin {
     pub digest: String,
     pub confidence: f64,
     pub assessing_model: String,
-    /// Author-year label enriched by the shell from the refs table
+    /// Author-year label enriched by the shell from the library fold
     /// (e.g. "Vaswani et al. 2017") — the fold leaves it None; refs live
-    /// in SQL, not in the log. Citation pins only.
+    /// in the legacy table + the log, not in the claim fold. Citation
+    /// pins only.
     pub ref_label: Option<String>,
+    /// FR-15.6 (Epic 5): true while the pinned ref is removed from the
+    /// library — the pin STAYS pinned (history is not rewritten) but
+    /// renders flagged "source removed". Enriched by the shell from the
+    /// library fold; the claim fold leaves it false.
+    #[serde(default)]
+    pub ref_removed: bool,
     /// The LATEST machine verification of this pin (Story 4.2) — None
     /// until the first `evidence.verified` event for THIS pin lands
     /// (unverified). Never confusable with `confidence`: verification is
@@ -467,6 +474,7 @@ fn apply_pin(
         confidence: payload.confidence,
         assessing_model: payload.assessing_model,
         ref_label: None,
+        ref_removed: false,
         verification: carried_stale,
     });
     Ok(())
