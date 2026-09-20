@@ -296,6 +296,9 @@ function renderEvidenceRows(h, claims) {
               ${c.pin.kind === "citation"
                 ? `<span class="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">${icon("book", "w-3 h-3")} ${esc(c.pin.refLabel || c.pin.refId || "")}</span>`
                 : `<span class="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">${icon("fileText", "w-3 h-3")} <span class="font-mono">${esc((c.pin.digest || "").slice(0, 10))}…</span></span>`}
+              ${c.pin.refRemoved
+                ? `<span class="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20">${icon("danger", "w-3 h-3")} ${t("ev.sourceRemoved")}</span>`
+                : ""}
               <span class="text-[10px] text-muted">${t("ev.confidence")} <span class="font-mono tabular">${(c.pin.confidence * 100).toFixed(0)}%</span> · ${esc(c.pin.assessingModel)}</span>
               ${verificationChip(c.pin.verification)}
             </div>` : ""}
@@ -834,7 +837,10 @@ Object.assign(RC, {
 function RCPinModal(app, f) {
   if (!f) return;
   document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
-  const refs = app.data.refs || [];
+  // FR-15.5 (Epic 5): a removed ref is never pinnable — the picker only
+  // offers ACTIVE refs (the core refuses removed ids with the typed
+  // `ref_removed:` error if one is forced through).
+  const refs = (app.data.refs || []).filter((r) => !r.removed);
   const overlay = document.createElement("div");
   overlay.className = "rc-modal fixed inset-0 z-[60] overflow-y-auto bg-black/40 backdrop-blur-sm";
   const kindToggle = `

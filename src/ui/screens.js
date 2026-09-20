@@ -11,22 +11,43 @@ import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } fr
 import { RC, ctx } from "./rc";
 
 // ========== REFERENCES ==========
-const refSource = (r) => (r.doi || "").startsWith("10.48550/arXiv.") ? "arXiv" : r.attachment ? "Zotero" : "Manual";
+const refSource = (r) =>
+  r.source === "arxiv" || r.source === "zotero" || r.source === "manual"
+    ? { arxiv: "arXiv", zotero: "Zotero", manual: "Manual" }[r.source]
+    : (r.doi || "").startsWith("10.48550/arXiv.")
+      ? "arXiv"
+      : r.attachment
+        ? "Zotero"
+        : "Manual";
 const refSourceColor = { arXiv: "primary", Zotero: "warning", "Semantic Scholar": "success", Manual: "muted", MCP: "medium" };
 const refReviewed = (r) => r.status === "read" || r.status === "reviewed";
 
 export function renderRefs(app) {
   const filter = (app.data.refFilter || "").toLowerCase();
-  const rows = app.data.refs.filter(
-    (r) => r.title.toLowerCase().includes(filter) || (r.authors || "").toLowerCase().includes(filter),
+  const statusFilter = app.data.refStatusFilter || "all";
+  const all = app.data.refs;
+  const rows = all.filter(
+    (r) =>
+      (statusFilter === "all" || (statusFilter === "removed" ? r.removed : !r.removed)) &&
+      (r.title.toLowerCase().includes(filter) || (r.authors || "").toLowerCase().includes(filter)),
   );
+  const archivedCount = all.filter((r) => r.removed).length;
+  const chip = (key, label, count) => `
+    <button onclick="RC.setRefStatusFilter('${key}')" class="rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition ${statusFilter === key ? "bg-primary/10 text-primary ring-primary/20" : "bg-white text-muted ring-border hover:bg-gray-50 hover:text-foreground"}">
+      ${label}${key === "removed" && count ? ` (${count})` : ""}
+    </button>`;
   return `
     <div class="space-y-6">
-      ${pageHeader(t("rc.refs.title"), t("rc.refs.title"))}
+      ${pageHeader(t("rc.refs.title"), t("rc.refs.title"), btn({ label: t("rc.refs.add"), variant: "default", iconName: "plus", onClick: "RC.openRefAdd()" }))}
       <div class="flex flex-col sm:flex-row gap-3">
         <div class="relative flex-1">
           ${icon("search", "w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted")}
           <input id="ref-search" value="${esc(app.data.refFilter || "")}" placeholder="${t("rc.refs.search")}" class="w-full rounded-lg border border-border bg-white pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+        </div>
+        <div class="flex items-center gap-2">
+          ${chip("all", t("rc.refs.filter.all"))}
+          ${chip("active", t("rc.refs.filter.active"))}
+          ${chip("removed", t("rc.refs.filter.archived"), archivedCount)}
         </div>
       </div>
       ${card(`
@@ -45,13 +66,13 @@ export function renderRefs(app) {
             <tbody class="divide-y divide-border">
               ${rows.length
                 ? rows.map((r) => `
-                <tr onclick="RC.openRefDetail('${esc(r.id)}')" class="hover-row cursor-pointer">
-                  <td class="px-6 py-4 font-medium text-foreground">${esc(r.title)}</td>
+                <tr onclick="RC.openRefDetail('${esc(r.id)}')" class="hover-row cursor-pointer ${r.removed ? "opacity-60" : ""}">
+                  <td class="px-6 py-4 font-medium ${r.removed ? "text-muted line-through" : "text-foreground"}">${esc(r.title)}</td>
                   <td class="px-6 py-4 text-muted">${esc(r.authors)}</td>
                   <td class="px-6 py-4">${esc(r.year ?? "")}</td>
                   <td class="px-6 py-4">${badge(refSource(r), refSourceColor[refSource(r)] || "muted")}</td>
                   <td class="px-6 py-4"><div class="flex flex-wrap gap-1">${(r.tags || "").split(",").filter(Boolean).map((tag) => badge(tag.trim(), "muted")).join("")}</div></td>
-                  <td class="px-6 py-4">${badge(refReviewed(r) ? t("rc.refs.reviewed") : t("rc.refs.toReview"), refReviewed(r) ? "success" : "warning")}</td>
+                  <td class="px-6 py-4">${r.removed ? badge(t("rc.refs.removedBadge"), "destructive") : badge(refReviewed(r) ? t("rc.refs.reviewed") : t("rc.refs.toReview"), refReviewed(r) ? "success" : "warning")}</td>
                 </tr>`)
                 .join("") : `<tr><td colspan="6" class="px-6 py-12 text-center text-muted">${t("rc.refs.empty")}</td></tr>`}
             </tbody>
@@ -95,7 +116,8 @@ function openRefDetail(id) {
       <div class="space-y-5">
         <div>
           <p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.title")}</p>
-          <p class="font-medium text-lg leading-snug">${esc(r.title)}</p>
+          <p class="font-medium text-lg leading-snug ${r.removed ? "text-muted line-through" : ""}">${esc(r.title)}</p>
+          ${r.removed ? `<div class="mt-1.5">${badge(t("rc.refs.removedBadge"), "destructive")}</div>` : ""}
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.authors")}</p><p class="text-sm">${esc(r.authors)}</p></div>
@@ -106,9 +128,114 @@ function openRefDetail(id) {
         ${r.url ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.url")}</p><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:underline break-all">${esc(r.url)}</a></div>` : ""}
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.tags")}</p><div class="flex flex-wrap gap-2">${(r.tags || "").split(",").filter(Boolean).map((tag) => badge(tag.trim(), "muted")).join("")}</div></div>
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.abstract")}</p><p class="text-sm text-muted leading-relaxed">${t("rc.refs.d.noAbstract")}</p></div>
+        <div>
+          <p class="text-xs text-muted uppercase tracking-wider mb-2">${t("rc.refs.timeline")}</p>
+          ${(r.timeline || []).length
+            ? `<div class="space-y-1.5 font-mono text-[11px] text-muted tabular">${r.timeline.map((e) => `
+              <p>#${e.seq} ${fmtTs(e.ts)} · ${esc(e.actor)} · <span class="text-foreground">${esc(e.kind)}</span></p>`).join("")}</div>`
+            : `<p class="text-xs text-muted">${t("rc.refs.timelineEmpty")}</p>`}
+        </div>
+        <div class="pt-2 border-t border-border space-y-2">
+          ${r.removed
+            ? `<div class="flex gap-2">${btn({ label: t("rc.refs.restore"), variant: "default", iconName: "history", onClick: `RC.restoreRef('${esc(r.id)}')` })}</div>`
+            : app.state.refConfirmingRemove === r.id
+              ? `<p class="text-xs text-rose-700 leading-relaxed">${t("rc.refs.confirmRemove")}</p>
+                 <div class="flex gap-2">
+                   ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.cancelRemoveRef()" })}
+                   ${btn({ label: t("rc.refs.confirmBtn"), variant: "destructive", iconName: "danger", onClick: `RC.removeRef('${esc(r.id)}')` })}
+                 </div>`
+              : `<div class="flex gap-2">${btn({ label: t("rc.refs.remove"), variant: "destructive", iconName: "trash", onClick: `RC.confirmRemoveRef('${esc(r.id)}')` })}</div>`}
+        </div>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+}
+
+// ---- The add composer (FR-15.1/15.2/15.3): the bible's slide-over drawer
+// (the openRefDetail idiom) with three modes — arXiv paste (the shared
+// fetch adapter behind the onboarding flow), manual entry, and the Zotero
+// connect/import.
+function openRefAdd() {
+  const app = ctx.app;
+  app.state.refAdd = { mode: "arxiv", saving: false, error: null, zoteroResult: null };
+  RCRefAddDrawer(app);
+}
+
+function RCRefAddDrawer(app) {
+  const f = app.state.refAdd;
+  if (!f) return;
+  document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
+  const overlay = document.createElement("div");
+  overlay.className = "rc-modal fixed inset-0 z-[60] flex justify-end";
+  const tab = (key, label) => `
+    <button onclick="RC.setRefAddMode('${key}')" class="rounded-md py-1.5 px-3 text-xs font-medium transition ${f.mode === key ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${label}</button>`;
+  const v = (id) => f.values?.[id] ?? "";
+  const field = (id, label, ph, value = "") => `
+    <div><label class="block text-sm font-medium mb-1.5">${label}</label>
+    <input id="${id}" value="${esc(value)}" placeholder="${esc(ph)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`;
+  const body =
+    f.mode === "arxiv"
+      ? `<div class="space-y-4">
+          ${field("ref-arxiv-url", t("rc.refs.arxiv.label"), t("rc.refs.arxiv.ph"), v("ref-arxiv-url"))}
+          <p class="text-xs text-muted">${t("rc.refs.arxiv.help")}</p>
+        </div>`
+      : f.mode === "manual"
+        ? `<div class="space-y-4">
+            ${field("ref-manual-title", t("rc.refs.f.title"), t("rc.refs.f.titlePh"), v("ref-manual-title"))}
+            ${field("ref-manual-authors", t("rc.refs.f.authors"), "Vaswani et al.", v("ref-manual-authors"))}
+            <div class="grid grid-cols-2 gap-4">
+              ${field("ref-manual-year", t("rc.refs.f.year"), "2017", v("ref-manual-year"))}
+              ${field("ref-manual-venue", t("rc.refs.f.venue"), "NeurIPS", v("ref-manual-venue"))}
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              ${field("ref-manual-doi", t("rc.refs.f.doi"), "10.48550/arXiv.1706.03762", v("ref-manual-doi"))}
+              ${field("ref-manual-url", t("rc.refs.f.url"), "https://arxiv.org/abs/1706.03762", v("ref-manual-url"))}
+            </div>
+            ${field("ref-manual-tags", t("rc.refs.f.tags"), t("rc.refs.f.tagsPh"), v("ref-manual-tags"))}
+            <p class="text-xs text-muted">${t("rc.refs.f.identifierHint")}</p>
+          </div>`
+        : `<div class="space-y-4">
+            <p class="text-sm text-muted leading-relaxed">${t("rc.refs.zotero.desc")}</p>
+            ${f.zoteroResult ? `
+              <div class="rounded-lg border border-border p-4 space-y-2">
+                <div class="flex flex-wrap gap-2">
+                  ${badge(`${f.zoteroResult.imported} ${t("rc.refs.zotero.imported")}`, f.zoteroResult.imported ? "success" : "muted")}
+                  ${badge(`${f.zoteroResult.skipped} ${t("rc.refs.zotero.skipped")}`, f.zoteroResult.skipped ? "warning" : "muted")}
+                  ${f.zoteroResult.failed ? badge(`${f.zoteroResult.failed} ${t("rc.refs.zotero.failed")}`, "destructive") : ""}
+                </div>
+                ${(f.zoteroResult.skippedItems || []).map((s) => `<p class="text-xs text-muted">· ${esc(s)}</p>`).join("")}
+                ${(f.zoteroResult.failedItems || []).map((s) => `<p class="text-xs text-rose-700">· ${esc(s)}</p>`).join("")}
+                ${!f.zoteroResult.imported && !f.zoteroResult.skipped && !f.zoteroResult.failed ? `<p class="text-xs text-muted">${t("rc.refs.zotero.noneNew")}</p>` : ""}
+              </div>` : ""}
+          </div>`;
+  const submit =
+    f.mode === "arxiv"
+      ? btn({ label: f.saving ? t("rc.refs.adding") : t("rc.refs.addBtn"), variant: "default", iconName: "plus", onClick: "RC.submitRefAddArxiv()", disabled: f.saving })
+      : f.mode === "manual"
+        ? btn({ label: f.saving ? t("rc.refs.adding") : t("rc.refs.addBtn"), variant: "default", iconName: "plus", onClick: "RC.submitRefAddManual()", disabled: f.saving })
+        : btn({ label: f.saving ? t("rc.refs.zotero.importing") : t("rc.refs.zotero.connect"), variant: "default", iconName: "bolt", onClick: "RC.submitZoteroImport()", disabled: f.saving });
+  overlay.innerHTML = `
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="RC.closeRefDetail()"></div>
+    <div class="relative w-full max-w-md h-full bg-white border-l border-border shadow-xl p-6 overflow-y-auto animate-[fadeUp_220ms_ease-out]">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="font-serif text-2xl italic">${t("rc.refs.addTitle")}</h2>
+        <button onclick="RC.closeRefDetail()" class="p-1 rounded hover:bg-gray-100">${icon("close", "w-5 h-5")}</button>
+      </div>
+      <div class="grid grid-cols-3 gap-1 rounded-lg border border-border bg-gray-50 p-1 mb-5">
+        ${tab("arxiv", t("rc.refs.mode.arxiv"))}
+        ${tab("manual", t("rc.refs.mode.manual"))}
+        ${tab("zotero", t("rc.refs.mode.zotero"))}
+      </div>
+      ${f.error ? `<div class="mb-4 rounded-lg bg-rose-50 border border-rose-200 px-4 py-3 text-xs text-rose-700 leading-relaxed break-words">${esc(f.error)}</div>` : ""}
+      ${body}
+      <div class="mt-6 flex justify-end gap-2">
+        ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.closeRefDetail()" })}
+        ${submit}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const first = document.getElementById("ref-arxiv-url") || document.getElementById("ref-manual-title");
+  if (first) first.focus();
 }
 
 // ========== AI REVIEW (the bible's demo feel) ==========
@@ -126,7 +253,7 @@ export function renderReview(app) {
           <div class="p-6 space-y-5">
             <h3 class="font-semibold">${t("rc.review.select")}</h3>
             <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
-              ${app.data.refs.map((r) => `
+              ${app.data.refs.filter((r) => !r.removed).map((r) => `
                 <label class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-gray-50 cursor-pointer transition">
                   <input type="checkbox" class="review-ref accent-primary w-4 h-4" checked>
                   <div class="text-sm"><p class="font-medium">${esc(r.title)}</p><p class="text-xs text-muted">${esc(r.authors)} ${r.year ?? ""}</p></div>
@@ -680,6 +807,134 @@ Object.assign(RC, {
   openRefDetail,
   closeRefDetail() {
     document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
+    const app = ctx.app;
+    if (app.state) {
+      app.state.refAdd = null;
+      app.state.refConfirmingRemove = null;
+    }
+  },
+  // ---- Evented references CRUD (FR-15, Epic 5) ----
+  setRefStatusFilter(filter) {
+    const app = ctx.app;
+    app.data.refStatusFilter = filter;
+    ctx.renderMainOnly();
+  },
+  openRefAdd,
+  setRefAddMode(mode) {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f) return;
+    f.mode = mode;
+    f.error = null;
+    f.zoteroResult = null;
+    RCRefAddDrawer(app);
+  },
+  async submitRefAddArxiv() {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f || f.saving) return;
+    const url = document.getElementById("ref-arxiv-url")?.value.trim() || "";
+    if (!url) return;
+    f.values = { "ref-arxiv-url": url };
+    f.saving = true;
+    f.error = null;
+    try {
+      await api.addRefFromArxiv(url);
+      RC.closeRefDetail();
+      await ctx.loadRefs();
+    } catch (e) {
+      f.saving = false;
+      f.error = (e?.message || String(e));
+      RCRefAddDrawer(app);
+    }
+  },
+  async submitRefAddManual() {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f || f.saving) return;
+    const read = (id) => document.getElementById(id)?.value.trim() ?? "";
+    const values = {
+      "ref-manual-title": read("ref-manual-title"),
+      "ref-manual-authors": read("ref-manual-authors"),
+      "ref-manual-year": read("ref-manual-year"),
+      "ref-manual-venue": read("ref-manual-venue"),
+      "ref-manual-doi": read("ref-manual-doi"),
+      "ref-manual-url": read("ref-manual-url"),
+      "ref-manual-tags": read("ref-manual-tags"),
+    };
+    if (!values["ref-manual-title"]) return;
+    f.values = values;
+    f.saving = true;
+    f.error = null;
+    try {
+      await api.addRefManual(
+        values["ref-manual-title"],
+        values["ref-manual-authors"],
+        values["ref-manual-year"] ? parseInt(values["ref-manual-year"], 10) : null,
+        values["ref-manual-venue"],
+        values["ref-manual-doi"],
+        values["ref-manual-url"],
+        values["ref-manual-tags"],
+      );
+      RC.closeRefDetail();
+      await ctx.loadRefs();
+    } catch (e) {
+      f.saving = false;
+      f.error = (e?.message || String(e));
+      RCRefAddDrawer(app);
+    }
+  },
+  async submitZoteroImport() {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f || f.saving) return;
+    f.saving = true;
+    f.error = null;
+    try {
+      f.zoteroResult = await api.importRefsFromZotero();
+      f.saving = false;
+      await ctx.loadRefs();
+      RCRefAddDrawer(app);
+    } catch (e) {
+      f.saving = false;
+      f.error = (e?.message || String(e));
+      RCRefAddDrawer(app);
+    }
+  },
+  confirmRemoveRef(id) {
+    const app = ctx.app;
+    app.state.refConfirmingRemove = id;
+    openRefDetail(id);
+  },
+  cancelRemoveRef() {
+    const app = ctx.app;
+    const id = app.state.refConfirmingRemove;
+    app.state.refConfirmingRemove = null;
+    if (id) openRefDetail(id);
+  },
+  async removeRef(id) {
+    const app = ctx.app;
+    try {
+      await api.removeRef(id);
+      app.state.refConfirmingRemove = null;
+      await ctx.loadRefs();
+      const fresh = app.data.refs.find((r) => r.id === id);
+      if (fresh) openRefDetail(id);
+      else RC.closeRefDetail();
+    } catch (e) {
+      alert(t("rc.refs.removeError") + (e?.message || e));
+    }
+  },
+  async restoreRef(id) {
+    const app = ctx.app;
+    try {
+      await api.restoreRef(id);
+      await ctx.loadRefs();
+      if (app.data.refs.some((r) => r.id === id)) openRefDetail(id);
+      else RC.closeRefDetail();
+    } catch (e) {
+      alert(t("rc.refs.removeError") + (e?.message || e));
+    }
   },
   runReview() {
     const app = ctx.app;
