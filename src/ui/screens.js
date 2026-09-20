@@ -7,6 +7,7 @@
 // real getTrustStatus read model.
 import { t, getLang } from "../i18n";
 import { api } from "../api";
+import { mockActive } from "../mock-backend";
 import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
 import { RC, ctx } from "./rc";
 
@@ -303,6 +304,41 @@ function renderReviewResults(findings) {
 export function bindReview(app) {}
 
 // ========== ASSISTANT (bible chat visuals over the mock provider) ==========
+// The scoped surface (Stories 5.4–5.6): a mission selector + skill selector
+// in the header, the "context: M-XX · board sincronizado" chip on scoped
+// conversations, and the composer's attachment chips.
+
+/// The conversation's effective scope: the active chat's binding, or the
+/// draft selection for a conversation not yet created.
+function chatScope(app) {
+  const chat = app.data.chats.find((c) => c.id === app.data.activeChatId);
+  if (chat) return { missionId: chat.mission_id || null, skill: chat.skill || null };
+  const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null });
+  return { missionId: draft.missionId, skill: draft.skill };
+}
+
+/// The attachment chips the composer renders: the active conversation's
+/// folded attachments, or the pending picks of a conversation not yet sent.
+function composerAttachments(app) {
+  if (app.data.activeChatId) return app.data.chatAttachments[app.data.activeChatId] || [];
+  return app.data.pendingAttachments || [];
+}
+
+function renderAttachmentChip(a, pending = false) {
+  const flags = [];
+  if (!pending && !a.included) flags.push(a.note || t("rc.assistant.attachUnsupported"));
+  if (a.truncated) flags.push(t("rc.assistant.attachTruncated"));
+  const key = pending ? a.name : a.id;
+  return `
+  <span class="inline-flex items-center gap-1.5 rounded-full border border-border bg-gray-50 pl-2.5 pr-1 py-1 text-xs text-foreground max-w-full" title="${esc((a.note || "") + (a.digest ? " · " + String(a.digest).slice(0, 16) : ""))}">
+    ${icon("fileText", "w-3.5 h-3.5 text-muted shrink-0")}
+    <span class="max-w-[160px] truncate font-medium">${esc(a.name)}</span>
+    <span class="font-mono text-[10px] text-muted uppercase shrink-0">${esc(pending ? "…" : a.kind)}</span>
+    ${flags.length ? `<span class="text-[10px] font-medium text-amber-600 shrink-0">${esc(flags.join(" · "))}</span>` : ""}
+    <button type="button" onclick="RC.removeAttachment('${esc(key)}', ${pending})" class="rounded-full p-0.5 text-muted hover:text-foreground hover:bg-gray-200 transition shrink-0" aria-label="${t("rc.assistant.attachRemove")}">${icon("close", "w-3.5 h-3.5")}</button>
+  </span>`;
+}
+
 export function renderAssistant(app) {
   const msgs = app.data.chatMessages[app.data.activeChatId || ""] || [];
   const empty = msgs.length === 0 && !app.data.chatThinking;
@@ -315,6 +351,17 @@ export function renderAssistant(app) {
     t("rc.assistant.suggest3", { project: name, field }),
     t("rc.assistant.suggest4", { project: name, field }),
   ];
+  const scope = chatScope(app);
+  const mission = scope.missionId ? app.data.missions.find((m) => m.id === scope.missionId) : null;
+  const skill = scope.skill ? app.data.skills.find((s) => s.name === scope.skill) : null;
+  const missionOptions = [
+    { value: "", label: t("rc.assistant.scopeGeneral") },
+    ...app.data.missions.map((m) => ({ value: m.id, label: `M-${m.seq} · ${m.question.slice(0, 46)}` })),
+  ];
+  const skillOptions = [
+    { value: "", label: t("rc.assistant.skillNone") },
+    ...app.data.skills.map((s) => ({ value: s.name, label: t(`rc.skill.${s.name}`) })),
+  ];
   return `
     <div class="h-[calc(100vh-112px)] flex flex-col">
       <div class="flex items-center justify-between gap-3 mb-4">
@@ -322,10 +369,18 @@ export function renderAssistant(app) {
           <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary shrink-0">${icon("sparkle", "w-4 h-4")}</div>
           <div class="min-w-0">
             <p class="caption text-muted">${t("rc.assistant.title")}</p>
-            <span class="text-sm font-medium leading-snug truncate">${t("rc.assistant.newChatTitle")}</span>
+            <span class="text-sm font-medium leading-snug truncate">${app.data.activeChatId && app.data.chats.find((c) => c.id === app.data.activeChatId) ? esc(app.data.chats.find((c) => c.id === app.data.activeChatId).title) : t("rc.assistant.newChatTitle")}</span>
+            ${(mission || skill) ? `
+            <span class="flex flex-wrap items-center gap-1.5 mt-1">
+              ${mission ? `<span class="inline-flex items-center gap-1 rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">${t("rc.assistant.contextChip", { label: "M-" + mission.seq })}</span>` : ""}
+              ${skill ? `<span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-gray-500/10">${t("rc.assistant.skillChip", { name: t(`rc.skill.${skill.name}`) })}</span>` : ""}
+            </span>` : ""}
           </div>
         </div>
         <div class="flex items-center gap-2">
+          <div class="w-48 hidden sm:block">${rcSelect({ id: "chat-mission-select", size: "sm", cls: "w-full", options: missionOptions, value: scope.missionId || "", onChange: "RC.setChatMission(this.value)" })}</div>
+          <div class="w-36 hidden sm:block">${rcSelect({ id: "chat-skill-select", size: "sm", cls: "w-full", options: skillOptions, value: scope.skill || "", onChange: "RC.setChatSkill(this.value)" })}</div>
+          <button onclick="RC.newChat()" title="${t("rc.assistant.newChat")}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon("plus", "w-5 h-5")}</button>
           <button onclick="RC.openChatHistory()" title="${t("rc.assistant.history")}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon("history", "w-5 h-5")}</button>
         </div>
       </div>
@@ -348,7 +403,7 @@ export function renderAssistant(app) {
               <button type="button" onclick="RC.fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-card px-4 py-2 text-sm text-muted hover:-translate-y-0.5 hover:border-primary/40 hover:bg-primary/5 hover:text-primary hover:shadow-sm active:scale-[0.97] transition-all duration-200 ring-focus">${esc(q)}</button>`).join("")}
           </div>
         </div>
-        <div class="relative z-10 w-full rc-intro rc-intro-4">${renderChatComposer()}</div>
+        <div class="relative z-10 w-full rc-intro rc-intro-4">${renderChatComposer(app)}</div>
       </div>` : `
       <div class="flex-1 flex flex-col min-h-0 max-w-3xl mx-auto w-full px-4">
         <div id="chat-list" class="flex-1 overflow-y-auto py-2 space-y-3">
@@ -361,7 +416,7 @@ export function renderAssistant(app) {
             </div>
           </div>` : ""}
         </div>
-        <div class="pt-3 pb-1">${renderChatComposer()}</div>
+        <div class="pt-3 pb-1">${renderChatComposer(app)}</div>
       </div>`}
     </div>`;
 }
@@ -381,11 +436,20 @@ function renderChatMessage(m, animate = false) {
   </div>`;
 }
 
-function renderChatComposer() {
+function renderChatComposer(app) {
+  const attachments = composerAttachments(app);
   return `
   <div id="chat-composer" class="chat-composer relative rounded-2xl border border-border bg-card shadow-sm p-3 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/30 transition">
+    ${attachments.length ? `
+    <div class="flex flex-wrap gap-1.5 px-1.5 pt-0.5 pb-2">
+      ${attachments.map((a) => renderAttachmentChip(a, !app.data.activeChatId)).join("")}
+    </div>` : ""}
     <textarea id="chat-input" rows="1" class="w-full resize-none bg-transparent px-1.5 py-1.5 text-[15px] leading-relaxed focus:outline-none max-h-40 placeholder:text-muted" placeholder="${t("rc.assistant.placeholder")}"></textarea>
-    <div class="flex items-center justify-end mt-1.5">
+    <div class="flex items-center justify-between mt-1.5">
+      <div class="flex items-center gap-1">
+        <input type="file" id="chat-file-input" multiple class="hidden" onchange="RC.handleAttachmentFiles(this)">
+        <button id="chat-attach" type="button" onclick="RC.pickAttachments()" title="${t("rc.assistant.attach")}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus" aria-label="${t("rc.assistant.attach")}">${icon("paperclip", "w-5 h-5")}</button>
+      </div>
       <button id="chat-send" onclick="RC.sendChatMessage()" class="rounded-lg bg-primary text-white h-9 w-9 grid place-items-center hover:opacity-90 active:scale-95 transition ring-focus" aria-label="${t("rc.assistant.send")}">${icon("arrowRight", "w-5 h-5")}</button>
     </div>
   </div>`;
@@ -952,10 +1016,20 @@ Object.assign(RC, {
     if (!text) return;
     if (!app.data.activeChatId) {
       try {
-        const chat = await api.createChat(app.data.project?.id || "p1", "asistente", text.slice(0, 46));
+        // A conversation is born with its draft scope: the mission binding
+        // and skill selected in the header (Stories 5.4/5.6).
+        const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null });
+        const chat = await api.createChat(app.data.project?.id || "p1", "asistente", text.slice(0, 46), draft.missionId, draft.skill);
         app.data.activeChatId = chat.id;
         app.data.chatMessages[chat.id] = [];
         app.data.chats.unshift(chat);
+        // pending attachments land on the conversation the moment it exists
+        // (they belong to the conversation, not to the message — FR-16.1)
+        const pending = app.data.pendingAttachments || [];
+        if (pending.length) {
+          app.data.pendingAttachments = [];
+          await RC.addPickedAttachments(pending);
+        }
       } catch (e) {
         console.error(e);
       }
@@ -970,11 +1044,129 @@ Object.assign(RC, {
       await api.sendMessage(chatId, text);
       const fresh = await api.getChat(chatId);
       app.data.chatMessages[chatId] = fresh.messages || [];
+      app.data.chatAttachments[chatId] = fresh.attachments || [];
     } catch (e) {
       console.error(e);
       list.push({ id: "m" + Date.now() + "x", role: "agent", content: "(" + (e?.message || e) + ")" });
     }
     app.data.chatThinking = false;
+    ctx.renderMainOnly();
+  },
+  // A new conversation: the active chat clears and the draft scope (the
+  // header selectors) applies to the next send.
+  newChat() {
+    const app = ctx.app;
+    app.data.activeChatId = null;
+    app.data.pendingAttachments = [];
+    ctx.renderMainOnly();
+  },
+  // The mission selector (Story 5.4): re-scopes the active conversation
+  // (an explicit, history-preserving event in the core) or sets the draft
+  // scope of a conversation not yet created.
+  async setChatMission(value) {
+    const app = ctx.app;
+    const missionId = value || null;
+    if (app.data.activeChatId) {
+      try {
+        const chat = await api.setChatScope(app.data.activeChatId, missionId);
+        const i = app.data.chats.findIndex((c) => c.id === chat.id);
+        if (i >= 0) app.data.chats[i] = { ...app.data.chats[i], ...chat };
+        else app.data.chats.unshift(chat);
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null })).missionId = missionId;
+    }
+    ctx.renderMainOnly();
+  },
+  // The skill selector (Story 5.6): per-conversation, evented in the core.
+  async setChatSkill(value) {
+    const app = ctx.app;
+    const skill = value || null;
+    if (app.data.activeChatId) {
+      try {
+        const chat = await api.setChatSkill(app.data.activeChatId, skill);
+        const i = app.data.chats.findIndex((c) => c.id === chat.id);
+        if (i >= 0) app.data.chats[i] = { ...app.data.chats[i], ...chat };
+        else app.data.chats.unshift(chat);
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null })).skill = skill;
+    }
+    ctx.renderMainOnly();
+  },
+  // The composer's attach button (Story 5.5): the desktop opens the native
+  // picker; the browser opens the hidden file input (the mock classifies
+  // client-read content).
+  async pickAttachments() {
+    if (mockActive) {
+      document.getElementById("chat-file-input")?.click();
+      return;
+    }
+    try {
+      const picks = await api.pickAttachmentFiles();
+      if (picks && picks.length) await RC.addPickedAttachments(picks);
+    } catch (e) {
+      alert(e?.message || e);
+    }
+  },
+  async handleAttachmentFiles(input) {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    if (!files.length) return;
+    // the browser mock reads text kinds client-side; pdf/binary pass by
+    // name and the transport classifies honestly
+    const picks = [];
+    for (const f of files) {
+      const lower = f.name.toLowerCase();
+      if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".tex")) {
+        picks.push({ name: f.name, content: await f.text() });
+      } else {
+        picks.push({ name: f.name });
+      }
+    }
+    await RC.addPickedAttachments(picks);
+  },
+  // Attach picks to the active conversation — or hold them as pending chips
+  // until the first send creates it (attachments belong to the conversation).
+  async addPickedAttachments(picks) {
+    const app = ctx.app;
+    if (!picks.length) return;
+    if (app.data.activeChatId) {
+      try {
+        const out = await api.addChatAttachments(app.data.activeChatId, picks);
+        if (out.refused && out.refused.length) {
+          alert(
+            t("rc.assistant.attachRefused", { names: out.refused.map((r) => r.name).join(", ") }) +
+              "\n\n" + out.refused.map((r) => `${r.name}: ${r.reason}`).join("\n"),
+          );
+        }
+        const fresh = await api.getChat(app.data.activeChatId);
+        app.data.chatAttachments[app.data.activeChatId] = fresh.attachments || [];
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      app.data.pendingAttachments = [...(app.data.pendingAttachments || []), ...picks];
+    }
+    ctx.renderMainOnly();
+  },
+  async removeAttachment(key, pending) {
+    const app = ctx.app;
+    if (pending) {
+      app.data.pendingAttachments = (app.data.pendingAttachments || []).filter((a) => a.name !== key);
+      ctx.renderMainOnly();
+      return;
+    }
+    try {
+      const list = await api.removeChatAttachment(app.data.activeChatId, key);
+      app.data.chatAttachments[app.data.activeChatId] = list || [];
+    } catch (e) {
+      alert(e?.message || e);
+    }
     ctx.renderMainOnly();
   },
   fillChatSuggestion(q) {
@@ -1003,14 +1195,22 @@ Object.assign(RC, {
         </div>
         ${chats.length ? `
         <div class="space-y-1">
-          ${chats.map((c) => `
+          ${chats.map((c) => {
+            const m = c.mission_id ? app.data.missions.find((x) => x.id === c.mission_id) : null;
+            const s = c.skill ? app.data.skills.find((x) => x.name === c.skill) : null;
+            return `
           <button onclick="RC.loadChat('${esc(c.id)}')" class="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${c.id === app.data.activeChatId ? "bg-primary/10" : "hover:bg-gray-50"}">
             ${icon("message", `w-4 h-4 shrink-0 ${c.id === app.data.activeChatId ? "text-primary" : "text-muted"}`)}
             <span class="min-w-0 flex-1">
               <span class="block text-sm font-medium truncate ${c.id === app.data.activeChatId ? "text-primary" : "text-foreground"}">${esc(c.title)}</span>
-              <span class="block text-xs text-muted mt-0.5 truncate">${esc(c.preview || "")}</span>
+              <span class="flex items-center gap-1.5 mt-0.5">
+                <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${m ? "bg-primary/5 text-primary ring-primary/20" : "bg-gray-100 text-muted ring-gray-500/10"}">${m ? `<span class="font-mono">M-${m.seq}</span>` : t("rc.assistant.scopeGeneral")}</span>
+                ${s ? `<span class="inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-muted ring-1 ring-inset ring-gray-500/10">${esc(t(`rc.skill.${s.name}`))}</span>` : ""}
+                <span class="text-xs text-muted truncate">${esc(c.preview || "")}</span>
+              </span>
             </span>
-          </button>`).join("")}
+          </button>`;
+          }).join("")}
         </div>` : `<p class="text-sm text-muted text-center py-8">${t("rc.assistant.emptyChats")}</p>`}
       </div>`;
     document.body.appendChild(overlay);
@@ -1023,6 +1223,7 @@ Object.assign(RC, {
     try {
       const fresh = await api.getChat(id);
       app.data.chatMessages[id] = fresh.messages || [];
+      app.data.chatAttachments[id] = fresh.attachments || [];
       app.data.activeChatId = id;
     } catch (e) {
       console.error(e);

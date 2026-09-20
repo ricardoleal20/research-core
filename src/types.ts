@@ -114,9 +114,12 @@ export interface Chat {
   kind: string; // asistente | review
   title: string;
   preview: string;
+  mission_id: string | null; // Story 5.4 (FR-16.4): the mission scope; null = General
+  skill: string | null; // Story 5.6 (FR-16.8): the per-conversation skill; null = plain persona
   created_at: string;
   updated_at: string;
   messages?: Message[];
+  attachments?: ChatAttachment[]; // Story 5.5: the folded active attachment chips
 }
 
 export interface Message {
@@ -126,7 +129,22 @@ export interface Message {
   content: string;
   classify_tag: string | null;
   meta: string | null;
+  mission_id: string | null; // Story 5.4: the scope the message was sent under
   created_at: string;
+}
+
+// One conversation attachment (Story 5.5, FR-16.1–16.3): stored by its
+// digest-addressed ref; text/pdf are included as provider context, binary
+// is flagged "unsupported-inline v1" — never silently dropped.
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  kind: "text" | "pdf" | "binary";
+  digest: string;
+  size_bytes: number;
+  included: boolean;
+  truncated: boolean;
+  note: string; // "" | "unsupported-inline v1" | "pdf-extraction-failed" | …
 }
 
 export interface Agent {
@@ -163,8 +181,30 @@ export type SpendState = "ok" | "near" | "blocked";
 
 // One agent role of a mission's runtime config (Story 2.1, NFR-3): a named
 // role bound to a (provider, model) pair — the core rejects a config whose
-// critic shares a drafter's pair (same_model_critic).
-export type AgentRoleName = "drafter" | "critic";
+// critic shares a drafter's pair (same_model_critic). Story 5.6 (FR-16.7)
+// grows the vocabulary with the six scientific skill roles; NFR-3's
+// different-model rule stays mission-scoped — skill roles are per-chat.
+export type AgentRoleName =
+  | "drafter"
+  | "critic"
+  | "librarian"
+  | "verifier"
+  | "synthesizer"
+  | "note_taker";
+
+// A skill definition (Story 5.6, FR-16.6–16.8): data, not code — a name,
+// a RoleConfig-shaped (provider, model) pair (empty = the configured
+// layer's model, exactly as the default drafter resolves), a system-prompt
+// role, and an allowed tool set from the closed vocabulary. The curated
+// six ship pre-installed; the registry is extensible (add_skill).
+export interface Skill {
+  name: AgentRoleName;
+  provider: string; // "" = the configured layer; "simulated" | "cli" | BYOK
+  model: string; // "" = the configured layer's model
+  systemPrompt: string;
+  tools: string[]; // closed vocabulary: search | read_board | read_library | verify
+  builtin: boolean;
+}
 
 export interface RoleConfig {
   name: AgentRoleName; // the role's name is its identity

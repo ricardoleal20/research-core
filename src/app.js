@@ -81,8 +81,12 @@ const app = {
     mcp: [],
     chats: [],
     chatMessages: {},
+    chatAttachments: {}, // chatId -> ChatAttachment[] (the composer's chips)
+    pendingAttachments: [], // picks of a conversation not yet created
     activeChatId: null,
     chatThinking: false,
+    skills: [], // the skills registry (Story 5.6): the curated six + user-added
+    assistantDraft: { missionId: null, skill: null }, // the scope a new conversation is born with
   },
 };
 
@@ -350,9 +354,23 @@ async function loadRefs() {
   } catch (e) { console.error(e); }
 }
 
+// The assistant view's data (Stories 5.4–5.6): the conversation list, the
+// skills registry, and the missions (the scope selector's options).
+async function loadAssistant() {
+  const [chats, skills] = await Promise.all([
+    guard(api.listChats(app.data.project?.id || "p1", "asistente"), null),
+    guard(api.listSkills(), null),
+  ]);
+  if (chats) app.data.chats = chats;
+  if (skills) app.data.skills = skills;
+  if (!app.data.missionsLoaded) await loadMissions();
+  renderMainOnly();
+}
+
 function loadViewData(view) {
   if (view === "missions") loadMissions();
   if (view === "refs") loadRefs();
+  if (view === "assistant") loadAssistant();
   if (view === "digest") loadDigest();
   if (view === "settings") { loadTrust(); loadTargets(); }
 }
@@ -567,12 +585,12 @@ Object.assign(RC_BUS, {
 window.RC = RC_BUS;
 Object.assign(ctx, {
   app, render, renderMainOnly, navigate,
-  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData,
+  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant,
 });
 
 export { app, render, renderMainOnly, navigate };
 export {
-  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData,
+  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant,
 };
 
 // ========== BOOT ==========

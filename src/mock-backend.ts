@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -59,6 +59,68 @@ const chats: Chat[] = [];
 const messages: Record<string, Message[]> = {};
 let chatSeq = 0;
 let msgSeq = 0;
+// Conversation attachments (Story 5.5): the mock keeps them in memory; the
+// text the browser read client-side rides the mock reply's context echo.
+const chatAttachments: Record<string, ChatAttachment[]> = {};
+let attachSeq = 0;
+// The curated DEFAULT scientific skill set (Story 5.6, FR-16.6) — mirrors
+// the core's seeded registry (same names, same roles, same tool bounds).
+const mockSkills: Skill[] = [
+  {
+    name: "drafter",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Redactor científico: avanzas el manuscrito — párrafos, related-work, transiciones— siempre anclados en la evidencia fijada del tablero. Cuando propongas texto para el manuscrito, inclúyelo en un bloque citado.",
+    tools: ["read_board", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "critic",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Crítico metodológico: evalúas afirmaciones, diseño y evidencia con rigor — señala supuestos débiles, afirmaciones que exceden la evidencia y citas sin anclaje. Nunca redactas texto final; evalúas.",
+    tools: ["read_board", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "librarian",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Bibliotecario: buscas y curas literatura — búsquedas dirigidas, síntesis comparativa de referencias, candados de cobertura. Puedes despachar búsquedas; nunca mutas el dominio.",
+    tools: ["search", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "verifier",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Verificador: contrastas afirmaciones contra sus fuentes — citas, números, artefactos. Distingues verificación (existencia por código) de confianza (juicio de un modelo); nunca afirmas «verificado» sin código.",
+    tools: ["verify", "read_board"],
+    builtin: true,
+  },
+  {
+    name: "synthesizer",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Sintetizador: cruzas hipótesis y evidencia del tablero en hallazgos integradores — patrones, tensiones, vacíos — con trazabilidad a los pines que los sostienen.",
+    tools: ["read_board", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "note_taker",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Tomador de notas: registras la sesión de investigación — decisiones, hallazgos, pendientes — en notas concisas y consultables del tablero. Nunca propones mutaciones al dominio.",
+    tools: ["read_board"],
+    builtin: true,
+  },
+];
 const nowISO = () => "2025-09-01T12:00:00Z";
 
 // In-memory missions so the question box → mission composer flow works in-browser.
@@ -1519,42 +1581,151 @@ export const mockApi = {
   updateAction: async () => {},
   deleteAction: async () => {},
 
-  // chats
+  // chats — mirrors the typed core's scoped surface (Stories 5.4–5.6):
+  // mission scope + skill per conversation, messages carrying the scope,
+  // attachments as chips, and the honest context echo on every reply.
   listChats: async (_pid: string, kind?: string) => {
     await delay();
-    return chats.filter((c) => !kind || c.kind === kind);
+    return chats.filter((c) => !kind || c.kind === kind).map((c) => ({ ...c }));
   },
-  createChat: async (pid: string, kind: string, title: string) => {
+  createChat: async (pid: string, kind: string, title: string, missionId?: string | null, skill?: string | null) => {
     await delay();
+    if (missionId && !missions.some((m) => m.id === missionId)) {
+      throw new Error(`unknown mission \`${missionId}\` — a conversation can only scope to a mission that exists`);
+    }
+    const skillName = (skill || "").trim();
+    if (skillName && !mockSkills.some((s) => s.name === skillName)) {
+      throw new Error(`unknown skill \`${skillName}\` — a conversation can only run a registered skill`);
+    }
     const id = "c" + ++chatSeq;
     const c: Chat = {
       id, project_id: pid, kind, title, preview: "",
+      mission_id: missionId || null,
+      skill: skillName || null,
       created_at: nowISO(), updated_at: nowISO(),
     };
     chats.push(c);
     messages[id] = [];
-    return c;
+    chatAttachments[id] = [];
+    return { ...c };
   },
   getChat: async (id: string) => {
     await delay();
     const c = chats.find((x) => x.id === id);
     if (!c) throw new Error("chat not found");
-    return { ...c, messages: messages[id] ?? [] };
+    return {
+      ...c,
+      messages: (messages[id] ?? []).map((m) => ({ ...m })),
+      attachments: (chatAttachments[id] ?? []).map((a) => ({ ...a })),
+    };
   },
   sendMessage: async (chatId: string, content: string) => {
     await delay(120);
-    const list = messages[chatId] ?? (messages[chatId] = []);
-    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "user", content, classify_tag: null, meta: null, created_at: nowISO() });
-    // Echo a canned agent reply so the thread feels alive.
-    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: "(mock) Entendido. Esta es una respuesta de ejemplo del asistente.", classify_tag: null, meta: null, created_at: nowISO() });
     const c = chats.find((x) => x.id === chatId);
-    if (c) { c.preview = content.slice(0, 80); c.updated_at = nowISO(); }
+    if (!c) throw new Error("chat not found");
+    const list = messages[chatId] ?? (messages[chatId] = []);
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "user", content, classify_tag: null, meta: null, mission_id: c.mission_id, created_at: nowISO() });
+    // The honest context echo (mirrors the core's simulated provider): the
+    // scoped context this send carried — board context, skill, attachments —
+    // is echoed back so vite dev demonstrates the wiring.
+    const echo: string[] = [];
+    if (c.mission_id) {
+      const mission = missions.find((m) => m.id === c.mission_id);
+      if (mission) {
+        const hyps = hypotheses.filter((h) => h.missionId === mission.id);
+        echo.push(`contexto: tablero M-${mission.seq} sincronizado (${hyps.length} hipótesis)`);
+      }
+    }
+    if (c.skill) echo.push(`skill: ${c.skill}`);
+    const attachCount = (chatAttachments[chatId] ?? []).length;
+    if (attachCount > 0) echo.push(`adjuntos: ${attachCount}`);
+    const base = "(mock) Entendido. Esta es una respuesta de ejemplo del asistente.";
+    const reply = echo.length ? `${base}\n\n— ${echo.join(" · ")}` : base;
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: reply, classify_tag: null, meta: null, mission_id: c.mission_id, created_at: nowISO() });
+    c.preview = content.slice(0, 80);
+    c.updated_at = nowISO();
     return { ok: true };
+  },
+  setChatScope: async (chatId: string, missionId: string | null) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    if (missionId && !missions.some((m) => m.id === missionId)) {
+      throw new Error(`unknown mission \`${missionId}\` — a conversation can only scope to a mission that exists`);
+    }
+    c.mission_id = missionId || null;
+    c.updated_at = nowISO();
+    return { ...c };
+  },
+  setChatSkill: async (chatId: string, skill: string | null) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    const skillName = (skill || "").trim();
+    if (skillName && !mockSkills.some((s) => s.name === skillName)) {
+      throw new Error(`unknown skill \`${skillName}\` — a conversation can only run a registered skill`);
+    }
+    c.skill = skillName || null;
+    c.updated_at = nowISO();
+    return { ...c };
+  },
+  // Skills (Story 5.6): the seeded six + user-added — a skill is data.
+  listSkills: async (): Promise<Skill[]> => {
+    await delay();
+    return mockSkills.map((s) => ({ ...s, tools: [...s.tools] }));
+  },
+  addChatAttachments: async (
+    chatId: string,
+    files: { name: string; path?: string | null; content?: string | null }[],
+  ) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    const list = chatAttachments[chatId] ?? (chatAttachments[chatId] = []);
+    const attached: ChatAttachment[] = [];
+    const refused: { name: string; reason: string }[] = [];
+    for (const f of files) {
+      const lower = f.name.toLowerCase();
+      // classify exactly like the core: extension + honest content check
+      let kind: ChatAttachment["kind"] = "binary";
+      if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".tex")) kind = "text";
+      else if (lower.endsWith(".pdf")) kind = "pdf";
+      if (kind === "text" && typeof f.content !== "string") {
+        refused.push({ name: f.name, reason: "`" + f.name + "`: archivo de texto ilegible / unreadable text file" });
+        continue;
+      }
+      let included = false;
+      let note = "";
+      if (kind === "text") included = true;
+      else if (kind === "pdf") note = "pdf-extraction-unavailable (el texto PDF se extrae en la app de escritorio)";
+      else note = "unsupported-inline v1";
+      const a: ChatAttachment = {
+        id: "at" + ++attachSeq + "-" + Date.now(),
+        name: f.name,
+        kind,
+        digest: "mock-" + attachSeq,
+        size_bytes: (f.content ?? "").length,
+        included,
+        truncated: false,
+        note,
+      };
+      list.push(a);
+      attached.push(a);
+    }
+    return { attached, refused };
+  },
+  removeChatAttachment: async (chatId: string, attachmentId: string) => {
+    await delay();
+    const list = chatAttachments[chatId] ?? [];
+    const i = list.findIndex((a) => a.id === attachmentId);
+    if (i >= 0) list.splice(i, 1);
+    return list.map((a) => ({ ...a }));
   },
   deleteChat: async (id: string) => {
     const i = chats.findIndex((x) => x.id === id);
     if (i >= 0) chats.splice(i, 1);
     delete messages[id];
+    delete chatAttachments[id];
   },
 
   // agents
