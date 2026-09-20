@@ -6,6 +6,7 @@
 // satisfies the AD-7 browser-identity AC — bridges, auth, and remote access
 // are v0.2.0.
 
+use crate::chat_commands::list_skills_inner;
 use crate::db::Db;
 use crate::domain::checkpoints::{fold_checkpoints, CheckpointsView};
 use crate::domain::evidence::Claim;
@@ -19,6 +20,7 @@ use crate::nightshift::morning_digest;
 use crate::proposals_commands::list_proposals_inner;
 use crate::domain::readiness::ReadinessReport;
 use crate::domain::search::SearchDisclosure;
+use crate::domain::skills::Skill;
 use crate::readiness_commands::readiness_report_inner;
 use crate::search_commands::search_disclosure_inner;
 use axum::extract::{Path, State};
@@ -70,6 +72,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         )
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
+        .route("/api/skills", get(list_skills))
         .route("/api/host-allowlist", get(host_allowlist))
         .route("/api/refs", get(library_refs))
         .with_state(ServerState { db })
@@ -97,6 +100,13 @@ async fn mission_runs(
 
 fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
+}
+
+/// The skills registry (Story 5.6, FR-16.8): the read-only list the served
+/// browser view's chat header renders — the curated six plus user-added.
+async fn list_skills(State(state): State<ServerState>) -> Result<Json<Vec<Skill>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    list_skills_inner(&c).map_err(|_| internal()).map(Json)
 }
 
 /// The hypothesis board of one mission (Story 1.5, read-only per AD-14).

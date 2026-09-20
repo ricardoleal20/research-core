@@ -30,6 +30,10 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 keyring = { version = "3", features = ["apple-native"] }
+# Local PDF text extraction for chat attachments (Story 5.5, FR-16.2,
+# NFR-12): pure-Rust, runs on the user's machine — extracted text leaves
+# only inside the user's chosen provider call.
+pdf-extract = "0.7"
 # In-process server shell (AD-7): axum inside the Tauri app process, serving
 # the built UI + a read-only API over the shared core. tower-http only for
 # static file serving.
