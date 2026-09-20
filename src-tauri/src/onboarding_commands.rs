@@ -13,7 +13,6 @@
 use crate::adapters::providers::ProviderLayer;
 use crate::db::Db;
 use crate::domain::onboarding::{self, FirstValueResult, Paper};
-use crate::mcp;
 use tauri::State;
 
 fn err(e: impl ToString) -> String {
@@ -21,30 +20,28 @@ fn err(e: impl ToString) -> String {
 }
 
 /// Run the first-value flow from a pasted arXiv URL: parse (typed error
-/// before any network), fetch the paper's metadata, then the core
-/// orchestration — library upsert, candidates through the provider layer,
-/// starter mission, candidate hypotheses on the board.
+/// before any network), fetch the paper's metadata through the SHARED
+/// arXiv adapter (the same `fetch_arxiv_metadata` the library add uses,
+/// FR-15.1 — the two doors can never drift), then the core orchestration —
+/// library upsert, candidates through the provider layer, starter mission,
+/// candidate hypotheses on the board.
 #[tauri::command]
 pub async fn run_first_value(
     db: State<'_, Db>,
     url: String,
 ) -> Result<FirstValueResult, String> {
-    let arxiv_id = onboarding::parse_arxiv_url(&url).map_err(err)?;
-    let search = mcp::arxiv_fetch(&arxiv_id)
+    let meta = crate::domain::library::fetch_arxiv_metadata(&url)
         .await
-        .map_err(|e| format!("fetch_failed: {e}"))?
-        .ok_or_else(|| {
-            format!("fetch_failed: arXiv has no paper with id `{arxiv_id}`")
-        })?;
+        .map_err(err)?;
     let paper = Paper {
-        title: search.title,
-        authors: search.authors,
-        year: search.year,
-        venue: search.venue,
-        doi: search.doi,
-        url: search.url,
-        arxiv_id,
-        abstract_text: search.abstract_text,
+        title: meta.title,
+        authors: meta.authors,
+        year: meta.year,
+        venue: meta.venue,
+        doi: meta.doi,
+        url: meta.url,
+        arxiv_id: meta.arxiv_id,
+        abstract_text: meta.abstract_text,
     };
     orchestrate(&db, paper).await
 }
