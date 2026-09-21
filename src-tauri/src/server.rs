@@ -27,6 +27,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
+use serde_json::Value;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
@@ -73,6 +74,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
         .route("/api/skills", get(list_skills))
+        .route("/api/ai-config", get(ai_config))
         .route("/api/host-allowlist", get(host_allowlist))
         .route("/api/refs", get(library_refs))
         .with_state(ServerState { db })
@@ -107,6 +109,16 @@ fn internal() -> StatusCode {
 async fn list_skills(State(state): State<ServerState>) -> Result<Json<Vec<Skill>>, StatusCode> {
     let c = state.db.0.lock().await;
     list_skills_inner(&c).map_err(|_| internal()).map(Json)
+}
+
+/// The AI provider configuration read (Stories 5.7–5.9, read-only per
+/// AD-14): what the served view's chat header and unconfigured state
+/// render — never the key itself, only its presence.
+async fn ai_config(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
+    let c = state.db.0.lock().await;
+    crate::commands::ai_config_inner(&c)
+        .map(Json)
+        .map_err(|_| internal())
 }
 
 /// The hypothesis board of one mission (Story 1.5, read-only per AD-14).
@@ -963,6 +975,7 @@ mod tests {
                         mission_id: Some(mission.id),
                         role: Some("drafter".into()),
                         run_id: Some("step-1".into()),
+                        note: None,
                     })
                     .unwrap(),
                 )

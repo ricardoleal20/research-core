@@ -38,6 +38,12 @@ pub struct SpendRecordedPayload {
     /// so per-run spend folds from the ledger ("last run: 82¢ of 100¢").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// An honesty note (Story 5.8): CLI bridge calls append a 0¢
+    /// `spend.recorded` with `note: "cli"` — the cost is not observable, so
+    /// the receipt says so instead of inventing a number (NFR-4 spirit,
+    /// AD-10). Absent on metered API calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl NewEvent {
@@ -77,6 +83,7 @@ mod tests {
             mission_id: None,
             role: None,
             run_id: None,
+                        note: None,
         }
     }
 

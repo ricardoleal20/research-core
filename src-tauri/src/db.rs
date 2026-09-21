@@ -185,6 +185,9 @@ impl Db {
         // place (idempotent: a present column is a no-op).
         ensure_column(conn, "chats", "mission_id", "TEXT")?;
         ensure_column(conn, "chats", "skill", "TEXT")?;
+        // Story 5.9 (FR-17.4): the per-conversation model choice — the
+        // projection of the `chat.model_set` events.
+        ensure_column(conn, "chats", "model", "TEXT")?;
         ensure_column(conn, "messages", "mission_id", "TEXT")?;
         Ok(())
     }

@@ -723,6 +723,7 @@ mod tests {
                     mission_id: Some(mission_id),
                     role: Some("drafter".into()),
                     run_id: Some(token),
+                        note: None,
                 })
                 .unwrap(),
             )

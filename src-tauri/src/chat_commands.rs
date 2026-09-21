@@ -178,10 +178,10 @@ fn validate_mission_scope(conn: &Connection, mission_id: &Option<String>) -> Res
     Ok(Some(id))
 }
 
-/// Create a conversation, optionally scoped to a mission (FR-16.4) and/or
-/// running a skill (FR-16.8). Both initial bindings are evented
-/// (chat.scoped / chat.skill_set, actor=user) with the row's columns as
-/// their projection.
+/// Create a conversation, optionally scoped to a mission (FR-16.4),
+/// running a skill (FR-16.8), and/or on a chosen model (FR-17.4). The
+/// initial bindings are evented (chat.scoped / chat.skill_set /
+/// chat.model_set, actor=user) with the row's columns as their projection.
 #[tauri::command]
 pub async fn create_chat(
     db: State<'_, Db>,
@@ -190,20 +190,34 @@ pub async fn create_chat(
     title: String,
     mission_id: Option<String>,
     skill: Option<String>,
+    model: Option<String>,
 ) -> Result<Value, String> {
     let c = db.0.lock().await;
-    let mission = validate_mission_scope(&c, &mission_id)?;
+    create_chat_inner(&c, &project_id, &kind, &title, mission_id, skill, model)
+}
+
+pub fn create_chat_inner(
+    c: &Connection,
+    project_id: &str,
+    kind: &str,
+    title: &str,
+    mission_id: Option<String>,
+    skill: Option<String>,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let mission = validate_mission_scope(c, &mission_id)?;
     let id = uid();
     let skill = skill.unwrap_or_default();
-    if !skill.trim().is_empty() && skill_by_name(&c, &skill)?.is_none() {
+    if !skill.trim().is_empty() && skill_by_name(c, &skill)?.is_none() {
         return Err(format!(
             "unknown skill `{skill}` — a conversation can only run a registered skill"
         ));
     }
     let skill = skill.trim().to_string();
+    let model = model.unwrap_or_default().trim().to_string();
     c.execute(
-        "INSERT INTO chats(id,project_id,kind,title,preview,mission_id,skill,created_at,updated_at) \
-         VALUES(?1,?2,?3,?4,'',?5,?6,?7,?8)",
+        "INSERT INTO chats(id,project_id,kind,title,preview,mission_id,skill,model,created_at,updated_at) \
+         VALUES(?1,?2,?3,?4,'',?5,?6,?7,?8,?9)",
         params![
             id,
             project_id,
@@ -211,13 +225,14 @@ pub async fn create_chat(
             title,
             mission.map(|m| m.to_string()),
             if skill.is_empty() { None } else { Some(skill.clone()) },
+            if model.is_empty() { None } else { Some(model.clone()) },
             now(),
             now()
         ],
     )
     .map_err(err)?;
     // The initial bindings are events like every later movement (FR-16.4).
-    let store = EventStore::new(&c);
+    let store = EventStore::new(c);
     if let Some(m) = mission {
         store
             .append(NewEvent::chat_scoped(&id, Some(m)).map_err(err)?)
@@ -228,7 +243,12 @@ pub async fn create_chat(
             .append(NewEvent::chat_skill_set(&id, &skill).map_err(err)?)
             .map_err(err)?;
     }
-    db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&id])
+    if !model.is_empty() {
+        store
+            .append(NewEvent::chat_model_set(&id, &model).map_err(err)?)
+            .map_err(err)?;
+    }
+    db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&id])
         .map(|o| o.unwrap_or(Value::Null))
         .map_err(err)
 }
@@ -277,7 +297,15 @@ pub async fn set_chat_scope(
     mission_id: Option<String>,
 ) -> Result<Value, String> {
     let c = db.0.lock().await;
-    let mission = validate_mission_scope(&c, &mission_id)?;
+    set_chat_scope_inner(&c, &chat_id, mission_id)
+}
+
+pub fn set_chat_scope_inner(
+    c: &Connection,
+    chat_id: &str,
+    mission_id: Option<String>,
+) -> Result<Value, String> {
+    let mission = validate_mission_scope(c, &mission_id)?;
     let n = c
         .execute(
             "UPDATE chats SET mission_id=?2, updated_at=?3 WHERE id=?1",
@@ -287,10 +315,10 @@ pub async fn set_chat_scope(
     if n == 0 {
         return Err(format!("chat `{chat_id}` not found"));
     }
-    EventStore::new(&c)
-        .append(NewEvent::chat_scoped(&chat_id, mission).map_err(err)?)
+    EventStore::new(c)
+        .append(NewEvent::chat_scoped(chat_id, mission).map_err(err)?)
         .map_err(err)?;
-    db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
+    db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
         .map(|o| o.unwrap_or(Value::Null))
         .map_err(err)
 }
@@ -306,7 +334,15 @@ pub async fn set_chat_skill(
 ) -> Result<Value, String> {
     let skill = skill.unwrap_or_default();
     let c = db.0.lock().await;
-    if !skill.trim().is_empty() && skill_by_name(&c, &skill)?.is_none() {
+    set_chat_skill_inner(&c, &chat_id, &skill)
+}
+
+pub fn set_chat_skill_inner(
+    c: &Connection,
+    chat_id: &str,
+    skill: &str,
+) -> Result<Value, String> {
+    if !skill.trim().is_empty() && skill_by_name(c, skill)?.is_none() {
         return Err(format!(
             "unknown skill `{skill}` — a conversation can only run a registered skill"
         ));
@@ -321,10 +357,48 @@ pub async fn set_chat_skill(
     if n == 0 {
         return Err(format!("chat `{chat_id}` not found"));
     }
-    EventStore::new(&c)
-        .append(NewEvent::chat_skill_set(&chat_id, &skill).map_err(err)?)
+    EventStore::new(c)
+        .append(NewEvent::chat_skill_set(chat_id, &skill).map_err(err)?)
         .map_err(err)?;
-    db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
+    db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
+        .map(|o| o.unwrap_or(Value::Null))
+        .map_err(err)
+}
+
+/// Choose (or clear) a conversation's model (FR-17.4, Story 5.9): one
+/// `chat.model_set` event + the row's projection. An empty model returns
+/// the conversation to the provider's configured default. Changing the
+/// model mid-conversation is history-preserving — earlier messages keep
+/// the attribution they were produced with.
+#[tauri::command]
+pub async fn set_chat_model(
+    db: State<'_, Db>,
+    chat_id: String,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let c = db.0.lock().await;
+    set_chat_model_inner(&c, &chat_id, model)
+}
+
+pub fn set_chat_model_inner(
+    c: &Connection,
+    chat_id: &str,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let model = model.unwrap_or_default().trim().to_string();
+    let n = c
+        .execute(
+            "UPDATE chats SET model=?2, updated_at=?3 WHERE id=?1",
+            params![chat_id, if model.is_empty() { None } else { Some(model.clone()) }, now()],
+        )
+        .map_err(err)?;
+    if n == 0 {
+        return Err(format!("chat `{chat_id}` not found"));
+    }
+    EventStore::new(c)
+        .append(NewEvent::chat_model_set(chat_id, &model).map_err(err)?)
+        .map_err(err)?;
+    db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
         .map(|o| o.unwrap_or(Value::Null))
         .map_err(err)
 }
@@ -607,7 +681,7 @@ pub async fn send_message_inner(
     content: &str,
 ) -> Result<Value, String> {
     let c = db.0.lock().await;
-    let chat = db::query_one(&c, "SELECT project_id, kind, mission_id, skill FROM chats WHERE id=?1", &[&chat_id])
+    let chat = db::query_one(&c, "SELECT project_id, kind, mission_id, skill, model FROM chats WHERE id=?1", &[&chat_id])
         .map_err(err)?
         .ok_or_else(|| format!("chat `{chat_id}` not found"))?;
     let project_id = chat.get("project_id").and_then(|v| v.as_str()).ok_or("no project")?.to_string();
@@ -623,6 +697,26 @@ pub async fn send_message_inner(
         Some(name) => skill_by_name(&c, name)?,
         None => None,
     };
+    // Story 5.7 (FR-17.1/NFR-11): the ASSISTANT path resolves its real
+    // provider FIRST — an unconfigured workspace refuses the send with the
+    // typed `no_provider_configured:` error BEFORE anything is stored (no
+    // orphan user message, no fabricated reply). The review-kind branch
+    // below keeps the simulated guarantee of Stories 1.6/2.1.
+    let layer = if kind == "review" {
+        None
+    } else {
+        Some(agent::resolve_assistant_layer(db, &c, skill.as_ref())?)
+    };
+    // Story 5.9 (FR-17.4): the conversation's chosen model — the folded
+    // `chat.model_set` events win over the row's baseline column.
+    let model = crate::domain::chat::folded_model(&events, chat_id)
+        .or_else(|| {
+            chat.get("model")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+        });
     // store user message — carrying the conversation's current scope
     let user_id = uid();
     c.execute(
@@ -657,7 +751,8 @@ pub async fn send_message_inner(
     }
 
     // asistente: assemble the scoped call (mission board + skill +
-    // attachments) and reply through the provider layer.
+    // attachments + the chosen model) and reply through the provider layer.
+    let layer = layer.expect("assistant path resolves its layer above");
     let missions = MissionsProjection::fold(&events).map_err(err)?;
     let board = mission_id
         .and_then(|id| missions.into_iter().find(|m| m.id == id))
@@ -696,17 +791,28 @@ pub async fn send_message_inner(
         board,
         skill,
         attachments,
+        model,
     };
-    let (reply, tag) = agent::assistant_reply(db, &project_id, history, call).await?;
+    let reply = agent::assistant_reply(db, &layer, &project_id, history, call).await?;
     let c = db.0.lock().await;
     let mid = uid();
+    // the reply carries its attribution (provider + model, Story 5.7/5.9) in
+    // its meta — the message-render idiom shows it ("provider · model")
+    let meta = json!({ "provider": reply.provider, "model": reply.model }).to_string();
     c.execute(
-        "INSERT INTO messages(id,chat_id,role,content,classify_tag,mission_id,created_at) VALUES(?1,?2,'agent',?3,?4,?5,?6)",
-        params![mid, chat_id, &reply, tag, mission_id.map(|m| m.to_string()), now()],
+        "INSERT INTO messages(id,chat_id,role,content,classify_tag,meta,mission_id,created_at) VALUES(?1,?2,'agent',?3,?4,?5,?6,?7)",
+        params![mid, chat_id, &reply.content, reply.tag, meta, mission_id.map(|m| m.to_string()), now()],
     )
     .map_err(err)?;
     c.execute("UPDATE chats SET updated_at=?2 WHERE id=?1", params![chat_id, now()]).map_err(err)?;
-    Ok(json!({ "user_id": user_id, "agent_id": mid, "agent_content": reply, "tag": tag }))
+    Ok(json!({
+        "user_id": user_id,
+        "agent_id": mid,
+        "agent_content": reply.content,
+        "tag": reply.tag,
+        "provider": reply.provider,
+        "model": reply.model,
+    }))
 }
 
 #[cfg(test)]
@@ -769,6 +875,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_scoped_send_carries_mission_context_and_mission_id() {
+        agent::use_fake_assistant_layer();
         let db = test_db();
         let paths = test_paths();
         let mission = make_mission(&db).await;
@@ -809,7 +916,7 @@ mod tests {
         // create a mission-scoped chat (the initial binding is evented)
         let chat = {
             let c = conn(&db).await;
-            create_chat_inner(&c, &pid, "asistente", "Scoped", Some(mission.id.to_string()), None).unwrap()
+            create_chat_inner(&c, &pid, "asistente", "Scoped", Some(mission.id.to_string()), None, None).unwrap()
         };
         assert_eq!(chat["mission_id"], json!(mission.id.to_string()));
 
@@ -844,6 +951,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_general_send_carries_no_board_context() {
+        agent::use_fake_assistant_layer();
         let db = test_db();
         let paths = test_paths();
         let mission = make_mission(&db).await; // exists, but the chat is General
@@ -851,7 +959,7 @@ mod tests {
         assert_ne!(mission.id, Uuid::nil()); // the mission is simply not bound
         let chat = {
             let c = conn(&db).await;
-            create_chat_inner(&c, &pid, "asistente", "General", None, None).unwrap()
+            create_chat_inner(&c, &pid, "asistente", "General", None, None, None).unwrap()
         };
         let out = send_message_inner(&db, &paths, &chat_id(&chat), "hola")
             .await
@@ -868,21 +976,113 @@ mod tests {
         let db = test_db();
         let pid = project_id(&db).await;
         let c = conn(&db).await;
-        assert!(create_chat_inner(&c, &pid, "asistente", "x", Some(Uuid::new_v4().to_string()), None).is_err());
-        assert!(create_chat_inner(&c, &pid, "asistente", "x", None, Some("martian".into())).is_err());
-        let chat = create_chat_inner(&c, &pid, "asistente", "x", None, None).unwrap();
+        assert!(create_chat_inner(&c, &pid, "asistente", "x", Some(Uuid::new_v4().to_string()), None, None).is_err());
+        assert!(create_chat_inner(&c, &pid, "asistente", "x", None, Some("martian".into()), None).is_err());
+        let chat = create_chat_inner(&c, &pid, "asistente", "x", None, None, None).unwrap();
         assert!(set_chat_scope_inner(&c, &chat_id(&chat), Some(Uuid::new_v4().to_string())).is_err());
-        assert!(set_chat_skill_inner(&c, &chat_id(&chat), Some("martian".into())).is_err());
+        assert!(set_chat_skill_inner(&c, &chat_id(&chat), "martian").is_err());
     }
 
+    /// Story 5.7 (FR-17.1/NFR-11): with NO real provider configured, an
+    /// assistant send is refused with the typed `no_provider_configured:`
+    /// error — never a simulated fallback, never a fabricated reply, and
+    /// nothing stored (no orphan user message).
     #[tokio::test]
-    async fn attachments_are_classified_stored_and_included_or_flagged() {
+    async fn assistant_sends_refuse_without_a_real_provider() {
         let db = test_db();
         let paths = test_paths();
         let pid = project_id(&db).await;
         let chat = {
             let c = conn(&db).await;
-            create_chat_inner(&c, &pid, "asistente", "Files", None, None).unwrap()
+            create_chat_inner(&c, &pid, "asistente", "Unconfigured", None, None, None).unwrap()
+        };
+        let out = send_message_inner(&db, &paths, &chat_id(&chat), "hola").await;
+        let err = out.expect_err("the unconfigured assistant must refuse the send");
+        assert!(
+            err.starts_with("no_provider_configured:"),
+            "the refusal is the typed no_provider_configured error, got: {err}"
+        );
+        // nothing was stored — the refusal came before the insert
+        // (scoped: the guard must drop before the next acquisition)
+        {
+            let c = conn(&db).await;
+            let fresh = get_chat_inner(&c, &chat_id(&chat)).unwrap();
+            assert!(
+                fresh["messages"].as_array().unwrap().is_empty(),
+                "a refused send must not leave a stored message: {fresh}"
+            );
+        }
+        // an explicit simulate mode is refused the same way (never a silent
+        // mock on the assistant path)
+        {
+            let c = conn(&db).await;
+            db::set_setting(&c, "llm_mode", "simulate").unwrap();
+        }
+        let err = send_message_inner(&db, &paths, &chat_id(&chat), "hola")
+            .await
+            .expect_err("simulate mode must not answer the assistant");
+        assert!(err.starts_with("no_provider_configured:"), "got: {err}");
+    }
+
+    /// Story 5.9 (FR-17.4): the per-conversation model choice persists
+    /// (row + `chat.model_set` event), the folded event wins over the row,
+    /// and the chosen model rides the provider call — overriding the
+    /// layer's configured default — and attributes the reply.
+    #[tokio::test]
+    async fn the_model_choice_persists_per_chat_and_overrides_the_default() {
+        agent::use_fake_assistant_layer();
+        let db = test_db();
+        let paths = test_paths();
+        let pid = project_id(&db).await;
+        let c = conn(&db).await;
+        // the initial choice is evented like every later movement
+        let chat =
+            create_chat_inner(&c, &pid, "asistente", "Modeloso", None, None, Some("glm-5.3-air".into()))
+                .unwrap();
+        assert_eq!(chat["model"], json!("glm-5.3-air"));
+        let cid = chat_id(&chat);
+        // a later movement wins: the folded event overrides the row
+        set_chat_model_inner(&c, &cid, Some("claude-sonnet-4-5".into())).unwrap();
+        let re_read = get_chat_inner(&c, &cid).unwrap();
+        assert_eq!(re_read["model"], json!("claude-sonnet-4-5"));
+        // clearing returns to the provider default
+        set_chat_model_inner(&c, &cid, None).unwrap();
+        let re_read = get_chat_inner(&c, &cid).unwrap();
+        assert_eq!(re_read["model"], serde_json::Value::Null);
+
+        // the chosen model rides the call: set it again and send — the
+        // reply's attribution carries it (not the fake layer's default)
+        set_chat_model_inner(&c, &cid, Some("glm-5.3-air".into())).unwrap();
+        drop(c);
+        let out = send_message_inner(&db, &paths, &cid, "redacta algo corto")
+            .await
+            .unwrap();
+        assert_eq!(out["model"], json!("glm-5.3-air"));
+        assert_eq!(out["provider"], json!("test-remote"));
+        // the reply's stored message carries its attribution in meta
+        let c = conn(&db).await;
+        let fresh = get_chat_inner(&c, &cid).unwrap();
+        let agent_msg = fresh["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == json!("agent"))
+            .unwrap();
+        let meta: Value =
+            serde_json::from_str(agent_msg["meta"].as_str().unwrap()).unwrap();
+        assert_eq!(meta["model"], json!("glm-5.3-air"));
+        assert_eq!(meta["provider"], json!("test-remote"));
+    }
+
+    #[tokio::test]
+    async fn attachments_are_classified_stored_and_included_or_flagged() {
+        agent::use_fake_assistant_layer();
+        let db = test_db();
+        let paths = test_paths();
+        let pid = project_id(&db).await;
+        let chat = {
+            let c = conn(&db).await;
+            create_chat_inner(&c, &pid, "asistente", "Files", None, None, None).unwrap()
         };
         let cid = chat_id(&chat);
 
@@ -952,6 +1152,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_default_skill_set_is_preinstalled_and_per_chat() {
+        agent::use_fake_assistant_layer();
         let db = test_db();
         let pid = project_id(&db).await;
         let c = conn(&db).await;
@@ -964,15 +1165,15 @@ mod tests {
         );
 
         // the per-chat choice persists (row + event)
-        let chat = create_chat_inner(&c, &pid, "asistente", "Skilled", None, Some("librarian".into()))
+        let chat = create_chat_inner(&c, &pid, "asistente", "Skilled", None, Some("librarian".into()), None)
             .unwrap();
         assert_eq!(chat["skill"], json!("librarian"));
         let cid = chat_id(&chat);
-        set_chat_skill_inner(&c, &cid, Some("verifier".into())).unwrap();
+        set_chat_skill_inner(&c, &cid, "verifier").unwrap();
         let re_read = get_chat_inner(&c, &cid).unwrap();
         assert_eq!(re_read["skill"], json!("verifier"));
         // clearing returns to the plain persona
-        set_chat_skill_inner(&c, &cid, None).unwrap();
+        set_chat_skill_inner(&c, &cid, "").unwrap();
         let re_read = get_chat_inner(&c, &cid).unwrap();
         assert_eq!(re_read["skill"], serde_json::Value::Null);
 
@@ -980,7 +1181,7 @@ mod tests {
         drop(c);
         let paths = test_paths();
         let c = conn(&db).await;
-        set_chat_skill_inner(&c, &cid, Some("librarian".into())).unwrap();
+        set_chat_skill_inner(&c, &cid, "librarian").unwrap();
         drop(c);
         let out = send_message_inner(&db, &paths, &cid, "busca literatura sobre scaling laws")
             .await
@@ -1009,6 +1210,7 @@ mod tests {
                 text: Some("contenido".into()),
                 truncated: false,
             }],
+            model: None,
         };
         let system = agent::assistant_system_prompt("Tesis", "- Ref A", &call);
         // the skill's role prompt and the marker'd name lead
@@ -1029,102 +1231,11 @@ mod tests {
         assert!(!plain.contains("Contexto del tablero"));
     }
 
-    // thin inner wrappers the tests drive (the #[tauri::command] layer only
-    // unwraps State)
+    // the inner helpers the tests drive are the module-level create_chat_inner /
+    // set_chat_scope_inner / set_chat_skill_inner (the #[tauri::command] layer
+    // only unwraps State)
     fn chat_id(chat: &Value) -> String {
         chat.get("id").and_then(|v| v.as_str()).unwrap().to_string()
-    }
-
-    fn create_chat_inner(
-        c: &Connection,
-        project_id: &str,
-        kind: &str,
-        title: &str,
-        mission_id: Option<String>,
-        skill: Option<String>,
-    ) -> Result<Value, String> {
-        let mission = validate_mission_scope(c, &mission_id)?;
-        let id = uid();
-        let skill = skill.unwrap_or_default();
-        if !skill.trim().is_empty() && skill_by_name(c, &skill)?.is_none() {
-            return Err(format!("unknown skill `{skill}`"));
-        }
-        let skill = skill.trim().to_string();
-        c.execute(
-            "INSERT INTO chats(id,project_id,kind,title,preview,mission_id,skill,created_at,updated_at) \
-             VALUES(?1,?2,?3,?4,'',?5,?6,?7,?8)",
-            params![
-                id,
-                project_id,
-                kind,
-                title,
-                mission.map(|m| m.to_string()),
-                if skill.is_empty() { None } else { Some(skill.clone()) },
-                now(),
-                now()
-            ],
-        )
-        .map_err(err)?;
-        let store = EventStore::new(c);
-        if let Some(m) = mission {
-            store.append(NewEvent::chat_scoped(&id, Some(m)).map_err(err)?).map_err(err)?;
-        }
-        if !skill.is_empty() {
-            store.append(NewEvent::chat_skill_set(&id, &skill).map_err(err)?).map_err(err)?;
-        }
-        db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&id])
-            .map(|o| o.unwrap_or(Value::Null))
-            .map_err(err)
-    }
-
-    fn set_chat_scope_inner(
-        c: &Connection,
-        chat_id: &str,
-        mission_id: Option<String>,
-    ) -> Result<Value, String> {
-        let mission = validate_mission_scope(c, &mission_id)?;
-        let n = c
-            .execute(
-                "UPDATE chats SET mission_id=?2, updated_at=?3 WHERE id=?1",
-                params![chat_id, mission.map(|m| m.to_string()), now()],
-            )
-            .map_err(err)?;
-        if n == 0 {
-            return Err(format!("chat `{chat_id}` not found"));
-        }
-        EventStore::new(c)
-            .append(NewEvent::chat_scoped(chat_id, mission).map_err(err)?)
-            .map_err(err)?;
-        db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
-            .map(|o| o.unwrap_or(Value::Null))
-            .map_err(err)
-    }
-
-    fn set_chat_skill_inner(
-        c: &Connection,
-        chat_id: &str,
-        skill: Option<String>,
-    ) -> Result<Value, String> {
-        let skill = skill.unwrap_or_default();
-        if !skill.trim().is_empty() && skill_by_name(c, &skill)?.is_none() {
-            return Err(format!("unknown skill `{skill}`"));
-        }
-        let skill = skill.trim().to_string();
-        let n = c
-            .execute(
-                "UPDATE chats SET skill=?2, updated_at=?3 WHERE id=?1",
-                params![chat_id, if skill.is_empty() { None } else { Some(skill.clone()) }, now()],
-            )
-            .map_err(err)?;
-        if n == 0 {
-            return Err(format!("chat `{chat_id}` not found"));
-        }
-        EventStore::new(c)
-            .append(NewEvent::chat_skill_set(chat_id, &skill).map_err(err)?)
-            .map_err(err)?;
-        db::query_one(c, "SELECT * FROM chats WHERE id=?1", &[&chat_id])
-            .map(|o| o.unwrap_or(Value::Null))
-            .map_err(err)
     }
 
     fn add_chat_attachments_inner(
