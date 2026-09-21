@@ -7,6 +7,7 @@
 // are v0.2.0.
 
 use crate::chat_commands::list_skills_inner;
+use crate::dashboard_commands::{dashboard_summary_inner, DashboardSummary};
 use crate::db::Db;
 use crate::domain::checkpoints::{fold_checkpoints, CheckpointsView};
 use crate::domain::evidence::Claim;
@@ -45,6 +46,7 @@ struct ServerState {
 pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
     Router::new()
         .route("/api/missions", get(list_missions))
+        .route("/api/dashboard", get(dashboard))
         .route("/api/missions/{mission_id}/runs", get(mission_runs))
         .route("/api/missions/{mission_id}/hypotheses", get(mission_hypotheses))
         .route(
@@ -86,6 +88,17 @@ async fn list_missions(State(state): State<ServerState>) -> Result<Json<Vec<Miss
     let c = state.db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
     MissionsProjection::fold(&events).map_err(|_| internal()).map(Json)
+}
+
+/// The dashboard summary (Story 5.10, FR-18.1 — read-only per AD-14): the
+/// home panel's one aggregated read, folded over the shared core — the
+/// identical summary the desktop webview renders via the `dashboard_summary`
+/// command. No mutation is routed; a dashboard render never appends.
+async fn dashboard(
+    State(state): State<ServerState>,
+) -> Result<Json<DashboardSummary>, StatusCode> {
+    let c = state.db.0.lock().await;
+    dashboard_summary_inner(&c).map(Json).map_err(|_| internal())
 }
 
 async fn mission_runs(
@@ -1374,5 +1387,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The dashboard route (Story 5.10, FR-18.1 — read-only per AD-14): the
+    /// home panel's aggregated read over the shared core — the same fold the
+    /// `dashboard_summary` command serves the desktop webview. POST is not
+    /// routed (single writer, AD-14): a dashboard render never appends.
+    #[tokio::test]
+    async fn get_api_dashboard_folds_the_six_widgets_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold up?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A blind rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
+                        roles: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/dashboard").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let summary: DashboardSummary = body_json(res.into_body()).await;
+        assert_eq!(summary.missions.len(), 1);
+        assert!(summary.hypotheses.is_empty());
+        assert_eq!(
+            summary.digest.outcome,
+            crate::domain::digest::DigestOutcome::NoRuns
+        );
+        assert!(summary.recent_receipts.is_empty());
+        assert_eq!(summary.readiness.scope, None);
+        // single writer (AD-14): the dashboard is a read — POST is not routed
+        let res = app(db)
+            .oneshot(Request::post("/api/dashboard").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }

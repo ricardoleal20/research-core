@@ -2,6 +2,7 @@ mod agent;
 mod chat_commands;
 mod checkpoints_commands;
 mod commands;
+mod dashboard_commands;
 mod db;
 mod evidence_commands;
 mod export_commands;
@@ -228,6 +229,10 @@ pub fn run() {
             search_commands::run_search,
             search_commands::get_search_disclosure,
             readiness_commands::get_readiness_report,
+            // dashboard (Story 5.10, FR-18): the home panel's one
+            // read-only aggregated fold — a composition over the read
+            // models above, never a write.
+            dashboard_commands::dashboard_summary,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
             // library (evented references CRUD, FR-15, Epic 5): the adds
