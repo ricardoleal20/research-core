@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -1920,6 +1920,43 @@ export const mockApi = {
     return mission;
   },
   listMissions: async () => { await delay(); return [...missions]; },
+  // The dashboard's one aggregated read (Story 5.10, FR-18.1): the same
+  // composition the core folds — every widget over the mock's own reads,
+  // read-only by construction (derives from the live mock state + the
+  // seeded night, appends nothing).
+  getDashboardSummary: async (): Promise<DashboardSummary> => {
+    await delay();
+    // recent receipts: the seeded night's ledgers + any live run receipts,
+    // newest start first, capped at five (mirrors the core's fold)
+    const candidates: { runId: string; startedTs: string }[] =
+      Object.values(seededReceipts).map((r) => ({ runId: r.runId, startedTs: r.startedTs }));
+    for (const runs of Object.values(missionRuns)) {
+      for (const r of runs) {
+        if (r.kind === "run.started" && r.runId) {
+          candidates.push({ runId: r.runId, startedTs: r.ts });
+        }
+      }
+    }
+    const seen = new Set<string>();
+    const recentReceipts = candidates
+      .filter((c) => (seen.has(c.runId) ? false : seen.add(c.runId)))
+      .sort((a, b) => (a.startedTs < b.startedTs ? 1 : -1))
+      .slice(0, 5)
+      .map((c) => seededReceipts[c.runId] ?? mockReceiptFor(c.runId))
+      .filter((r): r is RunReceipt => r !== null)
+      .map((r) => ({ ...r, rows: r.rows.map((x) => ({ ...x })), models: [...r.models] }));
+    const d = currentMockDigest();
+    return {
+      missions: [...missions],
+      // the seeded night's board + the live board — the same hypotheses the
+      // readiness fold sees (replay = re-query)
+      hypotheses: [...seededReadinessHypotheses, ...hypotheses].map((h) => ({ ...h })),
+      digest: { ...d, rows: d.rows.map((r) => ({ ...r })), alerts: d.alerts.map((a) => ({ ...a })) },
+      trust: mockTrustStatus(),
+      recentReceipts,
+      readiness: mockReadinessReport(null),
+    };
+  },
   getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
   // run receipts (Story 2.5, FR-6.1): the seeded ledgers plus a live fold
   // for runs the mock Night Shift created — `null` when the run id has no

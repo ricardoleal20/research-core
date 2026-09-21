@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -239,6 +239,15 @@ const browserApi = {
   },
   listMissions: async () =>
     (await servedByCore) ? httpJson<Mission[]>("/api/missions") : mockApi.listMissions(),
+  // The dashboard's one aggregated read (Story 5.10, FR-18.1): over the
+  // same-origin read-only API when served by the core (the identical fold
+  // the desktop webview renders via the `dashboard_summary` command); the
+  // in-memory mock in plain `vite` dev. A pure composition over the
+  // existing read models — never a write, never an event.
+  getDashboardSummary: async (): Promise<DashboardSummary> => {
+    if (await servedByCore) return httpJson<DashboardSummary>("/api/dashboard");
+    return mockApi.getDashboardSummary();
+  },
   getMissionRuns: async (missionId: string) =>
     (await servedByCore)
       ? httpJson<MissionRun[]>(`/api/missions/${missionId}/runs`)
@@ -652,6 +661,9 @@ export const api = mockActive ? browserApi : {
 
   // dashboard
   getDashboard: (projectId: string) => invoke<any>("get_dashboard", { projectId }),
+  // The home panel's one read-only aggregated fold (Story 5.10, FR-18.1):
+  // six widgets over one log read — never a write.
+  getDashboardSummary: () => invoke<DashboardSummary>("dashboard_summary"),
 
   // refs — the read re-folds the evented library projection (legacy
   // baseline + ref.* events, FR-15); the legacy create_ref/update_ref/

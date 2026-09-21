@@ -994,6 +994,19 @@ export interface ReadinessReport {
   trail: ReadinessTrailRow[];
 }
 
+// The dashboard's aggregated read (Story 5.10, FR-18.1): every widget's
+// data in ONE fold over the log — a transport envelope over the existing
+// read models (missions, boards, digest, trust, receipts, readiness),
+// never a new domain model. A dashboard render never appends events.
+export interface DashboardSummary {
+  missions: Mission[]; // widget 1 (FR-18.2): status counts + active shortlist
+  hypotheses: Hypothesis[]; // widget 2 (FR-18.3): every board, across missions
+  digest: MorningDigest; // widget 3 (FR-18.4): the digest teaser's source
+  trust: TrustStatus; // widget 4 (FR-18.5): spend-vs-ceiling meters
+  recentReceipts: RunReceipt[]; // widget 5 (FR-18.6): last N runs, newest first
+  readiness: ReadinessReport; // widget 6 (FR-18.7): workspace-scoped verdict
+}
+
 // The AI provider configuration (Stories 5.7–5.9, FR-17): what Ajustes → IA
 // and the assistant surface render. The key itself NEVER crosses this
 // boundary — only its presence (NFR-10: keychain-only credentials).

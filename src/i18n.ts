@@ -1500,6 +1500,67 @@ const DICT: Record<string, Record<Lang, string>> = {
   "rc.lang.es": { es: "Español", en: "Español", pt: "Espanhol", fr: "Español" },
   "rc.lang.pt": { es: "Português", en: "Português", pt: "Português", fr: "Português" },
   "rc.lang.fr": { es: "Français", en: "Français", pt: "Francês", fr: "Français" },
+
+  // dashboard — the home panel (Story 5.10, FR-18): a read-only
+  // composition over the existing reads; every widget has an honest
+  // empty state (FR-18.8, NFR-9)
+  "rc.nav.dashboard": { es: "Panel", en: "Dashboard", pt: "Painel", fr: "Tableau de bord" },
+  "dash.title": { es: "Panel", en: "Dashboard", pt: "Painel", fr: "Tableau de bord" },
+  "dash.sub": {
+    es: "El estado de todo en diez segundos — misiones, tableros, gasto, la noche, la preparación.",
+    en: "The state of everything in ten seconds — missions, boards, spend, the night, readiness.",
+    pt: "O estado de tudo em dez segundos — missões, tabuleiros, gasto, a noite, a preparação.",
+    fr: "L'état de tout en dix secondes — missions, tableaux, dépenses, la nuit, la préparation.",
+  },
+  "dash.note": {
+    es: "Vista de solo lectura sobre el registro — renderizar el panel nunca crea eventos.",
+    en: "A read-only view over the log — rendering the dashboard never creates events.",
+    pt: "Vista de só leitura sobre o registro — renderizar o painel nunca cria eventos.",
+    fr: "Vue en lecture seule du journal — afficher le tableau de bord ne crée jamais d'événements.",
+  },
+  "dash.missions.title": { es: "Misiones", en: "Missions", pt: "Missões", fr: "Missions" },
+  "dash.missions.active": { es: "Activas", en: "Active", pt: "Ativas", fr: "Actives" },
+  "dash.missions.empty": {
+    es: "Aún no hay misiones — el cuadro de pregunta es la app.",
+    en: "No missions yet — the question box is the app.",
+    pt: "Ainda não há missões — o quadro de pergunta é a app.",
+    fr: "Pas encore de missions — la boîte de question est l'app.",
+  },
+  "dash.missions.viewAll": { es: "ver misiones →", en: "see missions →", pt: "ver missões →", fr: "voir les missions →" },
+  "dash.board.title": { es: "Salud de los tableros", en: "Board health", pt: "Saúde dos tabuleiros", fr: "Santé des tableaux" },
+  "dash.board.empty": {
+    es: "Nada en los tableros todavía — la primera hipótesis llega con la primera misión.",
+    en: "Nothing on the boards yet — the first hypothesis arrives with the first mission.",
+    pt: "Nada nos tabuleiros ainda — a primeira hipótese chega com a primeira missão.",
+    fr: "Rien sur les tableaux encore — la première hypothèse arrive avec la première mission.",
+  },
+  "dash.board.viewBoard": { es: "ver tablero →", en: "open board →", pt: "ver tabuleiro →", fr: "voir le tableau →" },
+  "dash.digest.title": { es: "Último digesto", en: "Latest digest", pt: "Último digesto", fr: "Dernier résumé" },
+  "dash.digest.viewFull": { es: "ver digest completo →", en: "see full digest →", pt: "ver digesto completo →", fr: "voir le résumé complet →" },
+  "dash.digest.empty": {
+    es: "Nada corrió anoche — el digesto llega con la primera noche.",
+    en: "Nothing ran overnight — the digest arrives with the first night.",
+    pt: "Nada correu à noite — o digesto chega com a primeira noite.",
+    fr: "Rien n'a tourné cette nuit — le résumé arrive avec la première nuit.",
+  },
+  "dash.spend.title": { es: "Gasto vs tope", en: "Spend vs ceiling", pt: "Gasto vs teto", fr: "Dépense vs plafond" },
+  "dash.spend.global": { es: "Global", en: "Global", pt: "Global", fr: "Global" },
+  "dash.spend.empty": {
+    es: "Sin techos configurados — fija los topes en Ajustes → Confianza.",
+    en: "No ceilings configured — set them in Settings → Trust.",
+    pt: "Sem tetos configurados — define-os em Definições → Confiança.",
+    fr: "Aucun plafond configuré — réglez-les dans Réglages → Confiance.",
+  },
+  "dash.receipts.title": { es: "Recibos recientes", en: "Recent receipts", pt: "Recibos recentes", fr: "Reçus récents" },
+  "dash.receipts.empty": {
+    es: "Aún no hay corridas — nada que auditar todavía.",
+    en: "No runs yet — nothing to audit yet.",
+    pt: "Ainda não há corridas — nada a auditar ainda.",
+    fr: "Pas encore de courses — rien à auditer pour l'instant.",
+  },
+  "dash.readiness.title": { es: "Listo para preprint", en: "Preprint readiness", pt: "Pronto para preprint", fr: "Prêt pour le preprint" },
+  "dash.readiness.blockers": { es: "{count} bloqueos", en: "{count} blockers", pt: "{count} bloqueios", fr: "{count} bloqueurs" },
+  "dash.readiness.viewReport": { es: "ver informe →", en: "see report →", pt: "ver relatório →", fr: "voir le rapport →" },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];
