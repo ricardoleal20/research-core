@@ -116,6 +116,7 @@ export interface Chat {
   preview: string;
   mission_id: string | null; // Story 5.4 (FR-16.4): the mission scope; null = General
   skill: string | null; // Story 5.6 (FR-16.8): the per-conversation skill; null = plain persona
+  model: string | null; // Story 5.9 (FR-17.4): the chosen model; null = the provider default
   created_at: string;
   updated_at: string;
   messages?: Message[];
@@ -991,4 +992,28 @@ export interface ReadinessReport {
   blockers: ReadinessItem[];
   infos: ReadinessItem[];
   trail: ReadinessTrailRow[];
+}
+
+// The AI provider configuration (Stories 5.7–5.9, FR-17): what Ajustes → IA
+// and the assistant surface render. The key itself NEVER crosses this
+// boundary — only its presence (NFR-10: keychain-only credentials).
+export interface AiConfig {
+  mode: string; // "" | "simulate" | "cli" | "provider"
+  provider: string; // openai | anthropic | google | openrouter | custom | …
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  cli: string; // the CLI bridge binary ("claude" when unset)
+  cliModel: string;
+  cliAvailable: Record<string, { path: string } | null>; // honest per-binary detection
+  models: string[]; // the picker's list (curated; [] = free entry; CLI = ["default"])
+  configured: boolean; // a REAL provider is configured — the assistant's gate
+}
+
+// One test-connection run (Story 5.7): ok + the live model list (the
+// picker refreshes from it), or the honest error string.
+export interface AiConnectionTest {
+  ok: boolean;
+  models: string[];
+  error: string | null;
 }

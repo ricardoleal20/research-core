@@ -312,9 +312,22 @@ export function bindReview(app) {}
 /// draft selection for a conversation not yet created.
 function chatScope(app) {
   const chat = app.data.chats.find((c) => c.id === app.data.activeChatId);
-  if (chat) return { missionId: chat.mission_id || null, skill: chat.skill || null };
-  const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null });
-  return { missionId: draft.missionId, skill: draft.skill };
+  if (chat) return { missionId: chat.mission_id || null, skill: chat.skill || null, model: chat.model || null };
+  const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null });
+  return { missionId: draft.missionId, skill: draft.skill, model: draft.model };
+}
+
+/// The active provider+model pair the header shows in mono (Story 5.9,
+/// the status-card provider idiom): the conversation's chosen model, else
+/// the provider's configured default; CLI bridges show "default · vía CLI".
+function activeModelPair(app) {
+  const ai = app.data.aiConfig;
+  if (!ai) return null;
+  const scope = chatScope(app);
+  const isCli = ai.mode === "cli";
+  const model = scope.model || ai.model || (isCli ? "default" : "");
+  const provider = isCli ? `cli/${ai.cli}` : ai.provider || "";
+  return { provider, model, isCli };
 }
 
 /// The attachment chips the composer renders: the active conversation's
@@ -354,6 +367,29 @@ export function renderAssistant(app) {
   const scope = chatScope(app);
   const mission = scope.missionId ? app.data.missions.find((m) => m.id === scope.missionId) : null;
   const skill = scope.skill ? app.data.skills.find((s) => s.name === scope.skill) : null;
+  // Story 5.7 (FR-17.1/NFR-11): with NO real provider configured the view
+  // shows the explicit configure-provider state and sends are refused —
+  // no fabricated replies on the assistant path, ever.
+  const ai = app.data.aiConfig;
+  // While the config read is still in flight the view stays neutral — the
+  // configure state renders only from a LOADED, unconfigured state (and
+  // the send path's typed refusal is the backstop either way).
+  const unconfigured = ai ? !ai.configured : false;
+  const pair = activeModelPair(app);
+  // Story 5.9 (FR-17.4): the model picker lists the active provider's
+  // models (curated; free entry for custom URLs; CLI = ["default"]). With
+  // exactly one model the resolved pair renders read-only — no empty
+  // dropdown.
+  const modelOptions = ai ? ai.models.map((m) => ({
+    value: m,
+    label: ai.mode === "cli" ? `${m} · ${t("rc.assistant.viaCli")}` : m,
+  })) : [];
+  const activeModel = scope.model || (ai ? ai.model : "") || modelOptions[0]?.value || "";
+  const modelPicker = unconfigured ? "" : (modelOptions.length > 1
+    ? `<div class="w-40 hidden md:block">${rcSelect({ id: "chat-model-select", size: "sm", cls: "w-full", options: modelOptions, value: activeModel, onChange: "RC.setChatModel(this.value)" })}</div>`
+    : (modelOptions.length === 0
+      ? `<input id="chat-model-input" value="${esc(scope.model || "")}" onchange="RC.setChatModel(this.value)" placeholder="${t("rc.assistant.modelDefault")}" title="${t("prov.modelFreeEntry")}" class="hidden md:block w-40 rounded-lg border border-border bg-white px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 transition">`
+      : ""));
   const missionOptions = [
     { value: "", label: t("rc.assistant.scopeGeneral") },
     ...app.data.missions.map((m) => ({ value: m.id, label: `M-${m.seq} · ${m.question.slice(0, 46)}` })),
@@ -362,6 +398,40 @@ export function renderAssistant(app) {
     { value: "", label: t("rc.assistant.skillNone") },
     ...app.data.skills.map((s) => ({ value: s.name, label: t(`rc.skill.${s.name}`) })),
   ];
+  // The configure-provider state (FR-17.1): the aurora empty state
+  // adapted, with a CTA straight to Ajustes → IA. No composer — sends are
+  // refused until a real provider exists.
+  if (unconfigured) {
+    return `
+    <div class="h-[calc(100vh-112px)] flex flex-col">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary shrink-0">${icon("sparkle", "w-4 h-4")}</div>
+          <div class="min-w-0">
+            <p class="caption text-muted">${t("rc.assistant.title")}</p>
+            <span class="text-sm font-medium leading-snug truncate">${t("rc.assistant.newChatTitle")}</span>
+          </div>
+        </div>
+      </div>
+      <div class="relative flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full px-4 -mt-6 overflow-hidden">
+        <div class="relative -mb-10 flex flex-col items-center w-full">
+          <div class="pointer-events-none absolute -inset-x-16 -top-12 -bottom-16 z-0">
+            <div class="rc-ai-aurora"></div>
+            <div class="rc-ai-particle" style="left:12%; top:34%; animation-delay:0s"></div>
+            <div class="rc-ai-particle" style="left:84%; top:52%; animation-delay:1.8s"></div>
+            <div class="rc-ai-particle" style="left:20%; top:72%; animation-delay:3.2s"></div>
+            <div class="rc-ai-particle" style="left:78%; top:22%; animation-delay:4.6s"></div>
+          </div>
+          <div class="relative z-10 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-6 rc-intro">${icon("key", "w-5 h-5")}</div>
+          <h2 class="relative z-10 font-serif text-5xl italic mb-4 text-center rc-intro rc-intro-1">${t("rc.assistant.needsProviderTitle")}</h2>
+          <p class="relative z-10 body-lg text-muted text-center max-w-md mb-8 rc-intro rc-intro-2">${t("rc.assistant.needsProviderSub")}</p>
+          <div class="relative z-10 rc-intro rc-intro-3">
+            ${btn({ label: t("rc.assistant.needsProviderCta"), onClick: "RC.openSettingsAi()" })}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
   return `
     <div class="h-[calc(100vh-112px)] flex flex-col">
       <div class="flex items-center justify-between gap-3 mb-4">
@@ -375,9 +445,11 @@ export function renderAssistant(app) {
               ${mission ? `<span class="inline-flex items-center gap-1 rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">${t("rc.assistant.contextChip", { label: "M-" + mission.seq })}</span>` : ""}
               ${skill ? `<span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-gray-500/10">${t("rc.assistant.skillChip", { name: t(`rc.skill.${skill.name}`) })}</span>` : ""}
             </span>` : ""}
+            ${pair && pair.provider ? `<span class="font-mono text-[10px] text-muted mt-0.5">${esc(pair.provider)}${pair.model ? " · " + esc(pair.model) : ""}${pair.isCli ? " · " + t("rc.assistant.viaCli") : ""}</span>` : ""}
           </div>
         </div>
         <div class="flex items-center gap-2">
+          ${modelPicker}
           <div class="w-48 hidden sm:block">${rcSelect({ id: "chat-mission-select", size: "sm", cls: "w-full", options: missionOptions, value: scope.missionId || "", onChange: "RC.setChatMission(this.value)" })}</div>
           <div class="w-36 hidden sm:block">${rcSelect({ id: "chat-skill-select", size: "sm", cls: "w-full", options: skillOptions, value: scope.skill || "", onChange: "RC.setChatSkill(this.value)" })}</div>
           <button onclick="RC.newChat()" title="${t("rc.assistant.newChat")}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon("plus", "w-5 h-5")}</button>
@@ -429,10 +501,24 @@ function renderChatMessage(m, animate = false) {
       <div class="rc-bubble-user max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white text-sm whitespace-pre-wrap break-words shadow-sm">${esc(m.content)}</div>
     </div>`;
   }
+  // Story 5.7/5.9: the reply attributes its provider + model (the
+  // pin-confidence attribution idiom, "GLM-5.3 · …") from its meta.
+  let attribution = "";
+  if (m.meta) {
+    try {
+      const meta = JSON.parse(m.meta);
+      if (meta && meta.provider && meta.model) {
+        attribution = `<span class="font-mono text-[10px] tabular text-muted mt-1">${esc(meta.provider)} · ${esc(meta.model)}</span>`;
+      }
+    } catch { /* meta is not attribution JSON — nothing to show */ }
+  }
   return `
   <div class="flex justify-start gap-2${anim}">
     <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary mt-0.5">${icon("book", "w-3 h-3")}</div>
-    <div class="rc-bubble-ai max-w-[82%] rounded-2xl rounded-bl-md bg-gray-100 text-foreground text-sm whitespace-pre-wrap break-words">${esc(m.content)}</div>
+    <div class="flex flex-col max-w-[82%]">
+      <div class="rc-bubble-ai rounded-2xl rounded-bl-md bg-gray-100 text-foreground text-sm whitespace-pre-wrap break-words">${esc(m.content)}</div>
+      ${attribution}
+    </div>
   </div>`;
 }
 
@@ -759,14 +845,79 @@ function renderSettingsInterface(app) {
     </div>`;
 }
 
+// Ajustes → IA (Stories 5.7/5.8, FR-17.2/17.3): the provider-config
+// section — API providers (OpenAI / Anthropic / Google / OpenRouter /
+// custom base URL + key stored via the keychain) with a test-connection
+// run that doubles as the live model list, and CLI bridge providers
+// (codex, claude) with honest detection chips. Never the key itself —
+// only its presence (NFR-10).
 function renderSettingsAi(app) {
-  const s = app.data.settings || (app.data.settings = { baseUrl: "https://api.tokenfactory.corvex.cloud/v1", apiKey: "", model: "zai-org/GLM-5.3" });
+  const ai = app.data.aiConfig;
+  if (!ai) return `<p class="text-sm text-muted py-8 text-center">${t("rc.common.loading")}</p>`;
+  const draft = app.state.aiDraft || (app.state.aiDraft = {
+    provider: ai.provider && ai.provider !== "openai-compatible" ? ai.provider : "openai",
+    baseUrl: ai.baseUrl || "",
+    model: ai.model || "",
+    key: "",
+  });
+  const test = app.state.aiTest;
+  const isCli = ai.mode === "cli";
+  const providerOptions = ["openai", "anthropic", "google", "openrouter", "custom"].map((p) => ({
+    value: p,
+    label: t(`prov.${p}`),
+  }));
+  const custom = draft.provider === "custom";
+  const savedModels = test && test.ok ? test.models : [];
+  const cliRow = (name) => {
+    const detected = ai.cliAvailable && ai.cliAvailable[name];
+    const active = isCli && ai.cli === name;
+    return `
+    <div class="flex items-center justify-between gap-3 rounded-lg border border-border p-4 ${active ? "ring-1 ring-primary/30" : ""}">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-sm font-medium font-mono">${name}</span>
+          ${detected ? badge(t("prov.cliPresent"), "success") : badge(t("prov.cliAbsent"), "destructive")}
+          ${active ? badge(t("prov.active"), "primary") : ""}
+        </div>
+        <p class="text-xs text-muted mt-1 truncate" title="${detected ? esc(detected.path) : ""}">${detected ? esc(detected.path) : ""}</p>
+      </div>
+      ${detected ? btn({ label: t("prov.useCli"), variant: "secondary", size: "sm", onClick: `RC.useCliBridge('${name}')` }) : ""}
+    </div>`;
+  };
   return `
-    <div class="space-y-4">
-      <div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input id="set-base" value="${esc(s.baseUrl)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-      <div><label class="block text-sm font-medium mb-1.5">${t("prov.apiKey")}</label><input id="set-key" type="password" value="${esc(s.apiKey)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-      <div><label class="block text-sm font-medium mb-1.5">${t("prov.model")}</label><input id="set-model" value="${esc(s.model)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-      <p class="text-xs text-muted">${t("prov.note")}</p>
+    <div class="space-y-6">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-sm font-medium">${t("prov.title")}</span>
+        <span class="font-mono text-xs text-muted">${isCli ? esc("cli/" + ai.cli) : esc(ai.provider || "—")}${ai.model ? " · " + esc(ai.model) : isCli ? " · default" : ""}</span>
+        ${ai.configured ? badge(t("prov.active"), "success") : badge(t("prov.notConfigured"), "muted")}
+      </div>
+
+      <div>
+        <p class="text-sm font-medium mb-2">${t("prov.apiSection")}</p>
+        <div class="space-y-4">
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.provider")}</label>${rcSelect({ id: "ai-provider-select", options: providerOptions, value: draft.provider, onChange: "RC.aiDraftProvider(this.value)" })}</div>
+          ${custom ? `<div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input value="${esc(draft.baseUrl)}" oninput="RC.aiDraftField('baseUrl', this.value)" placeholder="https://api.example.com/v1" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>` : ""}
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.apiKey")}</label><input id="ai-key-input" type="password" value="${esc(draft.key)}" oninput="RC.aiDraftField('key', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"><p class="text-xs text-muted mt-1">${t("prov.note")} ${t("prov.keyKeep")}</p></div>
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.model")} ${custom ? `<span class="text-xs text-muted font-normal">(${t("prov.modelFreeEntry")})</span>` : ""}</label><input value="${esc(draft.model)}" oninput="RC.aiDraftField('model', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+          ${savedModels.length ? `<div class="flex flex-wrap gap-1.5">${savedModels.map((m) => `<button type="button" onclick="RC.aiPickModel('${esc(m)}')" class="rounded-full border border-border bg-card px-3 py-1 text-xs font-mono text-muted hover:border-primary/40 hover:text-primary transition">${esc(m)}</button>`).join("")}</div>` : ""}
+          <div class="flex flex-wrap items-center gap-2">
+            ${btn({ label: t("prov.save"), onClick: "RC.saveAiProvider()" })}
+            ${btn({ label: test && test.testing ? t("prov.testing") : t("prov.test"), variant: "secondary", onClick: "RC.testAiConnection()" })}
+          </div>
+          ${test ? (test.ok
+            ? `<p class="text-xs font-medium text-emerald-600">${t("prov.testOk")} — ${test.models.length} models</p>`
+            : `<p class="text-xs font-medium text-rose-600">${t("prov.testFail")}: ${esc(test.error || "")}</p>`) : ""}
+        </div>
+      </div>
+
+      <div>
+        <p class="text-sm font-medium mb-1">${t("prov.cliSection")}</p>
+        <p class="text-xs text-muted mb-2">${t("prov.cliDesc")}</p>
+        <div class="space-y-2">
+          ${cliRow("codex")}
+          ${cliRow("claude")}
+        </div>
+      </div>
     </div>`;
 }
 
@@ -1018,8 +1169,8 @@ Object.assign(RC, {
       try {
         // A conversation is born with its draft scope: the mission binding
         // and skill selected in the header (Stories 5.4/5.6).
-        const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null });
-        const chat = await api.createChat(app.data.project?.id || "p1", "asistente", text.slice(0, 46), draft.missionId, draft.skill);
+        const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null });
+        const chat = await api.createChat(app.data.project?.id || "p1", "asistente", text.slice(0, 46), draft.missionId, draft.skill, draft.model);
         app.data.activeChatId = chat.id;
         app.data.chatMessages[chat.id] = [];
         app.data.chats.unshift(chat);
@@ -1047,7 +1198,15 @@ Object.assign(RC, {
       app.data.chatAttachments[chatId] = fresh.attachments || [];
     } catch (e) {
       console.error(e);
-      list.push({ id: "m" + Date.now() + "x", role: "agent", content: "(" + (e?.message || e) + ")" });
+      const msg = e?.message || String(e);
+      if (msg.startsWith("no_provider_configured")) {
+        // The typed refusal (Story 5.7): refresh the honest config state —
+        // the view flips to the configure-provider screen, never a
+        // fabricated reply bubble.
+        try { app.data.aiConfig = await api.getAiConfig(); } catch { /* keep the stale state */ }
+      } else {
+        list.push({ id: "m" + Date.now() + "x", role: "agent", content: "(" + msg + ")" });
+      }
     }
     app.data.chatThinking = false;
     ctx.renderMainOnly();
@@ -1058,6 +1217,7 @@ Object.assign(RC, {
     const app = ctx.app;
     app.data.activeChatId = null;
     app.data.pendingAttachments = [];
+    (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null })).model = null;
     ctx.renderMainOnly();
   },
   // The mission selector (Story 5.4): re-scopes the active conversation
@@ -1097,6 +1257,92 @@ Object.assign(RC, {
       (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null })).skill = skill;
     }
     ctx.renderMainOnly();
+  },
+  // The model picker (Story 5.9, FR-17.4): per-conversation, evented in
+  // the core — one chat.model_set event; null = the provider default.
+  async setChatModel(value) {
+    const app = ctx.app;
+    const model = value || null;
+    if (app.data.activeChatId) {
+      try {
+        const chat = await api.setChatModel(app.data.activeChatId, model);
+        const i = app.data.chats.findIndex((c) => c.id === chat.id);
+        if (i >= 0) app.data.chats[i] = { ...app.data.chats[i], ...chat };
+        else app.data.chats.unshift(chat);
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null })).model = model;
+    }
+    ctx.renderMainOnly();
+  },
+  // The configure-provider CTA (Story 5.7): straight to Ajustes → IA.
+  openSettingsAi() {
+    ctx.app.state.settingsTab = "ai";
+    RC.navigate("settings");
+  },
+  // Ajustes → IA form state (Stories 5.7/5.8): transient draft inputs kept
+  // in app.state so re-renders do not wipe what was typed.
+  aiDraftField(field, value) {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
+    draft[field] = value;
+  },
+  aiDraftProvider(value) {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
+    draft.provider = value || "openai";
+    if (value !== "custom") draft.baseUrl = "";
+    ctx.renderMainOnly();
+  },
+  aiPickModel(model) {
+    ctx.app.state.aiDraft.model = model;
+    ctx.renderMainOnly();
+  },
+  // Configure the API provider (FR-17.2): the key goes to the OS keychain
+  // via the core — never the database, never the log (NFR-10).
+  async saveAiProvider() {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || {};
+    try {
+      app.data.aiConfig = await api.configureAiProvider(
+        draft.provider || "openai",
+        draft.baseUrl || "",
+        draft.model || "",
+        draft.key || "",
+      );
+      draft.key = "";
+      app.state.aiTest = null;
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert(t("trust.saveError") + (e?.message || e));
+    }
+  },
+  // The test-connection run (Story 5.7): through the provider layer's
+  // models endpoint — a success doubles as the live model list.
+  async testAiConnection() {
+    const app = ctx.app;
+    app.state.aiTest = { testing: true };
+    ctx.renderMainOnly();
+    try {
+      app.state.aiTest = await api.testProviderConnection();
+    } catch (e) {
+      app.state.aiTest = { ok: false, models: [], error: e?.message || String(e) };
+    }
+    ctx.renderMainOnly();
+  },
+  // Switch onto a CLI bridge (FR-17.3): the CLI's own auth stays with the
+  // CLI — no key is stored, none is ever embedded in the spawn (NFR-10).
+  async useCliBridge(name) {
+    const app = ctx.app;
+    try {
+      app.data.aiConfig = await api.useCliBridge(name);
+      app.state.aiTest = null;
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert(e?.message || e);
+    }
   },
   // The composer's attach button (Story 5.5): the desktop opens the native
   // picker; the browser opens the hidden file input (the mock classifies
