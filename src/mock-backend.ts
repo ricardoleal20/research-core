@@ -35,6 +35,55 @@ const settings: Record<string, string> = {
   cache_pdfs: "true",
 };
 
+// The AI provider configuration state (Stories 5.7–5.9, FR-17): the mock
+// starts HONESTLY unconfigured — the assistant refuses sends until a real
+// provider is configured in Ajustes → IA (NFR-11: the mock no longer
+// answers the assistant with canned text out of the box).
+const aiConfig: {
+  mode: string; provider: string; baseUrl: string; model: string;
+  hasKey: boolean; cli: string; cliModel: string;
+} = { mode: "", provider: "", baseUrl: "", model: "", hasKey: false, cli: "claude", cliModel: "" };
+
+// The curated per-provider model lists (Story 5.9, FR-17.4) — the mock
+// mirrors the core's `curated_models` exactly. Custom base URLs: free
+// entry (empty list). CLI bridges list exactly ["default"] ("vía CLI").
+const CURATED_MODELS: Record<string, string[]> = {
+  openai: ["gpt-5.2", "gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
+  anthropic: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+  google: ["gemini-3-pro", "gemini-2-5-pro", "gemini-2-5-flash"],
+  openrouter: ["openrouter/auto", "anthropic/claude-sonnet-4.5", "openai/gpt-5.2", "google/gemini-3-pro"],
+};
+
+// The mock's honest CLI detection chips: codex and claude simulate as
+// present (the seeded dev machine has them); anything else is absent.
+const MOCK_CLI_PRESENT = new Set(["codex", "claude"]);
+
+function mockAiConfig() {
+  const cliAvailable: Record<string, { path: string } | null> = {};
+  for (const name of ["codex", "claude", "opencode"]) {
+    cliAvailable[name] = MOCK_CLI_PRESENT.has(name)
+      ? { path: `/usr/local/bin/${name}` }
+      : null;
+  }
+  const mode = aiConfig.mode;
+  const configured =
+    mode === "cli"
+      ? !!cliAvailable[aiConfig.cli]
+      : mode !== "simulate" &&
+        aiConfig.hasKey &&
+        (!!aiConfig.baseUrl || CURATED_MODELS[aiConfig.provider] !== undefined);
+  const models =
+    mode === "cli"
+      ? ["default"]
+      : CURATED_MODELS[aiConfig.provider] ?? [];
+  return {
+    mode, provider: aiConfig.provider, baseUrl: aiConfig.baseUrl,
+    model: aiConfig.model, hasKey: aiConfig.hasKey,
+    cli: aiConfig.cli, cliModel: aiConfig.cliModel,
+    cliAvailable, models, configured,
+  };
+}
+
 const project: Project = {
   id: "p1",
   name: "Optimización de Modelos de Atención",
@@ -1588,7 +1637,7 @@ export const mockApi = {
     await delay();
     return chats.filter((c) => !kind || c.kind === kind).map((c) => ({ ...c }));
   },
-  createChat: async (pid: string, kind: string, title: string, missionId?: string | null, skill?: string | null) => {
+  createChat: async (pid: string, kind: string, title: string, missionId?: string | null, skill?: string | null, model?: string | null) => {
     await delay();
     if (missionId && !missions.some((m) => m.id === missionId)) {
       throw new Error(`unknown mission \`${missionId}\` — a conversation can only scope to a mission that exists`);
@@ -1602,6 +1651,7 @@ export const mockApi = {
       id, project_id: pid, kind, title, preview: "",
       mission_id: missionId || null,
       skill: skillName || null,
+      model: (model || "").trim() || null,
       created_at: nowISO(), updated_at: nowISO(),
     };
     chats.push(c);
@@ -1623,6 +1673,15 @@ export const mockApi = {
     await delay(120);
     const c = chats.find((x) => x.id === chatId);
     if (!c) throw new Error("chat not found");
+    // The assistant honesty rule (Story 5.7, NFR-11): with NO real provider
+    // configured, assistant sends are refused with the same typed error the
+    // core returns — the mock no longer answers the assistant with canned
+    // text. Other kinds (review) keep the simulated guarantee (FR-17.5).
+    if (c.kind !== "review" && !mockAiConfig().configured) {
+      throw new Error(
+        "no_provider_configured: the assistant needs a real provider (an API provider or a CLI bridge) — configure one in Ajustes → IA / el asistente necesita un proveedor real (un proveedor de API o un puente CLI) — configura uno en Ajustes → IA",
+      );
+    }
     const list = messages[chatId] ?? (messages[chatId] = []);
     list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "user", content, classify_tag: null, meta: null, mission_id: c.mission_id, created_at: nowISO() });
     // The honest context echo (mirrors the core's simulated provider): the
@@ -1641,7 +1700,13 @@ export const mockApi = {
     if (attachCount > 0) echo.push(`adjuntos: ${attachCount}`);
     const base = "(mock) Entendido. Esta es una respuesta de ejemplo del asistente.";
     const reply = echo.length ? `${base}\n\n— ${echo.join(" · ")}` : base;
-    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: reply, classify_tag: null, meta: null, mission_id: c.mission_id, created_at: nowISO() });
+    // The reply carries its attribution (Story 5.7/5.9): the provider +
+    // model that produced it — the message-render idiom shows it.
+    const ai = mockAiConfig();
+    const provider = ai.mode === "cli" ? `cli/${ai.cli}` : ai.provider || "mock";
+    const model = c.model || ai.model || (ai.mode === "cli" ? "default" : "mock-model");
+    const meta = JSON.stringify({ provider, model });
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: reply, classify_tag: null, meta, mission_id: c.mission_id, created_at: nowISO() });
     c.preview = content.slice(0, 80);
     c.updated_at = nowISO();
     return { ok: true };
@@ -1666,6 +1731,17 @@ export const mockApi = {
       throw new Error(`unknown skill \`${skillName}\` — a conversation can only run a registered skill`);
     }
     c.skill = skillName || null;
+    c.updated_at = nowISO();
+    return { ...c };
+  },
+  // The per-conversation model choice (Story 5.9, FR-17.4): per-chat and
+  // history-preserving — earlier messages keep the attribution they were
+  // produced with.
+  setChatModel: async (chatId: string, model: string | null) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    c.model = (model || "").trim() || null;
     c.updated_at = nowISO();
     return { ...c };
   },
@@ -1757,7 +1833,64 @@ export const mockApi = {
   lockState: async () => ({ policy: "never", idle_min: "", configured: false }),
 
   // LLM CLI detection
-  testCli: async (command: string) => ({ command, path: `/usr/local/bin/${command}` }),
+  // CLI detection chips (Story 5.8): honest in the mock — codex and claude
+  // simulate as present, anything else is absent (never a dead spawn).
+  testCli: async (command: string) =>
+    MOCK_CLI_PRESENT.has(command.trim())
+      ? { command, path: `/usr/local/bin/${command}` }
+      : { command, path: null },
+  // The AI provider configuration (Stories 5.7–5.9): the read the
+  // assistant's unconfigured state and Ajustes → IA render (never the key —
+  // only its presence), the configure/switch mutations, and the connection
+  // test (which doubles as the live model list for the picker).
+  getAiConfig: async () => {
+    await delay();
+    return mockAiConfig();
+  },
+  configureAiProvider: async (provider: string, baseUrl: string, model: string, apiKey: string) => {
+    await delay();
+    aiConfig.mode = "provider";
+    aiConfig.provider = provider.trim();
+    aiConfig.baseUrl = baseUrl.trim();
+    aiConfig.model = model.trim();
+    if (apiKey.trim()) aiConfig.hasKey = true;
+    return mockAiConfig();
+  },
+  useCliBridge: async (cli: string) => {
+    await delay();
+    const name = cli.trim() || "claude";
+    if (!MOCK_CLI_PRESENT.has(name)) {
+      throw new Error(
+        `cli_unavailable: the \`${name}\` CLI was not found on PATH — install it first / el CLI \`${name}\` no está en PATH`,
+      );
+    }
+    aiConfig.mode = "cli";
+    aiConfig.cli = name;
+    return mockAiConfig();
+  },
+  testProviderConnection: async () => {
+    await delay(400);
+    if (!aiConfig.hasKey) {
+      return {
+        ok: false,
+        models: [] as string[],
+        error: `provider \`${aiConfig.provider || "?"}\` has no API key stored — save one first / no hay clave guardada`,
+      };
+    }
+    const models = CURATED_MODELS[aiConfig.provider] ?? [];
+    if (!models.length) {
+      return {
+        ok: false,
+        models: [] as string[],
+        error: "the provider answered but listed no models / el proveedor respondió sin modelos",
+      };
+    }
+    return { ok: true, models, error: null };
+  },
+  listProviderModels: async (provider: string) => {
+    await delay();
+    return [...(CURATED_MODELS[provider.trim()] ?? [])];
+  },
 
   // missions
   createMission: async (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number; roles?: RoleConfig[] | null }) => {

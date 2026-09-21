@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -56,6 +56,7 @@ const browserApi = {
     _title: string,
     _missionId?: string | null,
     _skill?: string | null,
+    _model?: string | null,
   ) => {
     if (await servedByCore) {
       throw new Error(
@@ -63,7 +64,7 @@ const browserApi = {
           "Vista de solo lectura — gestiona los chats desde la app de escritorio",
       );
     }
-    return mockApi.createChat(_projectId, _kind, _title, _missionId, _skill);
+    return mockApi.createChat(_projectId, _kind, _title, _missionId, _skill, _model);
   },
   sendMessage: async (_chatId: string, _content: string) => {
     if (await servedByCore) {
@@ -91,6 +92,63 @@ const browserApi = {
       );
     }
     return mockApi.setChatSkill(_chatId, _skill);
+  },
+  // The per-conversation model choice (Story 5.9, FR-17.4): a mutation —
+  // the served read-only view refuses it; the pure-vite mock serves it.
+  setChatModel: async (_chatId: string, _model: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.setChatModel(_chatId, _model);
+  },
+  // The AI provider configuration read (Stories 5.7–5.9): over the
+  // same-origin read-only API when served by the core, the in-memory mock
+  // in plain `vite` dev. Never carries the key — only its presence.
+  getAiConfig: async (): Promise<AiConfig> => {
+    if (await servedByCore) return httpJson<AiConfig>("/api/ai-config");
+    return mockApi.getAiConfig();
+  },
+  // Provider configuration + CLI bridge switching + connection testing
+  // (Stories 5.7/5.8): mutations — the served read-only view refuses them.
+  configureAiProvider: async (
+    _provider: string,
+    _baseUrl: string,
+    _model: string,
+    _apiKey: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — configure providers from the desktop app / " +
+          "Vista de solo lectura — configura proveedores desde la app de escritorio",
+      );
+    }
+    return mockApi.configureAiProvider(_provider, _baseUrl, _model, _apiKey);
+  },
+  useCliBridge: async (_cli: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — configure providers from the desktop app / " +
+          "Vista de solo lectura — configura proveedores desde la app de escritorio",
+      );
+    }
+    return mockApi.useCliBridge(_cli);
+  },
+  testProviderConnection: async (): Promise<AiConnectionTest> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — test connections from the desktop app / " +
+          "Vista de solo lectura — prueba conexiones desde la app de escritorio",
+      );
+    }
+    return mockApi.testProviderConnection();
+  },
+  // The curated per-provider model list (Story 5.9): pure data, both
+  // transports answer locally.
+  listProviderModels: async (_provider: string): Promise<string[]> => {
+    return mockApi.listProviderModels(_provider);
   },
   addChatAttachments: async (
     _chatId: string,
@@ -648,6 +706,7 @@ export const api = mockActive ? browserApi : {
     title: string,
     missionId?: string | null,
     skill?: string | null,
+    model?: string | null,
   ) =>
     invoke<Chat>("create_chat", {
       projectId,
@@ -655,6 +714,7 @@ export const api = mockActive ? browserApi : {
       title,
       missionId: missionId ?? null,
       skill: skill ?? null,
+      model: model ?? null,
     }),
   getChat: (id: string) => invoke<Chat>("get_chat", { id }),
   sendMessage: (chatId: string, content: string) => invoke<any>("send_message", { chatId, content }),
@@ -663,6 +723,23 @@ export const api = mockActive ? browserApi : {
     invoke<Chat>("set_chat_scope", { chatId, missionId }),
   setChatSkill: (chatId: string, skill: string | null) =>
     invoke<Chat>("set_chat_skill", { chatId, skill }),
+  // The per-conversation model choice (Story 5.9, FR-17.4): one
+  // `chat.model_set` event + the row's projection; null = the provider
+  // default. History-preserving — earlier messages keep their attribution.
+  setChatModel: (chatId: string, model: string | null) =>
+    invoke<Chat>("set_chat_model", { chatId, model }),
+  // The AI provider configuration (Stories 5.7–5.9): the read the
+  // assistant's unconfigured state and Ajustes → IA render, the API/CLI
+  // bridge configuration mutations, and the test-connection run (through
+  // the provider layer's models endpoint — the live model list).
+  getAiConfig: () => invoke<AiConfig>("get_ai_config"),
+  configureAiProvider: (provider: string, baseUrl: string, model: string, apiKey: string) =>
+    invoke<AiConfig>("configure_ai_provider", { provider, baseUrl, model, apiKey }),
+  useCliBridge: (cli: string) => invoke<AiConfig>("use_cli_bridge", { cli }),
+  testProviderConnection: () =>
+    invoke<AiConnectionTest>("test_provider_connection"),
+  listProviderModels: (provider: string) =>
+    invoke<string[]>("list_provider_models", { provider }),
   // skills (Story 5.6): the registry is data — the curated six plus
   // user-added; addSkill grows the pool without code changes
   listSkills: () => invoke<Skill[]>("list_skills"),

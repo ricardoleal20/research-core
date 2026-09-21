@@ -354,15 +354,27 @@ async function loadRefs() {
   } catch (e) { console.error(e); }
 }
 
-// The assistant view's data (Stories 5.4–5.6): the conversation list, the
-// skills registry, and the missions (the scope selector's options).
+// The AI provider configuration read (Stories 5.7–5.9): what the
+// assistant's configure-provider state, the model picker, and Ajustes → IA
+// render — never the key, only its presence.
+async function loadAiConfig() {
+  const ai = await guard(api.getAiConfig(), null);
+  if (ai) app.data.aiConfig = ai;
+  renderMainOnly();
+}
+
+// The assistant view's data (Stories 5.4–5.9): the conversation list, the
+// skills registry, the missions (the scope selector's options), and the AI
+// provider configuration (the unconfigured gate + the model picker).
 async function loadAssistant() {
-  const [chats, skills] = await Promise.all([
+  const [chats, skills, ai] = await Promise.all([
     guard(api.listChats(app.data.project?.id || "p1", "asistente"), null),
     guard(api.listSkills(), null),
+    guard(api.getAiConfig(), null),
   ]);
   if (chats) app.data.chats = chats;
   if (skills) app.data.skills = skills;
+  if (ai) app.data.aiConfig = ai;
   if (!app.data.missionsLoaded) await loadMissions();
   renderMainOnly();
 }
@@ -372,7 +384,7 @@ function loadViewData(view) {
   if (view === "refs") loadRefs();
   if (view === "assistant") loadAssistant();
   if (view === "digest") loadDigest();
-  if (view === "settings") { loadTrust(); loadTargets(); }
+  if (view === "settings") { loadTrust(); loadTargets(); loadAiConfig(); }
 }
 
 // ========== COMMAND PALETTE ==========
