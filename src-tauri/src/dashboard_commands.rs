@@ -41,6 +41,7 @@ pub const RECENT_RUNS_LIMIT: usize = 5;
 /// from ONE log read. A transport envelope, not a domain model — each field
 /// is the exact read model the corresponding individual read serves.
 #[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DashboardSummary {
     /// Widget 1 (FR-18.2): every mission — status counts and the active
     /// shortlist with spend meters derive client-side.
