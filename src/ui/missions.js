@@ -10,14 +10,16 @@ import { api } from "../api";
 import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
 import { RC, ctx } from "./rc";
 
-const lifecycleChip = {
+// Shared chip idioms (Story 5.10, FR-18.2/18.3): the dashboard composes
+// the same lifecycle/status chips the missions home and board render.
+export const lifecycleChip = {
   proposed: ["primary", "proposed"],
   testing: ["warning", "testing"],
   supported: ["success", "supported"],
   refuted: ["destructive", "refuted"],
   revised: ["primary", "revised"],
 };
-const statusColor = {
+export const statusColor = {
   active: "primary",
   awaiting_review: "warning",
   completed: "success",
@@ -28,7 +30,7 @@ const statusColor = {
 const spendMeterFill = (state) =>
   state === "blocked" ? "bg-rose-500" : state === "near" ? "bg-amber-500" : "bg-primary";
 
-const spendMeter = (spendCents, ceilingCents, state) => {
+export const spendMeter = (spendCents, ceilingCents, state) => {
   const pct = ceilingCents > 0 ? Math.min(100, Math.round((spendCents / ceilingCents) * 100)) : 0;
   return `
     <div class="flex items-center gap-3">

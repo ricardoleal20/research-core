@@ -8,6 +8,7 @@ import { icon, esc, btn, toggleRcSelect, pickRcSelect, closeRcSelects } from "./
 import { renderLock, bindLock, renderWizard } from "./ui/lock";
 import { RC as RC_BUS, ctx } from "./ui/rc";
 import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer } from "./ui/missions";
+import { renderDashboard } from "./ui/dashboard";
 import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings } from "./ui/screens";
 
 // ========== ACCENT SLOT (the bible's six swappable options) ==========
@@ -112,7 +113,7 @@ function applyMotion() {
 }
 
 // ========== ROUTER ==========
-const routes = ["missions", "refs", "review", "assistant", "actions", "digest", "status", "settings", "board"];
+const routes = ["dashboard", "missions", "refs", "review", "assistant", "actions", "digest", "status", "settings", "board"];
 function navigate(view) {
   if (!routes.includes(view)) view = "missions";
   app.state.previousView = app.state.view;
@@ -133,6 +134,9 @@ function unlock() {
 function renderShell() {
   const st = app.state;
   const navItems = [
+    // The home panel (Story 5.10, FR-18): above Misiones in the shell's nav
+    // idiom — but the DEFAULT landing view stays Missions (FR-1.4 stands).
+    { id: "dashboard", label: t("rc.nav.dashboard"), icon: "home" },
     { id: "missions", label: t("rc.nav.home"), icon: "target" },
     { id: "refs", label: t("rc.nav.refs"), icon: "book" },
     { id: "review", label: t("rc.nav.review"), icon: "sparkle" },
@@ -249,6 +253,7 @@ function renderMain() {
   if (!main) return;
   let html = "";
   switch (app.state.view) {
+    case "dashboard": html = renderDashboard(app); break;
     case "missions": html = renderMissionsHome(app); break;
     case "refs": html = renderRefs(app); break;
     case "review": html = renderReview(app); break;
@@ -298,6 +303,19 @@ async function loadMissions() {
   } catch (e) {
     console.error(e);
     app.data.missionsLoaded = true;
+    renderMainOnly();
+  }
+}
+
+// The dashboard's one aggregated read (Story 5.10, FR-18.1): six widgets
+// over ONE read-only fold — a render never creates events.
+async function loadDashboard() {
+  try {
+    app.data.dashboard = await api.getDashboardSummary();
+    renderMainOnly();
+  } catch (e) {
+    console.error(e);
+    app.data.dashboard = null;
     renderMainOnly();
   }
 }
@@ -380,6 +398,7 @@ async function loadAssistant() {
 }
 
 function loadViewData(view) {
+  if (view === "dashboard") loadDashboard();
   if (view === "missions") loadMissions();
   if (view === "refs") loadRefs();
   if (view === "assistant") loadAssistant();
@@ -390,6 +409,7 @@ function loadViewData(view) {
 // ========== COMMAND PALETTE ==========
 function renderCommandPalette() {
   const commands = [
+    { name: t("rc.nav.dashboard"), action: "RC.navigate('dashboard')" },
     { name: t("rc.nav.home"), action: "RC.navigate('missions')" },
     { name: t("rc.nav.refs"), action: "RC.navigate('refs')" },
     { name: t("rc.nav.review"), action: "RC.navigate('review')" },
@@ -597,12 +617,12 @@ Object.assign(RC_BUS, {
 window.RC = RC_BUS;
 Object.assign(ctx, {
   app, render, renderMainOnly, navigate,
-  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant,
+  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
 });
 
 export { app, render, renderMainOnly, navigate };
 export {
-  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant,
+  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
 };
 
 // ========== BOOT ==========
