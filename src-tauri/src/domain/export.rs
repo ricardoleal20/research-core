@@ -1368,6 +1368,7 @@ mod tests {
                     mission_id: Some(mission),
                     role: Some("drafter".into()),
                     run_id: Some("run-32k-a".into()),
+                        note: None,
                 })
                 .unwrap(),
             )

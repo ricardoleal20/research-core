@@ -18,11 +18,12 @@ use serde_json::{json, Value};
 /// The chat-message shape the UI speaks — the provider layer's `Message`.
 pub type ChatMsg = Message;
 
-/// The scoped context one assistant call carries (Stories 5.4–5.6): the
+/// The scoped context one assistant call carries (Stories 5.4–5.9): the
 /// mission board context when the conversation is mission-scoped, the
-/// per-conversation skill, and the conversation's attachments. Everything
-/// is optional — a General, skill-less, attachment-less conversation is the
-/// plain assistant of before.
+/// per-conversation skill, the conversation's attachments, and the
+/// per-conversation model choice (FR-17.4). Everything is optional — a
+/// General, skill-less, attachment-less conversation on the configured
+/// default model is the plain assistant of before.
 #[derive(Debug, Clone, Default)]
 pub struct AssistantCall {
     /// The mission's board context (FR-16.5) — label, question, hypotheses
@@ -32,6 +33,21 @@ pub struct AssistantCall {
     pub skill: Option<Skill>,
     /// The conversation's attachments (FR-16.2) with their extracted text.
     pub attachments: Vec<AttachmentContext>,
+    /// The conversation's chosen model (FR-17.4, Story 5.9); None = the
+    /// layer's configured model (or the skill's default). When set it
+    /// overrides both — the picker wins.
+    pub model: Option<String>,
+}
+
+/// One assistant reply with its provider attribution (Story 5.7/5.9): the
+/// reply text, the classify tag, and the (provider, model) pair that
+/// produced it — so messages can carry their attribution ("GLM-5.3 · …").
+#[derive(Debug, Clone)]
+pub struct AssistantReply {
+    pub content: String,
+    pub tag: Option<String>,
+    pub provider: String,
+    pub model: String,
 }
 
 /// The assistant system prompt (pure): the persona (the skill's role when
@@ -82,18 +98,46 @@ pub fn assistant_system_prompt(
     system
 }
 
-/// Resolve the layer an assistant call runs on (AD-9, Story 5.6): a skill
-/// with its own (provider, model) pair resolves through the SAME
+/// Test seam (Stories 5.7–5.9): the chat send-path tests run the assistant
+/// against a remote-SHAPED layer over the simulated echo client — no
+/// network, but a REAL provider kind, so the real-only rule (NFR-11) holds
+/// in tests exactly as in production. Thread-local: each test thread opts
+/// in for itself, so the refusal tests (no flag) stay unconfigured even
+/// while send tests run in parallel.
+#[cfg(test)]
+thread_local! {
+    static FAKE_ASSISTANT_LAYER: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn use_fake_assistant_layer() {
+    FAKE_ASSISTANT_LAYER.with(|f| f.set(true));
+}
+
+#[cfg(test)]
+fn fake_assistant_layer(db: &Db) -> providers::ProviderLayer {
+    providers::test_remote_simulated(db)
+}
+
+/// Resolve the layer an assistant call runs on (AD-9, Stories 5.6/5.7): a
+/// skill with its own (provider, model) pair resolves through the SAME
 /// `for_role` path the mission roles use; a skill with an empty provider —
-/// the default set's shape — runs on the configured layer exactly as the
-/// plain assistant and the default drafter do today (provider mode and
-/// simulated fallback included).
+/// the default set's shape — runs on the configured layer. The ASSISTANT
+/// rule (FR-17.1/NFR-11): this path can never resolve to the simulated
+/// provider — no matter how it got there (auto mode, simulate mode, or a
+/// skill named "simulated"), the typed `no_provider_configured:` refusal
+/// comes back instead.
 pub fn resolve_assistant_layer(
     db: &Db,
     conn: &rusqlite::Connection,
     skill: Option<&Skill>,
 ) -> Result<providers::ProviderLayer, String> {
-    match skill {
+    #[cfg(test)]
+    if FAKE_ASSISTANT_LAYER.with(std::cell::Cell::get) {
+        return Ok(fake_assistant_layer(db));
+    }
+    let layer = match skill {
         Some(s) if !s.provider.trim().is_empty() => {
             providers::ProviderLayer::for_role(
                 db,
@@ -104,21 +148,29 @@ pub fn resolve_assistant_layer(
                     model: s.model.clone(),
                 },
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?
         }
-        _ => providers::ProviderLayer::resolve(db, conn).map_err(|e| e.to_string()),
+        _ => providers::ProviderLayer::resolve_real(db, conn).map_err(|e| e.to_string())?,
+    };
+    if layer.kind() == providers::Kind::Simulated {
+        return Err(providers::ProviderError::NoProviderConfigured.to_string());
     }
+    Ok(layer)
 }
 
-/// Reply in an assistant chat. Returns (content, classify_tag).
+/// Reply in an assistant chat, on an ALREADY-RESOLVED layer (the send path
+/// resolves first so an unconfigured provider refuses BEFORE any message is
+/// stored). The conversation's chosen model (Story 5.9) overrides the
+/// skill's and the layer's default. Returns the reply + its (provider,
+/// model) attribution.
 pub async fn assistant_reply(
     db: &Db,
+    layer: &providers::ProviderLayer,
     project_id: &str,
     history: Vec<ChatMsg>,
     call: AssistantCall,
-) -> Result<(String, Option<String>), String> {
+) -> Result<AssistantReply, String> {
     let conn = db.0.lock().await;
-    let layer = resolve_assistant_layer(db, &conn, call.skill.as_ref())?;
     let project = db::query_one(&conn, "SELECT name, folder FROM projects WHERE id=?1", &[&project_id]).ok().flatten();
     let refs = db::query_all(&conn,
         "SELECT title, authors, year, venue FROM refs WHERE project_id=?1 ORDER BY year DESC LIMIT 20",
@@ -145,18 +197,31 @@ pub async fn assistant_reply(
     // still needs its runtime reservation. A skilled call tags its spend with
     // the skill's role name (per-role receipts, Story 2.1).
     let mut req = ChatRequest::new(messages).with_temperature(0.4);
+    if let Some(model) = call.model.as_deref() {
+        if !model.trim().is_empty() {
+            // the picker wins (FR-17.4): the chat's model overrides the
+            // skill's default and the layer's configured default
+            req = req.with_model(model.trim().to_string());
+        }
+    }
     if let Some(skill) = &call.skill {
         req = req.with_role(skill.name.clone());
     }
+    let attribution_model = req.model.clone();
     let resp = crate::trust::reserve_and_chat(
         db,
-        &layer,
+        layer,
         req,
-        assistant_plan(&layer, "assistant"),
+        assistant_plan(layer, "assistant"),
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok((resp.content, None))
+    Ok(AssistantReply {
+        content: resp.content,
+        tag: None,
+        provider: layer.name().to_string(),
+        model: attribution_model,
+    })
 }
 
 /// The call plan for a user-initiated assistant flow (Story 2.4): never

@@ -2,7 +2,7 @@ use crate::agent;
 use crate::db::{self, Db};
 use crate::mcp::{self, McpRegistry, McpServerDef};
 use crate::AppPaths;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::State;
@@ -484,16 +484,177 @@ pub async fn test_cli(command: String) -> Result<Value, String> {
 }
 
 fn which_cli(cmd: &str) -> Option<String> {
-    // Use the same augmented PATH the MCP spawner uses, so GUI .app bundles
-    // can find Homebrew/nvm-installed CLIs.
-    let path_env = mcp::augmented_path();
-    for dir in path_env.split(':') {
-        if dir.is_empty() { continue; }
-        let candidate = std::path::Path::new(dir).join(cmd);
-        if candidate.is_file() {
-            return Some(candidate.display().to_string());
+    // The provider layer's honest availability check (Story 5.8) — the
+    // same one the CLI adapter's `cli_unavailable:` refusal uses.
+    crate::adapters::providers::cli::available(cmd)
+}
+
+// ---------- AI provider configuration (Story 5.7/5.8, FR-17.2/17.3) ----------
+
+/// Does the OS keychain hold a key for one provider? (AD-16: the value
+/// never crosses this boundary — only its presence does.)
+fn keychain_has_key(conn: &Connection, provider: &str) -> bool {
+    let account = crate::eventstore::migration::keychain_account(provider);
+    if let Ok(entry) =
+        keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
+    {
+        if let Ok(key) = entry.get_password() {
+            if !key.trim().is_empty() {
+                return true;
+            }
         }
     }
-    None
+    // the legacy settings fallback (keys that could not be moved)
+    provider.trim() == db::get_setting(conn, "provider").trim()
+        && !db::get_setting(conn, "api_key").trim().is_empty()
+}
+
+/// The AI provider configuration read (Stories 5.7–5.9): everything the
+/// assistant surface and Ajustes → IA render — mode, provider, base URL,
+/// model, whether a key is stored (never the key itself), the CLI bridge
+/// state with honest per-binary detection, the model list the picker
+/// offers, and whether a REAL provider is configured (the assistant's
+/// unconfigured state renders from this).
+#[tauri::command]
+pub async fn get_ai_config(db: State<'_, Db>) -> Result<Value, String> {
+    let c = db.0.lock().await;
+    ai_config_inner(&c)
+}
+
+pub fn ai_config_inner(c: &Connection) -> Result<Value, String> {
+    use crate::adapters::providers as prov;
+    let mode = db::get_setting(c, "llm_mode");
+    let provider = db::get_setting(c, "provider");
+    let base_url = db::get_setting(c, "base_url");
+    let model = db::get_setting(c, "model");
+    let cli = prov::cli::Cli::binary_name(&db::get_setting(c, "llm_cli"));
+    let cli_model = db::get_setting(c, "llm_cli_model");
+    let has_key = keychain_has_key(c, &provider);
+    // honest CLI detection — present/absent chips (never a dead spawn)
+    let cli_available: Value = ["codex", "claude", "opencode"]
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                match which_cli(name) {
+                    Some(path) => json!({ "path": path }),
+                    None => Value::Null,
+                },
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into();
+    // is a REAL provider configured? (FR-17.1 — the assistant's gate)
+    let configured = match mode.trim() {
+        "simulate" => false,
+        "cli" => which_cli(&cli).is_some(),
+        _ => {
+            // provider mode, or legacy auto: a key + a resolvable endpoint
+            has_key
+                && (!base_url.trim().is_empty()
+                    || prov::default_base_url(&provider).is_some())
+        }
+    };
+    let models = if mode.trim() == "cli" {
+        prov::cli_models()
+    } else {
+        prov::curated_models(&provider)
+    };
+    Ok(json!({
+        "mode": mode,
+        "provider": provider,
+        "baseUrl": base_url,
+        "model": model,
+        "hasKey": has_key,
+        "cli": cli,
+        "cliModel": cli_model,
+        "cliAvailable": cli_available,
+        "models": models,
+        "configured": configured,
+    }))
+}
+
+/// Configure an API provider (FR-17.2): OpenAI / Anthropic / Google /
+/// OpenRouter, or a custom base URL + key. The key goes to the OS keychain
+/// (AD-16) — never the database, never the event log; an empty key keeps
+/// the one already stored (switching providers stores under the new
+/// provider's account).
+#[tauri::command]
+pub async fn configure_ai_provider(
+    db: State<'_, Db>,
+    provider: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<Value, String> {
+    let provider = provider.trim().to_string();
+    if provider.is_empty() {
+        return Err("configure_ai_provider: a provider name is required".into());
+    }
+    {
+        let c = db.0.lock().await;
+        db::set_setting(&c, "llm_mode", "provider").map_err(err)?;
+        db::set_setting(&c, "provider", &provider).map_err(err)?;
+        db::set_setting(&c, "base_url", base_url.trim()).map_err(err)?;
+        db::set_setting(&c, "model", model.trim()).map_err(err)?;
+        // move semantics: a legacy settings row key never (re-)enters the db
+        if !db::get_setting(&c, "api_key").trim().is_empty() {
+            db::set_setting(&c, "api_key", "").map_err(err)?;
+        }
+    }
+    if !api_key.trim().is_empty() {
+        let account = crate::eventstore::migration::keychain_account(&provider);
+        let entry = keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
+            .map_err(err)?;
+        entry.set_password(api_key.trim()).map_err(err)?;
+    }
+    let c = db.0.lock().await;
+    ai_config_inner(&c)
+}
+
+/// Switch the assistant onto a CLI bridge provider (FR-17.3, Story 5.8):
+/// `codex` or `claude` as the provider adapter. The CLI's own auth stays
+/// with the CLI — no key is stored, none is ever embedded in the spawn
+/// (NFR-10). An absent binary is honestly reported by `get_ai_config`'s
+/// detection (the UI refuses to configure a bridge it cannot detect).
+#[tauri::command]
+pub async fn use_cli_bridge(db: State<'_, Db>, cli: String) -> Result<Value, String> {
+    let cli = crate::adapters::providers::cli::Cli::binary_name(&cli);
+    let path = which_cli(&cli)
+        .ok_or_else(|| format!("cli_unavailable: the `{cli}` CLI was not found on PATH — install it first / el CLI `{cli}` no está en PATH"))?;
+    {
+        let c = db.0.lock().await;
+        db::set_setting(&c, "llm_mode", "cli").map_err(err)?;
+        db::set_setting(&c, "llm_cli", &cli).map_err(err)?;
+    }
+    let _ = path;
+    let c = db.0.lock().await;
+    ai_config_inner(&c)
+}
+
+/// Test the configured API provider's connection (Story 5.7): one GET
+/// against its models endpoint with the keychain-stored key, through the
+/// provider layer's own HTTP surface (AD-9). A success returns the LIVE
+/// model list — the picker refreshes from it (FR-17.4).
+#[tauri::command]
+pub async fn test_provider_connection(db: State<'_, Db>) -> Result<Value, String> {
+    let s = {
+        let c = db.0.lock().await;
+        crate::adapters::providers::ProviderSettings::load(&c)
+    };
+    let test = crate::adapters::providers::models::test_connection(&s).await;
+    Ok(json!({
+        "ok": test.ok,
+        "models": test.models,
+        "error": test.error,
+    }))
+}
+
+/// The model list one provider's picker offers (Story 5.9): the curated
+/// per-provider list in v1; empty for custom base URLs (free entry). CLI
+/// bridges list exactly ["default"] ("vía CLI").
+#[tauri::command]
+pub async fn list_provider_models(provider: String) -> Result<Vec<String>, String> {
+    Ok(crate::adapters::providers::curated_models(&provider))
 }
 

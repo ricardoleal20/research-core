@@ -14,6 +14,7 @@
 pub mod anthropic;
 pub mod cli;
 pub mod google;
+pub mod models;
 pub mod openai_compatible;
 pub mod pricing;
 pub mod simulated;
@@ -184,6 +185,12 @@ pub enum ProviderError {
     Request { name: String, source: reqwest::Error },
     #[error("cli adapter: {0}")]
     Cli(String),
+    #[error("cli_unavailable: the `{0}` CLI was not found on PATH — install it, fix its path in Ajustes → IA, or choose another provider / el CLI `{0}` no está en PATH")]
+    CliUnavailable(String),
+    #[error("cli_failed: `{cli}` failed: {stderr}")]
+    CliFailed { cli: String, stderr: String },
+    #[error("no_provider_configured: the assistant needs a real provider (an API provider or a CLI bridge) — configure one in Ajustes → IA / el asistente necesita un proveedor real (un proveedor de API o un puente CLI) — configura uno en Ajustes → IA")]
+    NoProviderConfigured,
     #[error("no_reservation: a real provider call must carry a runtime reservation (spend.reserved run id) — enforcement is solely the runtime's (AD-10)")]
     NoReservation,
     #[error("spend ledger append failed (AD-10): {0}")]
@@ -259,6 +266,39 @@ pub fn default_base_url(name: &str) -> Option<&'static str> {
         "local" => Some("http://localhost:11434/v1"),
         _ => None,
     }
+}
+
+/// The curated per-provider model lists (Story 5.9, FR-17.4): what the chat
+/// header's model picker offers in v1 for a configured API provider. Custom
+/// base URLs get an empty list — free entry. CLI bridges are NOT listed
+/// here: their picker is exactly ["default"] (the CLI resolves its own
+/// model, "vía CLI" in the UI). The live provider's own models list (when
+/// reachable) refreshes this via the models endpoint — see
+/// `test_provider_connection`.
+pub fn curated_models(provider: &str) -> Vec<String> {
+    let list: &[&str] = match provider.trim() {
+        "openai" => &["gpt-5.2", "gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
+        "anthropic" => &[
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+        ],
+        "google" => &["gemini-3-pro", "gemini-2-5-pro", "gemini-2-5-flash"],
+        "openrouter" => &[
+            "openrouter/auto",
+            "anthropic/claude-sonnet-4.5",
+            "openai/gpt-5.2",
+            "google/gemini-3-pro",
+        ],
+        _ => &[],
+    };
+    list.iter().map(|m| m.to_string()).collect()
+}
+
+/// The model list a CLI bridge's picker offers (Story 5.8/5.9): exactly one
+/// choice — "default", the CLI's own model resolution.
+pub fn cli_models() -> Vec<String> {
+    vec!["default".into()]
 }
 
 impl ProviderSettings {
@@ -345,7 +385,7 @@ impl ProviderLayer {
     pub fn from_settings(db: &Db, s: ProviderSettings) -> Result<Self, ProviderError> {
         match s.mode.trim() {
             "simulate" => Ok(Self::simulated(db)),
-            "cli" => Ok(Self::cli(db, &s)),
+            "cli" => Self::cli(db, &s),
             "provider" => Self::remote(db, &s),
             // Legacy auto behavior: real provider when key + endpoint exist,
             // else the simulated fallback.
@@ -357,6 +397,32 @@ impl ProviderLayer {
                 }
             }
         }
+    }
+
+    /// The ASSISTANT-only resolution (Story 5.7, FR-17.1/NFR-11): exactly
+    /// `from_settings`, except the simulated fallback is refused with the
+    /// typed `no_provider_configured:` error instead of silently answering.
+    /// Every other flow keeps the simulated guarantee of Stories 1.6/2.1 —
+    /// only this constructor never returns `Kind::Simulated`.
+    pub fn from_settings_real(db: &Db, s: ProviderSettings) -> Result<Self, ProviderError> {
+        match s.mode.trim() {
+            "simulate" => Err(ProviderError::NoProviderConfigured),
+            "cli" => Self::cli(db, &s),
+            "provider" => Self::remote(db, &s),
+            _ => {
+                if Self::has_real_provider(&s) {
+                    Self::remote(db, &s)
+                } else {
+                    Err(ProviderError::NoProviderConfigured)
+                }
+            }
+        }
+    }
+
+    /// Resolve the assistant's provider from settings + keychain, refusing
+    /// the simulated fallback (Story 5.7) — see `from_settings_real`.
+    pub fn resolve_real(db: &Db, conn: &Connection) -> Result<Self, ProviderError> {
+        Self::from_settings_real(db, ProviderSettings::load(conn))
     }
 
     fn has_real_provider(s: &ProviderSettings) -> bool {
@@ -385,10 +451,13 @@ impl ProviderLayer {
         }
         let settings = ProviderSettings::load(conn);
         if name == "cli" {
+            let binary = cli::Cli::binary_name(&settings.cli);
+            cli::available(&binary)
+                .ok_or_else(|| ProviderError::CliUnavailable(binary.to_string()))?;
             return Ok(Self {
                 db: db.clone(),
                 kind: Kind::Cli,
-                name: "cli".into(),
+                name: format!("cli/{binary}"),
                 model: role.model.trim().to_string(),
                 client: Box::new(cli::Cli::new(&settings.cli)),
             });
@@ -426,14 +495,19 @@ impl ProviderLayer {
         }
     }
 
-    fn cli(db: &Db, s: &ProviderSettings) -> Self {
-        Self {
+    /// Resolve a CLI bridge adapter (Story 5.8, FR-17.3). Availability is
+    /// detected honestly HERE — never a dead spawn: a binary missing from
+    /// PATH is the typed `cli_unavailable:` error.
+    fn cli(db: &Db, s: &ProviderSettings) -> Result<Self, ProviderError> {
+        let binary = cli::Cli::binary_name(&s.cli);
+        cli::available(&binary).ok_or_else(|| ProviderError::CliUnavailable(binary.to_string()))?;
+        Ok(Self {
             db: db.clone(),
             kind: Kind::Cli,
-            name: "cli".into(),
+            name: format!("cli/{binary}"),
             model: s.cli_model.trim().to_string(),
             client: Box::new(cli::Cli::new(&s.cli)),
-        }
+        })
     }
 
     /// Resolve a real BYOK provider from the registry (openai, anthropic,
@@ -545,10 +619,15 @@ impl ProviderLayer {
     }
 
     /// Fill the configured model when a request carries none; real providers
-    /// refuse to dispatch without one (typed error).
+    /// refuse to dispatch without one (typed error). CLI bridge calls fall
+    /// back to "default" — the CLI's own model resolution (Story 5.8/5.9:
+    /// the picker lists exactly ["default"] for a CLI bridge).
     fn prepare(&self, mut req: ChatRequest) -> Result<ChatRequest, ProviderError> {
         if req.model.trim().is_empty() {
             req.model = self.model.clone();
+        }
+        if self.kind == Kind::Cli && req.model.trim().is_empty() {
+            req.model = "default".into();
         }
         if self.kind == Kind::Remote && req.model.trim().is_empty() {
             return Err(ProviderError::MissingModel(self.name.clone()));
@@ -558,24 +637,33 @@ impl ProviderLayer {
 
     /// Append the `spend.recorded` event for a real call (AD-10). Fails
     /// loudly: a call whose spend cannot be recorded must not silently cost
-    /// money.
+    /// money. CLI bridge calls (Story 5.8) append their 0¢ event with
+    /// `note: "cli"` — no metered cost exists to record, so the receipt
+    /// says so instead of inventing a number (NFR-4 spirit, AD-10). Only
+    /// the simulated fallback appends nothing at all.
     async fn record_spend(
         &self,
         req: &ChatRequest,
         resp: &ChatResponse,
     ) -> Result<(), ProviderError> {
-        if self.kind != Kind::Remote {
+        if self.kind == Kind::Simulated {
             return Ok(());
         }
+        let (cost_cents, note) = if self.kind == Kind::Cli {
+            (0, Some("cli".to_string()))
+        } else {
+            (pricing::cost_cents(&self.name, &req.model, &resp.usage), None)
+        };
         let event = crate::eventstore::NewEvent::spend_recorded(SpendRecordedPayload {
             provider: self.name.clone(),
             model: req.model.clone(),
             input_tokens: resp.usage.input_tokens,
             output_tokens: resp.usage.output_tokens,
-            cost_cents: pricing::cost_cents(&self.name, &req.model, &resp.usage),
+            cost_cents,
             mission_id: req.mission_id,
             role: req.role.clone(),
             run_id: req.reservation.clone(),
+            note,
         })?;
         let conn = self.db.0.lock().await;
         EventStore::new(&conn).append(event)?;
@@ -601,6 +689,22 @@ impl ProviderClient for FakeRemote {
         Box::pin(async move {
             Ok(ChatResponse { content: self.content.to_string(), usage: self.usage })
         })
+    }
+}
+
+/// The chat send-path tests' assistant layer (Stories 5.7–5.9): a
+/// REAL-kind (Remote) layer over the simulated echo client — the assistant
+/// path can never resolve to `Kind::Simulated` (NFR-11), so its tests run
+/// against a remote-shaped stand-in that echoes the prompt markers without
+/// network. Constructed only here, behind cfg(test).
+#[cfg(test)]
+pub(crate) fn test_remote_simulated(db: &Db) -> ProviderLayer {
+    ProviderLayer {
+        db: db.clone(),
+        kind: Kind::Remote,
+        name: "test-remote".into(),
+        model: "test-model".into(),
+        client: Box::new(simulated::Simulated),
     }
 }
 
@@ -954,6 +1058,247 @@ mod tests {
             ProviderLayer::from_settings(&db, s.clone()),
             Err(ProviderError::MissingBaseUrl(ref n)) if n == "custom"
         ));
+    }
+
+    /// Story 5.7 (FR-17.1/NFR-11): the ASSISTANT resolution
+    /// (`from_settings_real`) never returns the simulated provider — no key,
+    /// simulate mode, all of it is the typed `no_provider_configured:`
+    /// refusal. The legacy resolution (`from_settings`) keeps the simulated
+    /// fallback for every other flow (the amendment is scoped).
+    #[test]
+    fn the_assistant_resolution_refuses_simulated_every_way_it_could_get_there() {
+        let db = test_db();
+        let base = ProviderSettings {
+            mode: String::new(),
+            name: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            cli: String::new(),
+            cli_model: String::new(),
+        };
+        // auto mode, nothing configured => refused (not simulated)
+        assert!(matches!(
+            ProviderLayer::from_settings_real(&db, base.clone()),
+            Err(ProviderError::NoProviderConfigured)
+        ));
+        // explicit simulate mode => refused
+        let mut s = base.clone();
+        s.mode = "simulate".into();
+        assert!(matches!(
+            ProviderLayer::from_settings_real(&db, s),
+            Err(ProviderError::NoProviderConfigured)
+        ));
+        // a configured key + endpoint => a real remote layer
+        let mut s = base.clone();
+        s.mode = "provider".into();
+        s.name = "openai".into();
+        s.api_key = "sk-test".into();
+        s.model = "gpt-5-mini".into();
+        let layer = ProviderLayer::from_settings_real(&db, s).unwrap();
+        assert_eq!(layer.kind(), Kind::Remote);
+        // and the legacy path still falls back for the other flows
+        let mut s = base;
+        s.name = "openai".into();
+        assert_eq!(
+            ProviderLayer::from_settings(&db, s).unwrap().kind(),
+            Kind::Simulated,
+            "the non-assistant flows keep the simulated guarantee (Stories 1.6/2.1)"
+        );
+    }
+
+    /// Story 5.8: a CLI bridge resolves as a real provider adapter with its
+    /// honest `cli/<binary>` attribution — and a missing binary is the typed
+    /// `cli_unavailable:` refusal, never a dead spawn.
+    #[test]
+    fn cli_bridges_resolve_or_refuse_honestly() {
+        let db = test_db();
+        let claude_available = cli::available("claude").is_some();
+        let s = ProviderSettings {
+            mode: "cli".into(),
+            name: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            cli: "claude".into(),
+            cli_model: String::new(),
+        };
+        if claude_available {
+            let layer = ProviderLayer::from_settings_real(&db, s).unwrap();
+            assert_eq!(layer.kind(), Kind::Cli);
+            assert_eq!(layer.name(), "cli/claude");
+        } else {
+            assert!(matches!(
+                ProviderLayer::from_settings_real(&db, s),
+                Err(ProviderError::CliUnavailable(ref c)) if c == "claude"
+            ));
+        }
+        // a binary nobody has is refused with the typed error both ways
+        let missing = ProviderSettings {
+            mode: "cli".into(),
+            name: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            cli: "rc-definitely-missing-cli".into(),
+            cli_model: String::new(),
+        };
+        assert!(matches!(
+            ProviderLayer::from_settings_real(&db, missing.clone()),
+            Err(ProviderError::CliUnavailable(ref c)) if c == "rc-definitely-missing-cli"
+        ));
+        // the legacy path refuses the same way (mode "cli" is explicit)
+        assert!(matches!(
+            ProviderLayer::from_settings(&db, missing),
+            Err(ProviderError::CliUnavailable(_))
+        ));
+    }
+
+    /// Story 5.8 (AD-10): a CLI bridge call appends its 0¢ `spend.recorded`
+    /// with `note: "cli"` — the receipt says the cost is not observable
+    /// instead of inventing a number. Tokens ride verbatim (the adapter
+    /// reports ZERO usage — nothing is metered).
+    #[tokio::test]
+    async fn cli_calls_record_zero_cent_spend_with_the_cli_note() {
+        let db = test_db();
+        let layer = ProviderLayer {
+            db: db.clone(),
+            kind: Kind::Cli,
+            name: "cli/codex".into(),
+            model: String::new(),
+            client: Box::new(FakeRemote {
+                content: "respuesta del cli",
+                usage: Usage::ZERO,
+            }),
+        };
+        let resp = layer
+            .chat(ChatRequest::new(vec![Message::user("hola")]))
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "respuesta del cli");
+        let events = spend_events(&db).await;
+        assert_eq!(events.len(), 1, "a CLI call records its (free) spend");
+        let payload = &events[0].payload;
+        assert_eq!(payload["provider"], "cli/codex");
+        assert_eq!(payload["model"], "default", "the CLI picker's one choice");
+        assert_eq!(payload["cost_cents"], json!(0));
+        assert_eq!(payload["note"], json!("cli"));
+        assert_eq!(payload["input_tokens"], json!(0));
+        assert_eq!(payload["output_tokens"], json!(0));
+    }
+
+    /// Story 5.7's BYOK gate, end to end: a configured API provider routes
+    /// through the keychain-stored key — a one-shot local axum server
+    /// stands in for the provider and captures the request, proving the
+    /// Authorization header carries the key and the request body's model
+    /// is the chat's chosen one (never the layer default).
+    #[tokio::test]
+    async fn a_configured_api_provider_routes_through_the_byok_key() {
+        use axum::extract::Request;
+        use std::sync::{Arc, Mutex};
+        const SENTINEL: &str = "sk-5-7-BYOK-SENTINEL-9e2f";
+
+        // one-shot local "provider" on the shared runtime
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen = captured.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |req: Request<axum::body::Body>| {
+                let seen = seen.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let auth = parts
+                        .headers
+                        .get(reqwest::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    let bytes = axum::body::to_bytes(body, 1_048_576)
+                        .await
+                        .unwrap_or_default();
+                    *seen.lock().unwrap() =
+                        Some(format!("{auth}\n{}", String::from_utf8_lossy(&bytes)));
+                    axum::Json(serde_json::json!({
+                        "choices": [{ "message": { "content": "hola desde el proveedor" } }],
+                        "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+                    }))
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let db = test_db();
+        {
+            let conn = db.0.lock().await;
+            crate::db::set_setting(&conn, "llm_mode", "provider").unwrap();
+            crate::db::set_setting(&conn, "provider", "custom").unwrap();
+            crate::db::set_setting(&conn, "base_url", &format!("http://{addr}/v1")).unwrap();
+            crate::db::set_setting(&conn, "model", "layer-default-model").unwrap();
+            // the key: keychain when available, else the legacy settings
+            // fallback (both are the BYOK store — never the prompt)
+            match keyring::Entry::new(
+                crate::eventstore::migration::KEYCHAIN_SERVICE,
+                "custom",
+            ) {
+                Ok(entry) if entry.set_password(SENTINEL).is_ok() => {}
+                _ => {
+                    crate::db::set_setting(&conn, "api_key", SENTINEL).unwrap();
+                }
+            }
+        }
+
+        let layer = {
+            let conn = db.0.lock().await;
+            ProviderLayer::resolve_real(&db, &conn).unwrap()
+        };
+        assert_eq!(layer.kind(), Kind::Remote);
+        // the chat's chosen model overrides the layer's configured default
+        let resp = layer
+            .chat(
+                ChatRequest::new(vec![Message::user("hola")])
+                    .with_model("chosen-by-the-picker")
+                    .with_reservation("test-run"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "hola desde el proveedor");
+
+        let seen = captured.lock().unwrap().clone().expect("the provider saw the request");
+        let (auth, body) = seen.split_once('\n').unwrap();
+        assert_eq!(auth, format!("Bearer {SENTINEL}"), "the call carries the keychain-stored key");
+        assert!(body.contains("\"chosen-by-the-picker\""), "the chosen model rides the call: {body}");
+        assert!(
+            !body.contains("layer-default-model"),
+            "the picker's model overrides the layer default: {body}"
+        );
+        // spend recorded for the metered call, attributed to provider+model
+        let events = spend_events(&db).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["provider"], "custom");
+        assert_eq!(events[0].payload["model"], "chosen-by-the-picker");
+        // no event ever carries the key (AD-16)
+        {
+            let conn = db.0.lock().await;
+            let all = EventStore::new(&conn).events_all().unwrap();
+            for event in &all {
+                assert!(
+                    !serde_json::to_string(event).unwrap().contains(SENTINEL),
+                    "event {} leaked the api key",
+                    event.seq
+                );
+            }
+            crate::db::set_setting(&conn, "api_key", "").unwrap();
+        }
+        if let Ok(entry) = keyring::Entry::new(
+            crate::eventstore::migration::KEYCHAIN_SERVICE,
+            "custom",
+        ) {
+            let _ = entry.delete_credential();
+        }
     }
 
     #[test]

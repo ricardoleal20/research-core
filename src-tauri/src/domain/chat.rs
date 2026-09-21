@@ -13,6 +13,7 @@ use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const CHAT_SCOPED: &str = "chat.scoped";
 pub const CHAT_SKILL_SET: &str = "chat.skill_set";
+pub const CHAT_MODEL_SET: &str = "chat.model_set";
 pub const CHAT_ATTACHMENT_ADDED: &str = "chat.attachment_added";
 pub const CHAT_ATTACHMENT_REMOVED: &str = "chat.attachment_removed";
 
@@ -89,6 +90,27 @@ impl NewEvent {
             serde_json::json!({ "chat_id": chat_id, "skill": skill }),
         )?)
     }
+
+    /// Typed constructor (AD-15, Story 5.9): the one way a conversation's
+    /// model choice moves — a `chat.model_set` event, actor=user. An empty
+    /// model clears the choice (the provider's configured default). The
+    /// choice is per-conversation and history-preserving: earlier messages
+    /// keep the attribution they were produced with (FR-17.4).
+    pub fn chat_model_set(chat_id: &str, model: &str) -> Result<Self, EventError> {
+        let chat_id = chat_id.trim().to_string();
+        let model = model.trim().to_string();
+        if chat_id.is_empty() {
+            return Err(EventError::Invalid(
+                "chat.model_set: chat_id must not be empty — a model event names its conversation"
+                    .into(),
+            ));
+        }
+        Ok(Self::new(
+            CHAT_MODEL_SET,
+            Actor::User,
+            serde_json::json!({ "chat_id": chat_id, "model": model }),
+        )?)
+    }
 }
 
 /// The conversation an event belongs to (its `chat_id` payload), if any.
@@ -126,6 +148,24 @@ pub fn folded_skill(events: &[StoredEvent], chat_id: &str) -> Option<String> {
         if e.kind == CHAT_SKILL_SET && event_chat_id(e) == Some(chat_id.trim()) {
             e.payload
                 .get("skill")
+                .and_then(serde_json::Value::as_str)
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// A chat's current model choice, folded from the log (Story 5.9): the
+/// LATEST `chat.model_set` event for the chat wins — an empty model in it
+/// is the explicit "back to the provider default" (never a resurrection of
+/// an older choice); no event at all ⇒ `None` (the caller's baseline — the
+/// table column / the provider's configured default).
+pub fn folded_model(events: &[StoredEvent], chat_id: &str) -> Option<String> {
+    events.iter().rev().find_map(|e| {
+        if e.kind == CHAT_MODEL_SET && event_chat_id(e) == Some(chat_id.trim()) {
+            e.payload
+                .get("model")
                 .and_then(serde_json::Value::as_str)
                 .map(|s| s.trim().to_string())
         } else {
