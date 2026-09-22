@@ -241,10 +241,11 @@ function RCRefAddDrawer(app) {
 
 // ========== AI REVIEW (the bible's demo feel) ==========
 export function renderReview(app) {
+  const en = getLang() === "en";
   const findings = [
-    { type: "theme", title: "Dominio de mecanismos de atención / Attention dominance", content: getLang() === "en" ? "Most recent work prioritizes attention as the central primitive, but linear-complexity alternatives (Mamba) are emerging." : "La mayoría de los trabajos recientes priorizan la atención como primitiva central, pero emergen alternativas de complejidad lineal (Mamba).", citations: ["Vaswani et al. 2017", "Gu & Dao 2023"] },
-    { type: "gap", title: "Scaling analysis gap / Vacío de escalado", content: getLang() === "en" ? "No empirical studies of scaling laws on moderate-size multilingual corpora were found." : "No se encontraron estudios empíricos sobre leyes de escalado en corpus multilingües de tamaño moderado.", citations: ["Kaplan et al. 2020"] },
-    { type: "conflict", title: "Pretraining vs. instructions / Preentrenamiento vs. instrucciones", content: getLang() === "en" ? "Tension between bidirectional pretraining (BERT) and post-RLHF instruction learning." : "Tensión entre la eficacia del preentrenamiento bidireccional (BERT) y el aprendizaje por instrucciones post-RLHF.", citations: ["Devlin et al. 2019", "Ouyang et al. 2022"] },
+    { type: "theme", title: en ? "Attention dominance" : "Dominio de mecanismos de atención", content: en ? "Most recent work prioritizes attention as the central primitive, but linear-complexity alternatives (Mamba) are emerging." : "La mayoría de los trabajos recientes priorizan la atención como primitiva central, pero emergen alternativas de complejidad lineal (Mamba).", citations: ["Vaswani et al. 2017", "Gu & Dao 2023"] },
+    { type: "gap", title: en ? "Scaling analysis gap" : "Vacío de escalado", content: en ? "No empirical studies of scaling laws on moderate-size multilingual corpora were found." : "No se encontraron estudios empíricos sobre leyes de escalado en corpus multilingües de tamaño moderado.", citations: ["Kaplan et al. 2020"] },
+    { type: "conflict", title: en ? "Pretraining vs. instructions" : "Preentrenamiento vs. instrucciones", content: en ? "Tension between bidirectional pretraining (BERT) and post-RLHF instruction learning." : "Tensión entre la eficacia del preentrenamiento bidireccional (BERT) y el aprendizaje por instrucciones post-RLHF.", citations: ["Devlin et al. 2019", "Ouyang et al. 2022"] },
   ];
   return `
     <div class="space-y-6">
@@ -279,7 +280,7 @@ function renderReviewRunning() {
       <div class="mt-4 h-1.5 w-64 rounded-full bg-gray-100 overflow-hidden">
         <div id="review-bar" class="h-full bg-gradient-to-r from-sky-600 to-teal-500 transition-all duration-300" style="width: 40%"></div>
       </div>
-      <p class="mt-4 font-mono text-xs text-muted h-5">Initializing review agent...</p>
+      <p class="mt-4 font-mono text-xs text-muted h-5">${t("rc.review.initializing")}</p>
     </div>`, "lg:col-span-2");
 }
 function renderReviewResults(findings) {
@@ -755,7 +756,7 @@ export function renderStatus(app) {
             <tbody class="divide-y divide-border">
               ${servers.map((s) => `
               <tr>
-                <td class="px-6 py-4 font-medium font-mono text-xs">${esc(s.name)}</td>
+                <td class="px-6 py-4 font-medium">${esc(s.name)}</td>
                 <td class="px-6 py-4">${badge(s.connected ? t("rc.status.connected") : t("rc.status.deactivate"), s.connected ? "success" : "muted")}</td>
                 <td class="px-6 py-4">${badge(s.connected ? t("rc.status.healthy") : t("rc.status.degraded"), s.connected ? "success" : "warning")}</td>
                 <td class="px-6 py-4 text-muted font-mono text-xs">${esc(s.transport)}</td>
