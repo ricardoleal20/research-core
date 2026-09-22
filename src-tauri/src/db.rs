@@ -36,6 +36,14 @@ impl Db {
     pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS skills (
+                name TEXT PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL,
+                tools TEXT NOT NULL DEFAULT '[]',
+                builtin INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -171,6 +179,16 @@ impl Db {
             );
             ",
         )?;
+        // Epic-5 chat intelligence: the chats/messages baseline grows its
+        // mission-scope and skill columns — `CREATE TABLE IF NOT EXISTS`
+        // cannot evolve an existing workspace, so the columns ALTER into
+        // place (idempotent: a present column is a no-op).
+        ensure_column(conn, "chats", "mission_id", "TEXT")?;
+        ensure_column(conn, "chats", "skill", "TEXT")?;
+        // Story 5.9 (FR-17.4): the per-conversation model choice — the
+        // projection of the `chat.model_set` events.
+        ensure_column(conn, "chats", "model", "TEXT")?;
+        ensure_column(conn, "messages", "mission_id", "TEXT")?;
         Ok(())
     }
 
@@ -191,6 +209,25 @@ impl Db {
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key,value) VALUES(?1,?2)",
                 params![k, v],
+            )?;
+        }
+
+        // Skills (Story 5.6, FR-16.6): the curated DEFAULT scientific set —
+        // pre-installed on every workspace; user-added skills are rows in
+        // the same table (a skill definition is data, not code). INSERT OR
+        // IGNORE keeps a user's edits to a builtin skill untouched.
+        for skill in crate::domain::skills::default_skills() {
+            conn.execute(
+                "INSERT OR IGNORE INTO skills(name,provider,model,system_prompt,tools,builtin) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    skill.name,
+                    skill.provider,
+                    skill.model,
+                    skill.system_prompt,
+                    serde_json::to_string(&skill.tools).unwrap_or_else(|_| "[]".into()),
+                    skill.builtin as i64
+                ],
             )?;
         }
 
@@ -243,6 +280,26 @@ impl Db {
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// Add a column to an existing table unless it is already present — the
+/// idempotent schema-evolution path for the legacy baseline tables (the
+/// evented domains evolve by appending events; these tables evolve by
+/// ALTER).
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+    if !existing.iter().any(|c| c == column) {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

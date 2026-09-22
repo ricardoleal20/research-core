@@ -7,26 +7,48 @@
 // real getTrustStatus read model.
 import { t, getLang } from "../i18n";
 import { api } from "../api";
+import { mockActive } from "../mock-backend";
 import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
 import { RC, ctx } from "./rc";
 
 // ========== REFERENCES ==========
-const refSource = (r) => (r.doi || "").startsWith("10.48550/arXiv.") ? "arXiv" : r.attachment ? "Zotero" : "Manual";
+const refSource = (r) =>
+  r.source === "arxiv" || r.source === "zotero" || r.source === "manual"
+    ? { arxiv: "arXiv", zotero: "Zotero", manual: "Manual" }[r.source]
+    : (r.doi || "").startsWith("10.48550/arXiv.")
+      ? "arXiv"
+      : r.attachment
+        ? "Zotero"
+        : "Manual";
 const refSourceColor = { arXiv: "primary", Zotero: "warning", "Semantic Scholar": "success", Manual: "muted", MCP: "medium" };
 const refReviewed = (r) => r.status === "read" || r.status === "reviewed";
 
 export function renderRefs(app) {
   const filter = (app.data.refFilter || "").toLowerCase();
-  const rows = app.data.refs.filter(
-    (r) => r.title.toLowerCase().includes(filter) || (r.authors || "").toLowerCase().includes(filter),
+  const statusFilter = app.data.refStatusFilter || "all";
+  const all = app.data.refs;
+  const rows = all.filter(
+    (r) =>
+      (statusFilter === "all" || (statusFilter === "removed" ? r.removed : !r.removed)) &&
+      (r.title.toLowerCase().includes(filter) || (r.authors || "").toLowerCase().includes(filter)),
   );
+  const archivedCount = all.filter((r) => r.removed).length;
+  const chip = (key, label, count) => `
+    <button onclick="RC.setRefStatusFilter('${key}')" class="rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition ${statusFilter === key ? "bg-primary/10 text-primary ring-primary/20" : "bg-white text-muted ring-border hover:bg-gray-50 hover:text-foreground"}">
+      ${label}${key === "removed" && count ? ` (${count})` : ""}
+    </button>`;
   return `
     <div class="space-y-6">
-      ${pageHeader(t("rc.refs.title"), t("rc.refs.title"))}
+      ${pageHeader(t("rc.refs.title"), t("rc.refs.title"), btn({ label: t("rc.refs.add"), variant: "default", iconName: "plus", onClick: "RC.openRefAdd()" }))}
       <div class="flex flex-col sm:flex-row gap-3">
         <div class="relative flex-1">
           ${icon("search", "w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted")}
           <input id="ref-search" value="${esc(app.data.refFilter || "")}" placeholder="${t("rc.refs.search")}" class="w-full rounded-lg border border-border bg-white pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+        </div>
+        <div class="flex items-center gap-2">
+          ${chip("all", t("rc.refs.filter.all"))}
+          ${chip("active", t("rc.refs.filter.active"))}
+          ${chip("removed", t("rc.refs.filter.archived"), archivedCount)}
         </div>
       </div>
       ${card(`
@@ -45,13 +67,13 @@ export function renderRefs(app) {
             <tbody class="divide-y divide-border">
               ${rows.length
                 ? rows.map((r) => `
-                <tr onclick="RC.openRefDetail('${esc(r.id)}')" class="hover-row cursor-pointer">
-                  <td class="px-6 py-4 font-medium text-foreground">${esc(r.title)}</td>
+                <tr onclick="RC.openRefDetail('${esc(r.id)}')" class="hover-row cursor-pointer ${r.removed ? "opacity-60" : ""}">
+                  <td class="px-6 py-4 font-medium ${r.removed ? "text-muted line-through" : "text-foreground"}">${esc(r.title)}</td>
                   <td class="px-6 py-4 text-muted">${esc(r.authors)}</td>
                   <td class="px-6 py-4">${esc(r.year ?? "")}</td>
                   <td class="px-6 py-4">${badge(refSource(r), refSourceColor[refSource(r)] || "muted")}</td>
                   <td class="px-6 py-4"><div class="flex flex-wrap gap-1">${(r.tags || "").split(",").filter(Boolean).map((tag) => badge(tag.trim(), "muted")).join("")}</div></td>
-                  <td class="px-6 py-4">${badge(refReviewed(r) ? t("rc.refs.reviewed") : t("rc.refs.toReview"), refReviewed(r) ? "success" : "warning")}</td>
+                  <td class="px-6 py-4">${r.removed ? badge(t("rc.refs.removedBadge"), "destructive") : badge(refReviewed(r) ? t("rc.refs.reviewed") : t("rc.refs.toReview"), refReviewed(r) ? "success" : "warning")}</td>
                 </tr>`)
                 .join("") : `<tr><td colspan="6" class="px-6 py-12 text-center text-muted">${t("rc.refs.empty")}</td></tr>`}
             </tbody>
@@ -95,7 +117,8 @@ function openRefDetail(id) {
       <div class="space-y-5">
         <div>
           <p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.title")}</p>
-          <p class="font-medium text-lg leading-snug">${esc(r.title)}</p>
+          <p class="font-medium text-lg leading-snug ${r.removed ? "text-muted line-through" : ""}">${esc(r.title)}</p>
+          ${r.removed ? `<div class="mt-1.5">${badge(t("rc.refs.removedBadge"), "destructive")}</div>` : ""}
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.authors")}</p><p class="text-sm">${esc(r.authors)}</p></div>
@@ -106,9 +129,114 @@ function openRefDetail(id) {
         ${r.url ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.url")}</p><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:underline break-all">${esc(r.url)}</a></div>` : ""}
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.tags")}</p><div class="flex flex-wrap gap-2">${(r.tags || "").split(",").filter(Boolean).map((tag) => badge(tag.trim(), "muted")).join("")}</div></div>
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.abstract")}</p><p class="text-sm text-muted leading-relaxed">${t("rc.refs.d.noAbstract")}</p></div>
+        <div>
+          <p class="text-xs text-muted uppercase tracking-wider mb-2">${t("rc.refs.timeline")}</p>
+          ${(r.timeline || []).length
+            ? `<div class="space-y-1.5 font-mono text-[11px] text-muted tabular">${r.timeline.map((e) => `
+              <p>#${e.seq} ${fmtTs(e.ts)} · ${esc(e.actor)} · <span class="text-foreground">${esc(e.kind)}</span></p>`).join("")}</div>`
+            : `<p class="text-xs text-muted">${t("rc.refs.timelineEmpty")}</p>`}
+        </div>
+        <div class="pt-2 border-t border-border space-y-2">
+          ${r.removed
+            ? `<div class="flex gap-2">${btn({ label: t("rc.refs.restore"), variant: "default", iconName: "history", onClick: `RC.restoreRef('${esc(r.id)}')` })}</div>`
+            : app.state.refConfirmingRemove === r.id
+              ? `<p class="text-xs text-rose-700 leading-relaxed">${t("rc.refs.confirmRemove")}</p>
+                 <div class="flex gap-2">
+                   ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.cancelRemoveRef()" })}
+                   ${btn({ label: t("rc.refs.confirmBtn"), variant: "destructive", iconName: "danger", onClick: `RC.removeRef('${esc(r.id)}')` })}
+                 </div>`
+              : `<div class="flex gap-2">${btn({ label: t("rc.refs.remove"), variant: "destructive", iconName: "trash", onClick: `RC.confirmRemoveRef('${esc(r.id)}')` })}</div>`}
+        </div>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+}
+
+// ---- The add composer (FR-15.1/15.2/15.3): the bible's slide-over drawer
+// (the openRefDetail idiom) with three modes — arXiv paste (the shared
+// fetch adapter behind the onboarding flow), manual entry, and the Zotero
+// connect/import.
+function openRefAdd() {
+  const app = ctx.app;
+  app.state.refAdd = { mode: "arxiv", saving: false, error: null, zoteroResult: null };
+  RCRefAddDrawer(app);
+}
+
+function RCRefAddDrawer(app) {
+  const f = app.state.refAdd;
+  if (!f) return;
+  document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
+  const overlay = document.createElement("div");
+  overlay.className = "rc-modal fixed inset-0 z-[60] flex justify-end";
+  const tab = (key, label) => `
+    <button onclick="RC.setRefAddMode('${key}')" class="rounded-md py-1.5 px-3 text-xs font-medium transition ${f.mode === key ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${label}</button>`;
+  const v = (id) => f.values?.[id] ?? "";
+  const field = (id, label, ph, value = "") => `
+    <div><label class="block text-sm font-medium mb-1.5">${label}</label>
+    <input id="${id}" value="${esc(value)}" placeholder="${esc(ph)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`;
+  const body =
+    f.mode === "arxiv"
+      ? `<div class="space-y-4">
+          ${field("ref-arxiv-url", t("rc.refs.arxiv.label"), t("rc.refs.arxiv.ph"), v("ref-arxiv-url"))}
+          <p class="text-xs text-muted">${t("rc.refs.arxiv.help")}</p>
+        </div>`
+      : f.mode === "manual"
+        ? `<div class="space-y-4">
+            ${field("ref-manual-title", t("rc.refs.f.title"), t("rc.refs.f.titlePh"), v("ref-manual-title"))}
+            ${field("ref-manual-authors", t("rc.refs.f.authors"), "Vaswani et al.", v("ref-manual-authors"))}
+            <div class="grid grid-cols-2 gap-4">
+              ${field("ref-manual-year", t("rc.refs.f.year"), "2017", v("ref-manual-year"))}
+              ${field("ref-manual-venue", t("rc.refs.f.venue"), "NeurIPS", v("ref-manual-venue"))}
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              ${field("ref-manual-doi", t("rc.refs.f.doi"), "10.48550/arXiv.1706.03762", v("ref-manual-doi"))}
+              ${field("ref-manual-url", t("rc.refs.f.url"), "https://arxiv.org/abs/1706.03762", v("ref-manual-url"))}
+            </div>
+            ${field("ref-manual-tags", t("rc.refs.f.tags"), t("rc.refs.f.tagsPh"), v("ref-manual-tags"))}
+            <p class="text-xs text-muted">${t("rc.refs.f.identifierHint")}</p>
+          </div>`
+        : `<div class="space-y-4">
+            <p class="text-sm text-muted leading-relaxed">${t("rc.refs.zotero.desc")}</p>
+            ${f.zoteroResult ? `
+              <div class="rounded-lg border border-border p-4 space-y-2">
+                <div class="flex flex-wrap gap-2">
+                  ${badge(`${f.zoteroResult.imported} ${t("rc.refs.zotero.imported")}`, f.zoteroResult.imported ? "success" : "muted")}
+                  ${badge(`${f.zoteroResult.skipped} ${t("rc.refs.zotero.skipped")}`, f.zoteroResult.skipped ? "warning" : "muted")}
+                  ${f.zoteroResult.failed ? badge(`${f.zoteroResult.failed} ${t("rc.refs.zotero.failed")}`, "destructive") : ""}
+                </div>
+                ${(f.zoteroResult.skippedItems || []).map((s) => `<p class="text-xs text-muted">· ${esc(s)}</p>`).join("")}
+                ${(f.zoteroResult.failedItems || []).map((s) => `<p class="text-xs text-rose-700">· ${esc(s)}</p>`).join("")}
+                ${!f.zoteroResult.imported && !f.zoteroResult.skipped && !f.zoteroResult.failed ? `<p class="text-xs text-muted">${t("rc.refs.zotero.noneNew")}</p>` : ""}
+              </div>` : ""}
+          </div>`;
+  const submit =
+    f.mode === "arxiv"
+      ? btn({ label: f.saving ? t("rc.refs.adding") : t("rc.refs.addBtn"), variant: "default", iconName: "plus", onClick: "RC.submitRefAddArxiv()", disabled: f.saving })
+      : f.mode === "manual"
+        ? btn({ label: f.saving ? t("rc.refs.adding") : t("rc.refs.addBtn"), variant: "default", iconName: "plus", onClick: "RC.submitRefAddManual()", disabled: f.saving })
+        : btn({ label: f.saving ? t("rc.refs.zotero.importing") : t("rc.refs.zotero.connect"), variant: "default", iconName: "bolt", onClick: "RC.submitZoteroImport()", disabled: f.saving });
+  overlay.innerHTML = `
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="RC.closeRefDetail()"></div>
+    <div class="relative w-full max-w-md h-full bg-white border-l border-border shadow-xl p-6 overflow-y-auto animate-[fadeUp_220ms_ease-out]">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="font-serif text-2xl italic">${t("rc.refs.addTitle")}</h2>
+        <button onclick="RC.closeRefDetail()" class="p-1 rounded hover:bg-gray-100">${icon("close", "w-5 h-5")}</button>
+      </div>
+      <div class="grid grid-cols-3 gap-1 rounded-lg border border-border bg-gray-50 p-1 mb-5">
+        ${tab("arxiv", t("rc.refs.mode.arxiv"))}
+        ${tab("manual", t("rc.refs.mode.manual"))}
+        ${tab("zotero", t("rc.refs.mode.zotero"))}
+      </div>
+      ${f.error ? `<div class="mb-4 rounded-lg bg-rose-50 border border-rose-200 px-4 py-3 text-xs text-rose-700 leading-relaxed break-words">${esc(f.error)}</div>` : ""}
+      ${body}
+      <div class="mt-6 flex justify-end gap-2">
+        ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.closeRefDetail()" })}
+        ${submit}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const first = document.getElementById("ref-arxiv-url") || document.getElementById("ref-manual-title");
+  if (first) first.focus();
 }
 
 // ========== AI REVIEW (the bible's demo feel) ==========
@@ -126,7 +254,7 @@ export function renderReview(app) {
           <div class="p-6 space-y-5">
             <h3 class="font-semibold">${t("rc.review.select")}</h3>
             <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
-              ${app.data.refs.map((r) => `
+              ${app.data.refs.filter((r) => !r.removed).map((r) => `
                 <label class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-gray-50 cursor-pointer transition">
                   <input type="checkbox" class="review-ref accent-primary w-4 h-4" checked>
                   <div class="text-sm"><p class="font-medium">${esc(r.title)}</p><p class="text-xs text-muted">${esc(r.authors)} ${r.year ?? ""}</p></div>
@@ -176,6 +304,54 @@ function renderReviewResults(findings) {
 export function bindReview(app) {}
 
 // ========== ASSISTANT (bible chat visuals over the mock provider) ==========
+// The scoped surface (Stories 5.4–5.6): a mission selector + skill selector
+// in the header, the "context: M-XX · board sincronizado" chip on scoped
+// conversations, and the composer's attachment chips.
+
+/// The conversation's effective scope: the active chat's binding, or the
+/// draft selection for a conversation not yet created.
+function chatScope(app) {
+  const chat = app.data.chats.find((c) => c.id === app.data.activeChatId);
+  if (chat) return { missionId: chat.mission_id || null, skill: chat.skill || null, model: chat.model || null };
+  const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null });
+  return { missionId: draft.missionId, skill: draft.skill, model: draft.model };
+}
+
+/// The active provider+model pair the header shows in mono (Story 5.9,
+/// the status-card provider idiom): the conversation's chosen model, else
+/// the provider's configured default; CLI bridges show "default · vía CLI".
+function activeModelPair(app) {
+  const ai = app.data.aiConfig;
+  if (!ai) return null;
+  const scope = chatScope(app);
+  const isCli = ai.mode === "cli";
+  const model = scope.model || ai.model || (isCli ? "default" : "");
+  const provider = isCli ? `cli/${ai.cli}` : ai.provider || "";
+  return { provider, model, isCli };
+}
+
+/// The attachment chips the composer renders: the active conversation's
+/// folded attachments, or the pending picks of a conversation not yet sent.
+function composerAttachments(app) {
+  if (app.data.activeChatId) return app.data.chatAttachments[app.data.activeChatId] || [];
+  return app.data.pendingAttachments || [];
+}
+
+function renderAttachmentChip(a, pending = false) {
+  const flags = [];
+  if (!pending && !a.included) flags.push(a.note || t("rc.assistant.attachUnsupported"));
+  if (a.truncated) flags.push(t("rc.assistant.attachTruncated"));
+  const key = pending ? a.name : a.id;
+  return `
+  <span class="inline-flex items-center gap-1.5 rounded-full border border-border bg-gray-50 pl-2.5 pr-1 py-1 text-xs text-foreground max-w-full" title="${esc((a.note || "") + (a.digest ? " · " + String(a.digest).slice(0, 16) : ""))}">
+    ${icon("fileText", "w-3.5 h-3.5 text-muted shrink-0")}
+    <span class="max-w-[160px] truncate font-medium">${esc(a.name)}</span>
+    <span class="font-mono text-[10px] text-muted uppercase shrink-0">${esc(pending ? "…" : a.kind)}</span>
+    ${flags.length ? `<span class="text-[10px] font-medium text-amber-600 shrink-0">${esc(flags.join(" · "))}</span>` : ""}
+    <button type="button" onclick="RC.removeAttachment('${esc(key)}', ${pending})" class="rounded-full p-0.5 text-muted hover:text-foreground hover:bg-gray-200 transition shrink-0" aria-label="${t("rc.assistant.attachRemove")}">${icon("close", "w-3.5 h-3.5")}</button>
+  </span>`;
+}
+
 export function renderAssistant(app) {
   const msgs = app.data.chatMessages[app.data.activeChatId || ""] || [];
   const empty = msgs.length === 0 && !app.data.chatThinking;
@@ -188,7 +364,45 @@ export function renderAssistant(app) {
     t("rc.assistant.suggest3", { project: name, field }),
     t("rc.assistant.suggest4", { project: name, field }),
   ];
-  return `
+  const scope = chatScope(app);
+  const mission = scope.missionId ? app.data.missions.find((m) => m.id === scope.missionId) : null;
+  const skill = scope.skill ? app.data.skills.find((s) => s.name === scope.skill) : null;
+  // Story 5.7 (FR-17.1/NFR-11): with NO real provider configured the view
+  // shows the explicit configure-provider state and sends are refused —
+  // no fabricated replies on the assistant path, ever.
+  const ai = app.data.aiConfig;
+  // While the config read is still in flight the view stays neutral — the
+  // configure state renders only from a LOADED, unconfigured state (and
+  // the send path's typed refusal is the backstop either way).
+  const unconfigured = ai ? !ai.configured : false;
+  const pair = activeModelPair(app);
+  // Story 5.9 (FR-17.4): the model picker lists the active provider's
+  // models (curated; free entry for custom URLs; CLI = ["default"]). With
+  // exactly one model the resolved pair renders read-only — no empty
+  // dropdown.
+  const modelOptions = ai ? ai.models.map((m) => ({
+    value: m,
+    label: ai.mode === "cli" ? `${m} · ${t("rc.assistant.viaCli")}` : m,
+  })) : [];
+  const activeModel = scope.model || (ai ? ai.model : "") || modelOptions[0]?.value || "";
+  const modelPicker = unconfigured ? "" : (modelOptions.length > 1
+    ? `<div class="w-40 hidden md:block">${rcSelect({ id: "chat-model-select", size: "sm", cls: "w-full", options: modelOptions, value: activeModel, onChange: "RC.setChatModel(this.value)" })}</div>`
+    : (modelOptions.length === 0
+      ? `<input id="chat-model-input" value="${esc(scope.model || "")}" onchange="RC.setChatModel(this.value)" placeholder="${t("rc.assistant.modelDefault")}" title="${t("prov.modelFreeEntry")}" class="hidden md:block w-40 rounded-lg border border-border bg-white px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 transition">`
+      : ""));
+  const missionOptions = [
+    { value: "", label: t("rc.assistant.scopeGeneral") },
+    ...app.data.missions.map((m) => ({ value: m.id, label: `M-${m.seq} · ${m.question.slice(0, 46)}` })),
+  ];
+  const skillOptions = [
+    { value: "", label: t("rc.assistant.skillNone") },
+    ...app.data.skills.map((s) => ({ value: s.name, label: t(`rc.skill.${s.name}`) })),
+  ];
+  // The configure-provider state (FR-17.1): the aurora empty state
+  // adapted, with a CTA straight to Ajustes → IA. No composer — sends are
+  // refused until a real provider exists.
+  if (unconfigured) {
+    return `
     <div class="h-[calc(100vh-112px)] flex flex-col">
       <div class="flex items-center justify-between gap-3 mb-4">
         <div class="flex items-center gap-3 min-w-0">
@@ -198,7 +412,47 @@ export function renderAssistant(app) {
             <span class="text-sm font-medium leading-snug truncate">${t("rc.assistant.newChatTitle")}</span>
           </div>
         </div>
+      </div>
+      <div class="relative flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full px-4 -mt-6 overflow-hidden">
+        <div class="relative -mb-10 flex flex-col items-center w-full">
+          <div class="pointer-events-none absolute -inset-x-16 -top-12 -bottom-16 z-0">
+            <div class="rc-ai-aurora"></div>
+            <div class="rc-ai-particle" style="left:12%; top:34%; animation-delay:0s"></div>
+            <div class="rc-ai-particle" style="left:84%; top:52%; animation-delay:1.8s"></div>
+            <div class="rc-ai-particle" style="left:20%; top:72%; animation-delay:3.2s"></div>
+            <div class="rc-ai-particle" style="left:78%; top:22%; animation-delay:4.6s"></div>
+          </div>
+          <div class="relative z-10 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-6 rc-intro">${icon("key", "w-5 h-5")}</div>
+          <h2 class="relative z-10 font-serif text-5xl italic mb-4 text-center rc-intro rc-intro-1">${t("rc.assistant.needsProviderTitle")}</h2>
+          <p class="relative z-10 body-lg text-muted text-center max-w-md mb-8 rc-intro rc-intro-2">${t("rc.assistant.needsProviderSub")}</p>
+          <div class="relative z-10 rc-intro rc-intro-3">
+            ${btn({ label: t("rc.assistant.needsProviderCta"), onClick: "RC.openSettingsAi()" })}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `
+    <div class="h-[calc(100vh-112px)] flex flex-col">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary shrink-0">${icon("sparkle", "w-4 h-4")}</div>
+          <div class="min-w-0">
+            <p class="caption text-muted">${t("rc.assistant.title")}</p>
+            <span class="text-sm font-medium leading-snug truncate">${app.data.activeChatId && app.data.chats.find((c) => c.id === app.data.activeChatId) ? esc(app.data.chats.find((c) => c.id === app.data.activeChatId).title) : t("rc.assistant.newChatTitle")}</span>
+            ${(mission || skill) ? `
+            <span class="flex flex-wrap items-center gap-1.5 mt-1">
+              ${mission ? `<span class="inline-flex items-center gap-1 rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">${t("rc.assistant.contextChip", { label: "M-" + mission.seq })}</span>` : ""}
+              ${skill ? `<span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-gray-500/10">${t("rc.assistant.skillChip", { name: t(`rc.skill.${skill.name}`) })}</span>` : ""}
+            </span>` : ""}
+            ${pair && pair.provider ? `<span class="font-mono text-[10px] text-muted mt-0.5">${esc(pair.provider)}${pair.model ? " · " + esc(pair.model) : ""}${pair.isCli ? " · " + t("rc.assistant.viaCli") : ""}</span>` : ""}
+          </div>
+        </div>
         <div class="flex items-center gap-2">
+          ${modelPicker}
+          <div class="w-48 hidden sm:block">${rcSelect({ id: "chat-mission-select", size: "sm", cls: "w-full", options: missionOptions, value: scope.missionId || "", onChange: "RC.setChatMission(this.value)" })}</div>
+          <div class="w-36 hidden sm:block">${rcSelect({ id: "chat-skill-select", size: "sm", cls: "w-full", options: skillOptions, value: scope.skill || "", onChange: "RC.setChatSkill(this.value)" })}</div>
+          <button onclick="RC.newChat()" title="${t("rc.assistant.newChat")}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon("plus", "w-5 h-5")}</button>
           <button onclick="RC.openChatHistory()" title="${t("rc.assistant.history")}" class="p-2 rounded-lg border border-border bg-card text-muted hover:text-foreground hover:border-primary/40 transition ring-focus">${icon("history", "w-5 h-5")}</button>
         </div>
       </div>
@@ -221,7 +475,7 @@ export function renderAssistant(app) {
               <button type="button" onclick="RC.fillChatSuggestion(this.dataset.q)" data-q="${esc(q)}" class="rounded-full border border-border bg-card px-4 py-2 text-sm text-muted hover:-translate-y-0.5 hover:border-primary/40 hover:bg-primary/5 hover:text-primary hover:shadow-sm active:scale-[0.97] transition-all duration-200 ring-focus">${esc(q)}</button>`).join("")}
           </div>
         </div>
-        <div class="relative z-10 w-full rc-intro rc-intro-4">${renderChatComposer()}</div>
+        <div class="relative z-10 w-full rc-intro rc-intro-4">${renderChatComposer(app)}</div>
       </div>` : `
       <div class="flex-1 flex flex-col min-h-0 max-w-3xl mx-auto w-full px-4">
         <div id="chat-list" class="flex-1 overflow-y-auto py-2 space-y-3">
@@ -234,7 +488,7 @@ export function renderAssistant(app) {
             </div>
           </div>` : ""}
         </div>
-        <div class="pt-3 pb-1">${renderChatComposer()}</div>
+        <div class="pt-3 pb-1">${renderChatComposer(app)}</div>
       </div>`}
     </div>`;
 }
@@ -247,18 +501,41 @@ function renderChatMessage(m, animate = false) {
       <div class="rc-bubble-user max-w-[85%] rounded-2xl rounded-br-md bg-primary text-white text-sm whitespace-pre-wrap break-words shadow-sm">${esc(m.content)}</div>
     </div>`;
   }
+  // Story 5.7/5.9: the reply attributes its provider + model (the
+  // pin-confidence attribution idiom, "GLM-5.3 · …") from its meta.
+  let attribution = "";
+  if (m.meta) {
+    try {
+      const meta = JSON.parse(m.meta);
+      if (meta && meta.provider && meta.model) {
+        attribution = `<span class="font-mono text-[10px] tabular text-muted mt-1">${esc(meta.provider)} · ${esc(meta.model)}</span>`;
+      }
+    } catch { /* meta is not attribution JSON — nothing to show */ }
+  }
   return `
   <div class="flex justify-start gap-2${anim}">
     <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary mt-0.5">${icon("book", "w-3 h-3")}</div>
-    <div class="rc-bubble-ai max-w-[82%] rounded-2xl rounded-bl-md bg-gray-100 text-foreground text-sm whitespace-pre-wrap break-words">${esc(m.content)}</div>
+    <div class="flex flex-col max-w-[82%]">
+      <div class="rc-bubble-ai rounded-2xl rounded-bl-md bg-gray-100 text-foreground text-sm whitespace-pre-wrap break-words">${esc(m.content)}</div>
+      ${attribution}
+    </div>
   </div>`;
 }
 
-function renderChatComposer() {
+function renderChatComposer(app) {
+  const attachments = composerAttachments(app);
   return `
   <div id="chat-composer" class="chat-composer relative rounded-2xl border border-border bg-card shadow-sm p-3 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/30 transition">
+    ${attachments.length ? `
+    <div class="flex flex-wrap gap-1.5 px-1.5 pt-0.5 pb-2">
+      ${attachments.map((a) => renderAttachmentChip(a, !app.data.activeChatId)).join("")}
+    </div>` : ""}
     <textarea id="chat-input" rows="1" class="w-full resize-none bg-transparent px-1.5 py-1.5 text-[15px] leading-relaxed focus:outline-none max-h-40 placeholder:text-muted" placeholder="${t("rc.assistant.placeholder")}"></textarea>
-    <div class="flex items-center justify-end mt-1.5">
+    <div class="flex items-center justify-between mt-1.5">
+      <div class="flex items-center gap-1">
+        <input type="file" id="chat-file-input" multiple class="hidden" onchange="RC.handleAttachmentFiles(this)">
+        <button id="chat-attach" type="button" onclick="RC.pickAttachments()" title="${t("rc.assistant.attach")}" class="p-2 rounded-lg text-muted hover:text-foreground hover:bg-gray-100 transition ring-focus" aria-label="${t("rc.assistant.attach")}">${icon("paperclip", "w-5 h-5")}</button>
+      </div>
       <button id="chat-send" onclick="RC.sendChatMessage()" class="rounded-lg bg-primary text-white h-9 w-9 grid place-items-center hover:opacity-90 active:scale-95 transition ring-focus" aria-label="${t("rc.assistant.send")}">${icon("arrowRight", "w-5 h-5")}</button>
     </div>
   </div>`;
@@ -568,14 +845,79 @@ function renderSettingsInterface(app) {
     </div>`;
 }
 
+// Ajustes → IA (Stories 5.7/5.8, FR-17.2/17.3): the provider-config
+// section — API providers (OpenAI / Anthropic / Google / OpenRouter /
+// custom base URL + key stored via the keychain) with a test-connection
+// run that doubles as the live model list, and CLI bridge providers
+// (codex, claude) with honest detection chips. Never the key itself —
+// only its presence (NFR-10).
 function renderSettingsAi(app) {
-  const s = app.data.settings || (app.data.settings = { baseUrl: "https://api.tokenfactory.corvex.cloud/v1", apiKey: "", model: "zai-org/GLM-5.3" });
+  const ai = app.data.aiConfig;
+  if (!ai) return `<p class="text-sm text-muted py-8 text-center">${t("rc.common.loading")}</p>`;
+  const draft = app.state.aiDraft || (app.state.aiDraft = {
+    provider: ai.provider && ai.provider !== "openai-compatible" ? ai.provider : "openai",
+    baseUrl: ai.baseUrl || "",
+    model: ai.model || "",
+    key: "",
+  });
+  const test = app.state.aiTest;
+  const isCli = ai.mode === "cli";
+  const providerOptions = ["openai", "anthropic", "google", "openrouter", "custom"].map((p) => ({
+    value: p,
+    label: t(`prov.${p}`),
+  }));
+  const custom = draft.provider === "custom";
+  const savedModels = test && test.ok ? test.models : [];
+  const cliRow = (name) => {
+    const detected = ai.cliAvailable && ai.cliAvailable[name];
+    const active = isCli && ai.cli === name;
+    return `
+    <div class="flex items-center justify-between gap-3 rounded-lg border border-border p-4 ${active ? "ring-1 ring-primary/30" : ""}">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-sm font-medium font-mono">${name}</span>
+          ${detected ? badge(t("prov.cliPresent"), "success") : badge(t("prov.cliAbsent"), "destructive")}
+          ${active ? badge(t("prov.active"), "primary") : ""}
+        </div>
+        <p class="text-xs text-muted mt-1 truncate" title="${detected ? esc(detected.path) : ""}">${detected ? esc(detected.path) : ""}</p>
+      </div>
+      ${detected ? btn({ label: t("prov.useCli"), variant: "secondary", size: "sm", onClick: `RC.useCliBridge('${name}')` }) : ""}
+    </div>`;
+  };
   return `
-    <div class="space-y-4">
-      <div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input id="set-base" value="${esc(s.baseUrl)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-      <div><label class="block text-sm font-medium mb-1.5">${t("prov.apiKey")}</label><input id="set-key" type="password" value="${esc(s.apiKey)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-      <div><label class="block text-sm font-medium mb-1.5">${t("prov.model")}</label><input id="set-model" value="${esc(s.model)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-      <p class="text-xs text-muted">${t("prov.note")}</p>
+    <div class="space-y-6">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-sm font-medium">${t("prov.title")}</span>
+        <span class="font-mono text-xs text-muted">${isCli ? esc("cli/" + ai.cli) : esc(ai.provider || "—")}${ai.model ? " · " + esc(ai.model) : isCli ? " · default" : ""}</span>
+        ${ai.configured ? badge(t("prov.active"), "success") : badge(t("prov.notConfigured"), "muted")}
+      </div>
+
+      <div>
+        <p class="text-sm font-medium mb-2">${t("prov.apiSection")}</p>
+        <div class="space-y-4">
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.provider")}</label>${rcSelect({ id: "ai-provider-select", options: providerOptions, value: draft.provider, onChange: "RC.aiDraftProvider(this.value)" })}</div>
+          ${custom ? `<div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input value="${esc(draft.baseUrl)}" oninput="RC.aiDraftField('baseUrl', this.value)" placeholder="https://api.example.com/v1" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>` : ""}
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.apiKey")}</label><input id="ai-key-input" type="password" value="${esc(draft.key)}" oninput="RC.aiDraftField('key', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"><p class="text-xs text-muted mt-1">${t("prov.note")} ${t("prov.keyKeep")}</p></div>
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.model")} ${custom ? `<span class="text-xs text-muted font-normal">(${t("prov.modelFreeEntry")})</span>` : ""}</label><input value="${esc(draft.model)}" oninput="RC.aiDraftField('model', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+          ${savedModels.length ? `<div class="flex flex-wrap gap-1.5">${savedModels.map((m) => `<button type="button" onclick="RC.aiPickModel('${esc(m)}')" class="rounded-full border border-border bg-card px-3 py-1 text-xs font-mono text-muted hover:border-primary/40 hover:text-primary transition">${esc(m)}</button>`).join("")}</div>` : ""}
+          <div class="flex flex-wrap items-center gap-2">
+            ${btn({ label: t("prov.save"), onClick: "RC.saveAiProvider()" })}
+            ${btn({ label: test && test.testing ? t("prov.testing") : t("prov.test"), variant: "secondary", onClick: "RC.testAiConnection()" })}
+          </div>
+          ${test ? (test.ok
+            ? `<p class="text-xs font-medium text-emerald-600">${t("prov.testOk")} — ${test.models.length} models</p>`
+            : `<p class="text-xs font-medium text-rose-600">${t("prov.testFail")}: ${esc(test.error || "")}</p>`) : ""}
+        </div>
+      </div>
+
+      <div>
+        <p class="text-sm font-medium mb-1">${t("prov.cliSection")}</p>
+        <p class="text-xs text-muted mb-2">${t("prov.cliDesc")}</p>
+        <div class="space-y-2">
+          ${cliRow("codex")}
+          ${cliRow("claude")}
+        </div>
+      </div>
     </div>`;
 }
 
@@ -680,6 +1022,134 @@ Object.assign(RC, {
   openRefDetail,
   closeRefDetail() {
     document.querySelectorAll(".rc-modal").forEach((el) => el.remove());
+    const app = ctx.app;
+    if (app.state) {
+      app.state.refAdd = null;
+      app.state.refConfirmingRemove = null;
+    }
+  },
+  // ---- Evented references CRUD (FR-15, Epic 5) ----
+  setRefStatusFilter(filter) {
+    const app = ctx.app;
+    app.data.refStatusFilter = filter;
+    ctx.renderMainOnly();
+  },
+  openRefAdd,
+  setRefAddMode(mode) {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f) return;
+    f.mode = mode;
+    f.error = null;
+    f.zoteroResult = null;
+    RCRefAddDrawer(app);
+  },
+  async submitRefAddArxiv() {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f || f.saving) return;
+    const url = document.getElementById("ref-arxiv-url")?.value.trim() || "";
+    if (!url) return;
+    f.values = { "ref-arxiv-url": url };
+    f.saving = true;
+    f.error = null;
+    try {
+      await api.addRefFromArxiv(url);
+      RC.closeRefDetail();
+      await ctx.loadRefs();
+    } catch (e) {
+      f.saving = false;
+      f.error = (e?.message || String(e));
+      RCRefAddDrawer(app);
+    }
+  },
+  async submitRefAddManual() {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f || f.saving) return;
+    const read = (id) => document.getElementById(id)?.value.trim() ?? "";
+    const values = {
+      "ref-manual-title": read("ref-manual-title"),
+      "ref-manual-authors": read("ref-manual-authors"),
+      "ref-manual-year": read("ref-manual-year"),
+      "ref-manual-venue": read("ref-manual-venue"),
+      "ref-manual-doi": read("ref-manual-doi"),
+      "ref-manual-url": read("ref-manual-url"),
+      "ref-manual-tags": read("ref-manual-tags"),
+    };
+    if (!values["ref-manual-title"]) return;
+    f.values = values;
+    f.saving = true;
+    f.error = null;
+    try {
+      await api.addRefManual(
+        values["ref-manual-title"],
+        values["ref-manual-authors"],
+        values["ref-manual-year"] ? parseInt(values["ref-manual-year"], 10) : null,
+        values["ref-manual-venue"],
+        values["ref-manual-doi"],
+        values["ref-manual-url"],
+        values["ref-manual-tags"],
+      );
+      RC.closeRefDetail();
+      await ctx.loadRefs();
+    } catch (e) {
+      f.saving = false;
+      f.error = (e?.message || String(e));
+      RCRefAddDrawer(app);
+    }
+  },
+  async submitZoteroImport() {
+    const app = ctx.app;
+    const f = app.state.refAdd;
+    if (!f || f.saving) return;
+    f.saving = true;
+    f.error = null;
+    try {
+      f.zoteroResult = await api.importRefsFromZotero();
+      f.saving = false;
+      await ctx.loadRefs();
+      RCRefAddDrawer(app);
+    } catch (e) {
+      f.saving = false;
+      f.error = (e?.message || String(e));
+      RCRefAddDrawer(app);
+    }
+  },
+  confirmRemoveRef(id) {
+    const app = ctx.app;
+    app.state.refConfirmingRemove = id;
+    openRefDetail(id);
+  },
+  cancelRemoveRef() {
+    const app = ctx.app;
+    const id = app.state.refConfirmingRemove;
+    app.state.refConfirmingRemove = null;
+    if (id) openRefDetail(id);
+  },
+  async removeRef(id) {
+    const app = ctx.app;
+    try {
+      await api.removeRef(id);
+      app.state.refConfirmingRemove = null;
+      await ctx.loadRefs();
+      const fresh = app.data.refs.find((r) => r.id === id);
+      if (fresh) openRefDetail(id);
+      else RC.closeRefDetail();
+    } catch (e) {
+      alert(t("rc.refs.removeError") + (e?.message || e));
+    }
+  },
+  async restoreRef(id) {
+    const app = ctx.app;
+    try {
+      await api.restoreRef(id);
+      await ctx.loadRefs();
+      if (app.data.refs.some((r) => r.id === id)) openRefDetail(id);
+      else RC.closeRefDetail();
+    } catch (e) {
+      alert(t("rc.refs.removeError") + (e?.message || e));
+    }
   },
   runReview() {
     const app = ctx.app;
@@ -697,10 +1167,20 @@ Object.assign(RC, {
     if (!text) return;
     if (!app.data.activeChatId) {
       try {
-        const chat = await api.createChat(app.data.project?.id || "p1", "asistente", text.slice(0, 46));
+        // A conversation is born with its draft scope: the mission binding
+        // and skill selected in the header (Stories 5.4/5.6).
+        const draft = app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null });
+        const chat = await api.createChat(app.data.project?.id || "p1", "asistente", text.slice(0, 46), draft.missionId, draft.skill, draft.model);
         app.data.activeChatId = chat.id;
         app.data.chatMessages[chat.id] = [];
         app.data.chats.unshift(chat);
+        // pending attachments land on the conversation the moment it exists
+        // (they belong to the conversation, not to the message — FR-16.1)
+        const pending = app.data.pendingAttachments || [];
+        if (pending.length) {
+          app.data.pendingAttachments = [];
+          await RC.addPickedAttachments(pending);
+        }
       } catch (e) {
         console.error(e);
       }
@@ -715,11 +1195,224 @@ Object.assign(RC, {
       await api.sendMessage(chatId, text);
       const fresh = await api.getChat(chatId);
       app.data.chatMessages[chatId] = fresh.messages || [];
+      app.data.chatAttachments[chatId] = fresh.attachments || [];
     } catch (e) {
       console.error(e);
-      list.push({ id: "m" + Date.now() + "x", role: "agent", content: "(" + (e?.message || e) + ")" });
+      const msg = e?.message || String(e);
+      if (msg.startsWith("no_provider_configured")) {
+        // The typed refusal (Story 5.7): refresh the honest config state —
+        // the view flips to the configure-provider screen, never a
+        // fabricated reply bubble.
+        try { app.data.aiConfig = await api.getAiConfig(); } catch { /* keep the stale state */ }
+      } else {
+        list.push({ id: "m" + Date.now() + "x", role: "agent", content: "(" + msg + ")" });
+      }
     }
     app.data.chatThinking = false;
+    ctx.renderMainOnly();
+  },
+  // A new conversation: the active chat clears and the draft scope (the
+  // header selectors) applies to the next send.
+  newChat() {
+    const app = ctx.app;
+    app.data.activeChatId = null;
+    app.data.pendingAttachments = [];
+    (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null })).model = null;
+    ctx.renderMainOnly();
+  },
+  // The mission selector (Story 5.4): re-scopes the active conversation
+  // (an explicit, history-preserving event in the core) or sets the draft
+  // scope of a conversation not yet created.
+  async setChatMission(value) {
+    const app = ctx.app;
+    const missionId = value || null;
+    if (app.data.activeChatId) {
+      try {
+        const chat = await api.setChatScope(app.data.activeChatId, missionId);
+        const i = app.data.chats.findIndex((c) => c.id === chat.id);
+        if (i >= 0) app.data.chats[i] = { ...app.data.chats[i], ...chat };
+        else app.data.chats.unshift(chat);
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null })).missionId = missionId;
+    }
+    ctx.renderMainOnly();
+  },
+  // The skill selector (Story 5.6): per-conversation, evented in the core.
+  async setChatSkill(value) {
+    const app = ctx.app;
+    const skill = value || null;
+    if (app.data.activeChatId) {
+      try {
+        const chat = await api.setChatSkill(app.data.activeChatId, skill);
+        const i = app.data.chats.findIndex((c) => c.id === chat.id);
+        if (i >= 0) app.data.chats[i] = { ...app.data.chats[i], ...chat };
+        else app.data.chats.unshift(chat);
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null })).skill = skill;
+    }
+    ctx.renderMainOnly();
+  },
+  // The model picker (Story 5.9, FR-17.4): per-conversation, evented in
+  // the core — one chat.model_set event; null = the provider default.
+  async setChatModel(value) {
+    const app = ctx.app;
+    const model = value || null;
+    if (app.data.activeChatId) {
+      try {
+        const chat = await api.setChatModel(app.data.activeChatId, model);
+        const i = app.data.chats.findIndex((c) => c.id === chat.id);
+        if (i >= 0) app.data.chats[i] = { ...app.data.chats[i], ...chat };
+        else app.data.chats.unshift(chat);
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      (app.data.assistantDraft || (app.data.assistantDraft = { missionId: null, skill: null, model: null })).model = model;
+    }
+    ctx.renderMainOnly();
+  },
+  // The configure-provider CTA (Story 5.7): straight to Ajustes → IA.
+  openSettingsAi() {
+    ctx.app.state.settingsTab = "ai";
+    RC.navigate("settings");
+  },
+  // Ajustes → IA form state (Stories 5.7/5.8): transient draft inputs kept
+  // in app.state so re-renders do not wipe what was typed.
+  aiDraftField(field, value) {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
+    draft[field] = value;
+  },
+  aiDraftProvider(value) {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
+    draft.provider = value || "openai";
+    if (value !== "custom") draft.baseUrl = "";
+    ctx.renderMainOnly();
+  },
+  aiPickModel(model) {
+    ctx.app.state.aiDraft.model = model;
+    ctx.renderMainOnly();
+  },
+  // Configure the API provider (FR-17.2): the key goes to the OS keychain
+  // via the core — never the database, never the log (NFR-10).
+  async saveAiProvider() {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || {};
+    try {
+      app.data.aiConfig = await api.configureAiProvider(
+        draft.provider || "openai",
+        draft.baseUrl || "",
+        draft.model || "",
+        draft.key || "",
+      );
+      draft.key = "";
+      app.state.aiTest = null;
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert(t("trust.saveError") + (e?.message || e));
+    }
+  },
+  // The test-connection run (Story 5.7): through the provider layer's
+  // models endpoint — a success doubles as the live model list.
+  async testAiConnection() {
+    const app = ctx.app;
+    app.state.aiTest = { testing: true };
+    ctx.renderMainOnly();
+    try {
+      app.state.aiTest = await api.testProviderConnection();
+    } catch (e) {
+      app.state.aiTest = { ok: false, models: [], error: e?.message || String(e) };
+    }
+    ctx.renderMainOnly();
+  },
+  // Switch onto a CLI bridge (FR-17.3): the CLI's own auth stays with the
+  // CLI — no key is stored, none is ever embedded in the spawn (NFR-10).
+  async useCliBridge(name) {
+    const app = ctx.app;
+    try {
+      app.data.aiConfig = await api.useCliBridge(name);
+      app.state.aiTest = null;
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert(e?.message || e);
+    }
+  },
+  // The composer's attach button (Story 5.5): the desktop opens the native
+  // picker; the browser opens the hidden file input (the mock classifies
+  // client-read content).
+  async pickAttachments() {
+    if (mockActive) {
+      document.getElementById("chat-file-input")?.click();
+      return;
+    }
+    try {
+      const picks = await api.pickAttachmentFiles();
+      if (picks && picks.length) await RC.addPickedAttachments(picks);
+    } catch (e) {
+      alert(e?.message || e);
+    }
+  },
+  async handleAttachmentFiles(input) {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    if (!files.length) return;
+    // the browser mock reads text kinds client-side; pdf/binary pass by
+    // name and the transport classifies honestly
+    const picks = [];
+    for (const f of files) {
+      const lower = f.name.toLowerCase();
+      if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".tex")) {
+        picks.push({ name: f.name, content: await f.text() });
+      } else {
+        picks.push({ name: f.name });
+      }
+    }
+    await RC.addPickedAttachments(picks);
+  },
+  // Attach picks to the active conversation — or hold them as pending chips
+  // until the first send creates it (attachments belong to the conversation).
+  async addPickedAttachments(picks) {
+    const app = ctx.app;
+    if (!picks.length) return;
+    if (app.data.activeChatId) {
+      try {
+        const out = await api.addChatAttachments(app.data.activeChatId, picks);
+        if (out.refused && out.refused.length) {
+          alert(
+            t("rc.assistant.attachRefused", { names: out.refused.map((r) => r.name).join(", ") }) +
+              "\n\n" + out.refused.map((r) => `${r.name}: ${r.reason}`).join("\n"),
+          );
+        }
+        const fresh = await api.getChat(app.data.activeChatId);
+        app.data.chatAttachments[app.data.activeChatId] = fresh.attachments || [];
+      } catch (e) {
+        alert(e?.message || e);
+      }
+    } else {
+      app.data.pendingAttachments = [...(app.data.pendingAttachments || []), ...picks];
+    }
+    ctx.renderMainOnly();
+  },
+  async removeAttachment(key, pending) {
+    const app = ctx.app;
+    if (pending) {
+      app.data.pendingAttachments = (app.data.pendingAttachments || []).filter((a) => a.name !== key);
+      ctx.renderMainOnly();
+      return;
+    }
+    try {
+      const list = await api.removeChatAttachment(app.data.activeChatId, key);
+      app.data.chatAttachments[app.data.activeChatId] = list || [];
+    } catch (e) {
+      alert(e?.message || e);
+    }
     ctx.renderMainOnly();
   },
   fillChatSuggestion(q) {
@@ -748,14 +1441,22 @@ Object.assign(RC, {
         </div>
         ${chats.length ? `
         <div class="space-y-1">
-          ${chats.map((c) => `
+          ${chats.map((c) => {
+            const m = c.mission_id ? app.data.missions.find((x) => x.id === c.mission_id) : null;
+            const s = c.skill ? app.data.skills.find((x) => x.name === c.skill) : null;
+            return `
           <button onclick="RC.loadChat('${esc(c.id)}')" class="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${c.id === app.data.activeChatId ? "bg-primary/10" : "hover:bg-gray-50"}">
             ${icon("message", `w-4 h-4 shrink-0 ${c.id === app.data.activeChatId ? "text-primary" : "text-muted"}`)}
             <span class="min-w-0 flex-1">
               <span class="block text-sm font-medium truncate ${c.id === app.data.activeChatId ? "text-primary" : "text-foreground"}">${esc(c.title)}</span>
-              <span class="block text-xs text-muted mt-0.5 truncate">${esc(c.preview || "")}</span>
+              <span class="flex items-center gap-1.5 mt-0.5">
+                <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${m ? "bg-primary/5 text-primary ring-primary/20" : "bg-gray-100 text-muted ring-gray-500/10"}">${m ? `<span class="font-mono">M-${m.seq}</span>` : t("rc.assistant.scopeGeneral")}</span>
+                ${s ? `<span class="inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-muted ring-1 ring-inset ring-gray-500/10">${esc(t(`rc.skill.${s.name}`))}</span>` : ""}
+                <span class="text-xs text-muted truncate">${esc(c.preview || "")}</span>
+              </span>
             </span>
-          </button>`).join("")}
+          </button>`;
+          }).join("")}
         </div>` : `<p class="text-sm text-muted text-center py-8">${t("rc.assistant.emptyChats")}</p>`}
       </div>`;
     document.body.appendChild(overlay);
@@ -768,6 +1469,7 @@ Object.assign(RC, {
     try {
       const fresh = await api.getChat(id);
       app.data.chatMessages[id] = fresh.messages || [];
+      app.data.chatAttachments[id] = fresh.attachments || [];
       app.data.activeChatId = id;
     } catch (e) {
       console.error(e);

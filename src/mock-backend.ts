@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -35,6 +35,55 @@ const settings: Record<string, string> = {
   cache_pdfs: "true",
 };
 
+// The AI provider configuration state (Stories 5.7–5.9, FR-17): the mock
+// starts HONESTLY unconfigured — the assistant refuses sends until a real
+// provider is configured in Ajustes → IA (NFR-11: the mock no longer
+// answers the assistant with canned text out of the box).
+const aiConfig: {
+  mode: string; provider: string; baseUrl: string; model: string;
+  hasKey: boolean; cli: string; cliModel: string;
+} = { mode: "", provider: "", baseUrl: "", model: "", hasKey: false, cli: "claude", cliModel: "" };
+
+// The curated per-provider model lists (Story 5.9, FR-17.4) — the mock
+// mirrors the core's `curated_models` exactly. Custom base URLs: free
+// entry (empty list). CLI bridges list exactly ["default"] ("vía CLI").
+const CURATED_MODELS: Record<string, string[]> = {
+  openai: ["gpt-5.2", "gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
+  anthropic: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+  google: ["gemini-3-pro", "gemini-2-5-pro", "gemini-2-5-flash"],
+  openrouter: ["openrouter/auto", "anthropic/claude-sonnet-4.5", "openai/gpt-5.2", "google/gemini-3-pro"],
+};
+
+// The mock's honest CLI detection chips: codex and claude simulate as
+// present (the seeded dev machine has them); anything else is absent.
+const MOCK_CLI_PRESENT = new Set(["codex", "claude"]);
+
+function mockAiConfig() {
+  const cliAvailable: Record<string, { path: string } | null> = {};
+  for (const name of ["codex", "claude", "opencode"]) {
+    cliAvailable[name] = MOCK_CLI_PRESENT.has(name)
+      ? { path: `/usr/local/bin/${name}` }
+      : null;
+  }
+  const mode = aiConfig.mode;
+  const configured =
+    mode === "cli"
+      ? !!cliAvailable[aiConfig.cli]
+      : mode !== "simulate" &&
+        aiConfig.hasKey &&
+        (!!aiConfig.baseUrl || CURATED_MODELS[aiConfig.provider] !== undefined);
+  const models =
+    mode === "cli"
+      ? ["default"]
+      : CURATED_MODELS[aiConfig.provider] ?? [];
+  return {
+    mode, provider: aiConfig.provider, baseUrl: aiConfig.baseUrl,
+    model: aiConfig.model, hasKey: aiConfig.hasKey,
+    cli: aiConfig.cli, cliModel: aiConfig.cliModel,
+    cliAvailable, models, configured,
+  };
+}
+
 const project: Project = {
   id: "p1",
   name: "Optimización de Modelos de Atención",
@@ -59,6 +108,68 @@ const chats: Chat[] = [];
 const messages: Record<string, Message[]> = {};
 let chatSeq = 0;
 let msgSeq = 0;
+// Conversation attachments (Story 5.5): the mock keeps them in memory; the
+// text the browser read client-side rides the mock reply's context echo.
+const chatAttachments: Record<string, ChatAttachment[]> = {};
+let attachSeq = 0;
+// The curated DEFAULT scientific skill set (Story 5.6, FR-16.6) — mirrors
+// the core's seeded registry (same names, same roles, same tool bounds).
+const mockSkills: Skill[] = [
+  {
+    name: "drafter",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Redactor científico: avanzas el manuscrito — párrafos, related-work, transiciones— siempre anclados en la evidencia fijada del tablero. Cuando propongas texto para el manuscrito, inclúyelo en un bloque citado.",
+    tools: ["read_board", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "critic",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Crítico metodológico: evalúas afirmaciones, diseño y evidencia con rigor — señala supuestos débiles, afirmaciones que exceden la evidencia y citas sin anclaje. Nunca redactas texto final; evalúas.",
+    tools: ["read_board", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "librarian",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Bibliotecario: buscas y curas literatura — búsquedas dirigidas, síntesis comparativa de referencias, candados de cobertura. Puedes despachar búsquedas; nunca mutas el dominio.",
+    tools: ["search", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "verifier",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Verificador: contrastas afirmaciones contra sus fuentes — citas, números, artefactos. Distingues verificación (existencia por código) de confianza (juicio de un modelo); nunca afirmas «verificado» sin código.",
+    tools: ["verify", "read_board"],
+    builtin: true,
+  },
+  {
+    name: "synthesizer",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Sintetizador: cruzas hipótesis y evidencia del tablero en hallazgos integradores — patrones, tensiones, vacíos — con trazabilidad a los pines que los sostienen.",
+    tools: ["read_board", "read_library"],
+    builtin: true,
+  },
+  {
+    name: "note_taker",
+    provider: "",
+    model: "",
+    systemPrompt:
+      "Eres el Tomador de notas: registras la sesión de investigación — decisiones, hallazgos, pendientes — en notas concisas y consultables del tablero. Nunca propones mutaciones al dominio.",
+    tools: ["read_board"],
+    builtin: true,
+  },
+];
 const nowISO = () => "2025-09-01T12:00:00Z";
 
 // In-memory missions so the question box → mission composer flow works in-browser.
@@ -249,10 +360,33 @@ const allowedNext: Record<HypothesisStatus, HypothesisStatus[]> = {
 // Mock library refs (mirrors the core's seeded refs) so the citation
 // pin's reference picker flows in the dev browser.
 const mockRefs: Ref[] = [
-  { id: "r1", project_id: "p1", collection_id: null, title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", isbn: "", attachment: null, status: "read", tags: "transformer,attention", used: 1, citation_count: 2, created_at: nowISO() },
-  { id: "r2", project_id: "p1", collection_id: null, title: "Neural Machine Translation by Jointly Learning to Align and Translate", authors: "Bahdanau et al.", year: 2015, venue: "ICLR", doi: "10.48550/arXiv.1409.0473", url: "https://arxiv.org/abs/1409.0473", isbn: "", attachment: null, status: "read", tags: "attention,NLP", used: 1, citation_count: 1, created_at: nowISO() },
-  { id: "r3", project_id: "p1", collection_id: null, title: "Scaling Laws for Neural Language Models", authors: "Kaplan et al.", year: 2020, venue: "arXiv", doi: "10.48550/arXiv.2001.08361", url: "https://arxiv.org/abs/2001.08361", isbn: "", attachment: null, status: "read", tags: "scaling,NLP", used: 1, citation_count: 1, created_at: nowISO() },
-  { id: "r4", project_id: "p1", collection_id: null, title: "A Survey on Large Language Models", authors: "Zhao et al.", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2303.18223", url: "https://arxiv.org/abs/2303.18223", isbn: "", attachment: null, status: "unread", tags: "survey,LLM", used: 0, citation_count: 0, created_at: nowISO() },
+  { id: "r1", project_id: "p1", collection_id: null, title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", isbn: "", attachment: null, status: "read", tags: "transformer,attention", used: 1, citation_count: 2, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+  { id: "r2", project_id: "p1", collection_id: null, title: "Neural Machine Translation by Jointly Learning to Align and Translate", authors: "Bahdanau et al.", year: 2015, venue: "ICLR", doi: "10.48550/arXiv.1409.0473", url: "https://arxiv.org/abs/1409.0473", isbn: "", attachment: null, status: "read", tags: "attention,NLP", used: 1, citation_count: 1, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+  { id: "r3", project_id: "p1", collection_id: null, title: "Scaling Laws for Neural Language Models", authors: "Kaplan et al.", year: 2020, venue: "arXiv", doi: "10.48550/arXiv.2001.08361", url: "https://arxiv.org/abs/2001.08361", isbn: "", attachment: null, status: "read", tags: "scaling,NLP", used: 1, citation_count: 1, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+  { id: "r4", project_id: "p1", collection_id: null, title: "A Survey on Large Language Models", authors: "Zhao et al.", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2303.18223", url: "https://arxiv.org/abs/2303.18223", isbn: "", attachment: null, status: "unread", tags: "survey,LLM", used: 0, citation_count: 0, created_at: nowISO(), source: "arxiv", removed: false, timeline: [] },
+];
+
+// The Zotero connection state (FR-9.1 seed): the connector starts DOWN —
+// the honest unreachable state the first import attempt surfaces; the
+// retry simulates Zotero answering (the deterministic seeded import for
+// vite dev).
+let zoteroConnectorUp = false;
+
+// The seeded Zotero library the deterministic import pulls in: one item
+// duplicates r1 by DOI (the honest "already present" skip), two are new.
+const seededZoteroItems: {
+  key: string;
+  title: string;
+  authors: string;
+  year: number;
+  venue: string;
+  doi: string;
+  url: string;
+  tags: string;
+}[] = [
+  { key: "ZITEM1", title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, venue: "NeurIPS", doi: "10.48550/arXiv.1706.03762", url: "https://arxiv.org/abs/1706.03762", tags: "transformer" },
+  { key: "ZITEM2", title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces", authors: "Gu & Dao", year: 2023, venue: "arXiv", doi: "10.48550/arXiv.2312.00752", url: "https://arxiv.org/abs/2312.00752", tags: "ssm,efficiency" },
+  { key: "ZITEM3", title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks", authors: "Lewis et al.", year: 2020, venue: "NeurIPS", doi: "10.48550/arXiv.2005.11401", url: "https://arxiv.org/abs/2005.11401", tags: "rag,retrieval" },
 ];
 
 /** sha-256 hex of an excerpt — the mock mirrors the core's digest so the
@@ -1162,6 +1296,10 @@ async function mockFirstValue(paper: {
         used: 0,
         citation_count: 0,
         created_at: nowISO(),
+        source: "arxiv",
+        removed: false,
+        arxiv_id: paper.arxivId,
+        timeline: [],
       });
     }
   }
@@ -1261,11 +1399,212 @@ export const mockApi = {
   getDashboard: async () => { await delay(); return { refs_total: 24, refs_used: 11, active_actions: 3, reviews: 2 }; },
 
   // refs
-  listRefs: async () => { await delay(); return [...mockRefs]; },
+  listRefs: async (_projectId?: string, filter?: string | null) => {
+    await delay();
+    let refs = [...mockRefs];
+    if (filter === "active") refs = refs.filter((r) => !r.removed);
+    else if (filter === "removed" || filter === "archived") refs = refs.filter((r) => r.removed);
+    return refs;
+  },
   getRef: async () => { throw new Error("not in mock"); },
   createRef: async (r: any) => r as Ref,
   updateRef: async () => {},
   deleteRef: async () => {},
+
+  // ---- Evented references CRUD (FR-15, Epic 5) — the mock mirrors the
+  // core's domain/library: adds append ref.added semantics (dedup by
+  // url/doi/zotero key with the honest already_in_library refusal),
+  // removal is the auditable archived state (never destructive), restore
+  // is the un-event, and a removed ref is never pinnable.
+  addRefFromArxiv: async (url: string): Promise<Ref> => {
+    await delay(300);
+    const arxivId = parseMockArxivUrl(url);
+    const seed = seedPaper(arxivId);
+    const urlNorm = `https://arxiv.org/abs/${arxivId}`;
+    const doi = `10.48550/arXiv.${arxivId}`;
+    const dup = mockRefs.find((r) => r.url === urlNorm || r.doi === doi);
+    if (dup) {
+      throw new Error(
+        `already_in_library: \`${dup.title}\` — this reference is already in the library (added via ${dup.source ?? "arxiv"})`,
+      );
+    }
+    mockEventSeq += 1;
+    const ref: Ref = {
+      id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
+      project_id: "p1",
+      collection_id: null,
+      title: seed.title,
+      authors: seed.authors,
+      year: seed.year ?? new Date().getFullYear(),
+      venue: "arXiv",
+      doi,
+      url: urlNorm,
+      isbn: "",
+      attachment: null,
+      status: "unread",
+      tags: `arXiv,${arxivId}`,
+      used: 0,
+      citation_count: 0,
+      created_at: nowISO(),
+      source: "arxiv",
+      removed: false,
+      arxiv_id: arxivId,
+      timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
+    };
+    mockRefs.push(ref);
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
+  addRefManual: async (
+    title: string,
+    authors: string,
+    year: number | null,
+    venue: string,
+    doi: string,
+    url: string,
+    tags: string,
+  ): Promise<Ref> => {
+    await delay();
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      throw new Error(
+        "invalid_ref: ref.title must not be empty — a reference is titled (Required to launch / Requerido)",
+      );
+    }
+    const trimmedDoi = doi.trim();
+    const trimmedUrl = url.trim();
+    if (!trimmedDoi && !trimmedUrl) {
+      throw new Error("invalid_ref: a manual reference carries at least one identifier (doi or url)");
+    }
+    const dup = mockRefs.find(
+      (r) =>
+        (trimmedDoi && r.doi === trimmedDoi) || (trimmedUrl && r.url === trimmedUrl),
+    );
+    if (dup) {
+      throw new Error(
+        `already_in_library: \`${dup.title}\` — this reference is already in the library (added via ${dup.source ?? "manual"})`,
+      );
+    }
+    mockEventSeq += 1;
+    const ref: Ref = {
+      id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
+      project_id: "p1",
+      collection_id: null,
+      title: trimmedTitle,
+      authors: authors.trim(),
+      year: year ?? new Date().getFullYear(),
+      venue: venue.trim(),
+      doi: trimmedDoi,
+      url: trimmedUrl,
+      isbn: "",
+      attachment: null,
+      status: "unread",
+      tags: tags.trim(),
+      used: 0,
+      citation_count: 0,
+      created_at: nowISO(),
+      source: "manual",
+      removed: false,
+      timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
+    };
+    mockRefs.push(ref);
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
+  // The seeded Zotero connection is DOWN (the FR-9.1 seed) — the first
+  // import attempt surfaces it honestly; the retry simulates the connector
+  // answering (the deterministic seeded import for vite dev).
+  importRefsFromZotero: async (): Promise<ZoteroImportResult> => {
+    await delay(400);
+    if (!zoteroConnectorUp) {
+      zoteroConnectorUp = true;
+      throw new Error(
+        "zotero_unreachable: unreachable — the Zotero connector is not answering; is Zotero running with the local API enabled? / el conector de Zotero no responde; ¿está Zotero en ejecución con la API local activada?",
+      );
+    }
+    const result: ZoteroImportResult = {
+      imported: 0,
+      skipped: 0,
+      failed: 0,
+      refs: [],
+      skippedItems: [],
+      failedItems: [],
+    };
+    for (const item of seededZoteroItems) {
+      const title = item.title.trim();
+      if (!title) {
+        result.failed += 1;
+        result.failedItems.push(`${item.key} — no title`);
+        continue;
+      }
+      const dup = mockRefs.find(
+        (r) =>
+          (item.doi && r.doi === item.doi) ||
+          (item.url && r.url === item.url) ||
+          r.zotero_item_key === item.key,
+      );
+      if (dup) {
+        result.skipped += 1;
+        result.skippedItems.push(
+          `${dup.title} — already in the library (${dup.source ?? "zotero"})`,
+        );
+        continue;
+      }
+      mockEventSeq += 1;
+      const ref: Ref = {
+        id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
+        project_id: "p1",
+        collection_id: null,
+        title,
+        authors: item.authors,
+        year: item.year,
+        venue: item.venue,
+        doi: item.doi,
+        url: item.url,
+        isbn: "",
+        attachment: null,
+        status: "unread",
+        tags: `zotero${item.tags ? "," + item.tags : ""}`,
+        used: 0,
+        citation_count: 0,
+        created_at: nowISO(),
+        source: "zotero",
+        removed: false,
+        zotero_item_key: item.key,
+        timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
+      };
+      mockRefs.push(ref);
+      result.imported += 1;
+      result.refs.push({ ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) });
+    }
+    return result;
+  },
+  removeRef: async (refId: string): Promise<Ref> => {
+    await delay();
+    const ref = mockRefs.find((r) => r.id === refId);
+    if (!ref) throw new Error(`not_found: no reference with id \`${refId}\` in the library`);
+    if (ref.removed) {
+      throw new Error(
+        `invalid_state: the reference \`${refId}\` is already removed — restore it first (FR-15.7)`,
+      );
+    }
+    mockEventSeq += 1;
+    ref.removed = true;
+    ref.timeline = [...(ref.timeline ?? []), { seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.removed" }];
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
+  restoreRef: async (refId: string): Promise<Ref> => {
+    await delay();
+    const ref = mockRefs.find((r) => r.id === refId);
+    if (!ref) throw new Error(`not_found: no reference with id \`${refId}\` in the library`);
+    if (!ref.removed) {
+      throw new Error(
+        `invalid_state: the reference \`${refId}\` is not removed — nothing to restore`,
+      );
+    }
+    mockEventSeq += 1;
+    ref.removed = false;
+    ref.timeline = [...(ref.timeline ?? []), { seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.restored" }];
+    return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
+  },
   searchRefs: async (_pid: string, q: string) => {
     await delay();
     const needle = q.trim().toLowerCase();
@@ -1291,42 +1630,178 @@ export const mockApi = {
   updateAction: async () => {},
   deleteAction: async () => {},
 
-  // chats
+  // chats — mirrors the typed core's scoped surface (Stories 5.4–5.6):
+  // mission scope + skill per conversation, messages carrying the scope,
+  // attachments as chips, and the honest context echo on every reply.
   listChats: async (_pid: string, kind?: string) => {
     await delay();
-    return chats.filter((c) => !kind || c.kind === kind);
+    return chats.filter((c) => !kind || c.kind === kind).map((c) => ({ ...c }));
   },
-  createChat: async (pid: string, kind: string, title: string) => {
+  createChat: async (pid: string, kind: string, title: string, missionId?: string | null, skill?: string | null, model?: string | null) => {
     await delay();
+    if (missionId && !missions.some((m) => m.id === missionId)) {
+      throw new Error(`unknown mission \`${missionId}\` — a conversation can only scope to a mission that exists`);
+    }
+    const skillName = (skill || "").trim();
+    if (skillName && !mockSkills.some((s) => s.name === skillName)) {
+      throw new Error(`unknown skill \`${skillName}\` — a conversation can only run a registered skill`);
+    }
     const id = "c" + ++chatSeq;
     const c: Chat = {
       id, project_id: pid, kind, title, preview: "",
+      mission_id: missionId || null,
+      skill: skillName || null,
+      model: (model || "").trim() || null,
       created_at: nowISO(), updated_at: nowISO(),
     };
     chats.push(c);
     messages[id] = [];
-    return c;
+    chatAttachments[id] = [];
+    return { ...c };
   },
   getChat: async (id: string) => {
     await delay();
     const c = chats.find((x) => x.id === id);
     if (!c) throw new Error("chat not found");
-    return { ...c, messages: messages[id] ?? [] };
+    return {
+      ...c,
+      messages: (messages[id] ?? []).map((m) => ({ ...m })),
+      attachments: (chatAttachments[id] ?? []).map((a) => ({ ...a })),
+    };
   },
   sendMessage: async (chatId: string, content: string) => {
     await delay(120);
-    const list = messages[chatId] ?? (messages[chatId] = []);
-    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "user", content, classify_tag: null, meta: null, created_at: nowISO() });
-    // Echo a canned agent reply so the thread feels alive.
-    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: "(mock) Entendido. Esta es una respuesta de ejemplo del asistente.", classify_tag: null, meta: null, created_at: nowISO() });
     const c = chats.find((x) => x.id === chatId);
-    if (c) { c.preview = content.slice(0, 80); c.updated_at = nowISO(); }
+    if (!c) throw new Error("chat not found");
+    // The assistant honesty rule (Story 5.7, NFR-11): with NO real provider
+    // configured, assistant sends are refused with the same typed error the
+    // core returns — the mock no longer answers the assistant with canned
+    // text. Other kinds (review) keep the simulated guarantee (FR-17.5).
+    if (c.kind !== "review" && !mockAiConfig().configured) {
+      throw new Error(
+        "no_provider_configured: the assistant needs a real provider (an API provider or a CLI bridge) — configure one in Ajustes → IA / el asistente necesita un proveedor real (un proveedor de API o un puente CLI) — configura uno en Ajustes → IA",
+      );
+    }
+    const list = messages[chatId] ?? (messages[chatId] = []);
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "user", content, classify_tag: null, meta: null, mission_id: c.mission_id, created_at: nowISO() });
+    // The honest context echo (mirrors the core's simulated provider): the
+    // scoped context this send carried — board context, skill, attachments —
+    // is echoed back so vite dev demonstrates the wiring.
+    const echo: string[] = [];
+    if (c.mission_id) {
+      const mission = missions.find((m) => m.id === c.mission_id);
+      if (mission) {
+        const hyps = hypotheses.filter((h) => h.missionId === mission.id);
+        echo.push(`contexto: tablero M-${mission.seq} sincronizado (${hyps.length} hipótesis)`);
+      }
+    }
+    if (c.skill) echo.push(`skill: ${c.skill}`);
+    const attachCount = (chatAttachments[chatId] ?? []).length;
+    if (attachCount > 0) echo.push(`adjuntos: ${attachCount}`);
+    const base = "(mock) Entendido. Esta es una respuesta de ejemplo del asistente.";
+    const reply = echo.length ? `${base}\n\n— ${echo.join(" · ")}` : base;
+    // The reply carries its attribution (Story 5.7/5.9): the provider +
+    // model that produced it — the message-render idiom shows it.
+    const ai = mockAiConfig();
+    const provider = ai.mode === "cli" ? `cli/${ai.cli}` : ai.provider || "mock";
+    const model = c.model || ai.model || (ai.mode === "cli" ? "default" : "mock-model");
+    const meta = JSON.stringify({ provider, model });
+    list.push({ id: "m" + ++msgSeq, chat_id: chatId, role: "agent", content: reply, classify_tag: null, meta, mission_id: c.mission_id, created_at: nowISO() });
+    c.preview = content.slice(0, 80);
+    c.updated_at = nowISO();
     return { ok: true };
+  },
+  setChatScope: async (chatId: string, missionId: string | null) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    if (missionId && !missions.some((m) => m.id === missionId)) {
+      throw new Error(`unknown mission \`${missionId}\` — a conversation can only scope to a mission that exists`);
+    }
+    c.mission_id = missionId || null;
+    c.updated_at = nowISO();
+    return { ...c };
+  },
+  setChatSkill: async (chatId: string, skill: string | null) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    const skillName = (skill || "").trim();
+    if (skillName && !mockSkills.some((s) => s.name === skillName)) {
+      throw new Error(`unknown skill \`${skillName}\` — a conversation can only run a registered skill`);
+    }
+    c.skill = skillName || null;
+    c.updated_at = nowISO();
+    return { ...c };
+  },
+  // The per-conversation model choice (Story 5.9, FR-17.4): per-chat and
+  // history-preserving — earlier messages keep the attribution they were
+  // produced with.
+  setChatModel: async (chatId: string, model: string | null) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    c.model = (model || "").trim() || null;
+    c.updated_at = nowISO();
+    return { ...c };
+  },
+  // Skills (Story 5.6): the seeded six + user-added — a skill is data.
+  listSkills: async (): Promise<Skill[]> => {
+    await delay();
+    return mockSkills.map((s) => ({ ...s, tools: [...s.tools] }));
+  },
+  addChatAttachments: async (
+    chatId: string,
+    files: { name: string; path?: string | null; content?: string | null }[],
+  ) => {
+    await delay();
+    const c = chats.find((x) => x.id === chatId);
+    if (!c) throw new Error(`chat \`${chatId}\` not found`);
+    const list = chatAttachments[chatId] ?? (chatAttachments[chatId] = []);
+    const attached: ChatAttachment[] = [];
+    const refused: { name: string; reason: string }[] = [];
+    for (const f of files) {
+      const lower = f.name.toLowerCase();
+      // classify exactly like the core: extension + honest content check
+      let kind: ChatAttachment["kind"] = "binary";
+      if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".tex")) kind = "text";
+      else if (lower.endsWith(".pdf")) kind = "pdf";
+      if (kind === "text" && typeof f.content !== "string") {
+        refused.push({ name: f.name, reason: "`" + f.name + "`: archivo de texto ilegible / unreadable text file" });
+        continue;
+      }
+      let included = false;
+      let note = "";
+      if (kind === "text") included = true;
+      else if (kind === "pdf") note = "pdf-extraction-unavailable (el texto PDF se extrae en la app de escritorio)";
+      else note = "unsupported-inline v1";
+      const a: ChatAttachment = {
+        id: "at" + ++attachSeq + "-" + Date.now(),
+        name: f.name,
+        kind,
+        digest: "mock-" + attachSeq,
+        size_bytes: (f.content ?? "").length,
+        included,
+        truncated: false,
+        note,
+      };
+      list.push(a);
+      attached.push(a);
+    }
+    return { attached, refused };
+  },
+  removeChatAttachment: async (chatId: string, attachmentId: string) => {
+    await delay();
+    const list = chatAttachments[chatId] ?? [];
+    const i = list.findIndex((a) => a.id === attachmentId);
+    if (i >= 0) list.splice(i, 1);
+    return list.map((a) => ({ ...a }));
   },
   deleteChat: async (id: string) => {
     const i = chats.findIndex((x) => x.id === id);
     if (i >= 0) chats.splice(i, 1);
     delete messages[id];
+    delete chatAttachments[id];
   },
 
   // agents
@@ -1358,7 +1833,64 @@ export const mockApi = {
   lockState: async () => ({ policy: "never", idle_min: "", configured: false }),
 
   // LLM CLI detection
-  testCli: async (command: string) => ({ command, path: `/usr/local/bin/${command}` }),
+  // CLI detection chips (Story 5.8): honest in the mock — codex and claude
+  // simulate as present, anything else is absent (never a dead spawn).
+  testCli: async (command: string) =>
+    MOCK_CLI_PRESENT.has(command.trim())
+      ? { command, path: `/usr/local/bin/${command}` }
+      : { command, path: null },
+  // The AI provider configuration (Stories 5.7–5.9): the read the
+  // assistant's unconfigured state and Ajustes → IA render (never the key —
+  // only its presence), the configure/switch mutations, and the connection
+  // test (which doubles as the live model list for the picker).
+  getAiConfig: async () => {
+    await delay();
+    return mockAiConfig();
+  },
+  configureAiProvider: async (provider: string, baseUrl: string, model: string, apiKey: string) => {
+    await delay();
+    aiConfig.mode = "provider";
+    aiConfig.provider = provider.trim();
+    aiConfig.baseUrl = baseUrl.trim();
+    aiConfig.model = model.trim();
+    if (apiKey.trim()) aiConfig.hasKey = true;
+    return mockAiConfig();
+  },
+  useCliBridge: async (cli: string) => {
+    await delay();
+    const name = cli.trim() || "claude";
+    if (!MOCK_CLI_PRESENT.has(name)) {
+      throw new Error(
+        `cli_unavailable: the \`${name}\` CLI was not found on PATH — install it first / el CLI \`${name}\` no está en PATH`,
+      );
+    }
+    aiConfig.mode = "cli";
+    aiConfig.cli = name;
+    return mockAiConfig();
+  },
+  testProviderConnection: async () => {
+    await delay(400);
+    if (!aiConfig.hasKey) {
+      return {
+        ok: false,
+        models: [] as string[],
+        error: `provider \`${aiConfig.provider || "?"}\` has no API key stored — save one first / no hay clave guardada`,
+      };
+    }
+    const models = CURATED_MODELS[aiConfig.provider] ?? [];
+    if (!models.length) {
+      return {
+        ok: false,
+        models: [] as string[],
+        error: "the provider answered but listed no models / el proveedor respondió sin modelos",
+      };
+    }
+    return { ok: true, models, error: null };
+  },
+  listProviderModels: async (provider: string) => {
+    await delay();
+    return [...(CURATED_MODELS[provider.trim()] ?? [])];
+  },
 
   // missions
   createMission: async (m: { question: string; stopCondition: string; successCriterion: string; autonomy: Autonomy; spendCeilingCents: number; roles?: RoleConfig[] | null }) => {
@@ -1388,6 +1920,43 @@ export const mockApi = {
     return mission;
   },
   listMissions: async () => { await delay(); return [...missions]; },
+  // The dashboard's one aggregated read (Story 5.10, FR-18.1): the same
+  // composition the core folds — every widget over the mock's own reads,
+  // read-only by construction (derives from the live mock state + the
+  // seeded night, appends nothing).
+  getDashboardSummary: async (): Promise<DashboardSummary> => {
+    await delay();
+    // recent receipts: the seeded night's ledgers + any live run receipts,
+    // newest start first, capped at five (mirrors the core's fold)
+    const candidates: { runId: string; startedTs: string }[] =
+      Object.values(seededReceipts).map((r) => ({ runId: r.runId, startedTs: r.startedTs }));
+    for (const runs of Object.values(missionRuns)) {
+      for (const r of runs) {
+        if (r.kind === "run.started" && r.runId) {
+          candidates.push({ runId: r.runId, startedTs: r.ts });
+        }
+      }
+    }
+    const seen = new Set<string>();
+    const recentReceipts = candidates
+      .filter((c) => (seen.has(c.runId) ? false : seen.add(c.runId)))
+      .sort((a, b) => (a.startedTs < b.startedTs ? 1 : -1))
+      .slice(0, 5)
+      .map((c) => seededReceipts[c.runId] ?? mockReceiptFor(c.runId))
+      .filter((r): r is RunReceipt => r !== null)
+      .map((r) => ({ ...r, rows: r.rows.map((x) => ({ ...x })), models: [...r.models] }));
+    const d = currentMockDigest();
+    return {
+      missions: [...missions],
+      // the seeded night's board + the live board — the same hypotheses the
+      // readiness fold sees (replay = re-query)
+      hypotheses: [...seededReadinessHypotheses, ...hypotheses].map((h) => ({ ...h })),
+      digest: { ...d, rows: d.rows.map((r) => ({ ...r })), alerts: d.alerts.map((a) => ({ ...a })) },
+      trust: mockTrustStatus(),
+      recentReceipts,
+      readiness: mockReadinessReport(null),
+    };
+  },
   getMissionRuns: async (missionId: string) => { await delay(); return [...(missionRuns[missionId] ?? [])]; },
   // run receipts (Story 2.5, FR-6.1): the seeded ledgers plus a live fold
   // for runs the mock Night Shift created — `null` when the run id has no
@@ -1593,6 +2162,13 @@ export const mockApi = {
     if (!trimmedRef || !ref) {
       throw new Error(`invalid_ref: \`${trimmedRef}\` — no reference with this id in the library`);
     }
+    // FR-15.5 (Epic 5): a removed ref is never pinnable — the typed
+    // refusal, mirrored from the core's pin validation.
+    if (ref.removed) {
+      throw new Error(
+        `ref_removed: \`${trimmedRef}\` — this reference was removed from the library and cannot be pinned (restore it first, FR-15.5)`,
+      );
+    }
     if (!excerpt.trim()) {
       throw new Error("evidence.excerpt must not be empty — a pin quotes the passage it rests on");
     }
@@ -1624,9 +2200,10 @@ export const mockApi = {
       confidence,
       assessingModel: assessingModel.trim(),
       refLabel: `${ref.authors} ${ref.year}`,
+      refRemoved: false,
       verification: carriedStale,
     };
-    return { ...claim };
+    return { ...claim, pin: { ...claim.pin } };
   },
   // FR-3.3 (Story 1.8): a numerical pin anchors the claim to an artifact
   // (file/figure/table) by artifact_ref + the sha-256 of the pinned
@@ -1682,7 +2259,19 @@ export const mockApi = {
     await delay();
     return claims
       .filter((c) => c.hypothesisId === hypothesisId)
-      .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
+      .map((c) => ({
+        ...c,
+        // FR-15.6: the pin stays pinned; the "source removed" flag reads
+        // the ref's CURRENT archived state (it clears on restore).
+        pin: c.pin
+          ? {
+              ...c.pin,
+              refRemoved: c.pin.refId
+                ? (mockRefs.find((r) => r.id === c.pin!.refId)?.removed ?? false)
+                : false,
+            }
+          : null,
+      }));
   },
   // Pin verification (Story 4.2, FR-14.1): the mock mirrors the core's
   // no-LLM check — re-read each pin's source from the seeded corpus and

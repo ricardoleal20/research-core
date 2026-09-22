@@ -8,6 +8,7 @@ import { icon, esc, btn, toggleRcSelect, pickRcSelect, closeRcSelects } from "./
 import { renderLock, bindLock, renderWizard } from "./ui/lock";
 import { RC as RC_BUS, ctx } from "./ui/rc";
 import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer } from "./ui/missions";
+import { renderDashboard } from "./ui/dashboard";
 import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings } from "./ui/screens";
 
 // ========== ACCENT SLOT (the bible's six swappable options) ==========
@@ -81,8 +82,12 @@ const app = {
     mcp: [],
     chats: [],
     chatMessages: {},
+    chatAttachments: {}, // chatId -> ChatAttachment[] (the composer's chips)
+    pendingAttachments: [], // picks of a conversation not yet created
     activeChatId: null,
     chatThinking: false,
+    skills: [], // the skills registry (Story 5.6): the curated six + user-added
+    assistantDraft: { missionId: null, skill: null }, // the scope a new conversation is born with
   },
 };
 
@@ -108,7 +113,7 @@ function applyMotion() {
 }
 
 // ========== ROUTER ==========
-const routes = ["missions", "refs", "review", "assistant", "actions", "digest", "status", "settings", "board"];
+const routes = ["dashboard", "missions", "refs", "review", "assistant", "actions", "digest", "status", "settings", "board"];
 function navigate(view) {
   if (!routes.includes(view)) view = "missions";
   app.state.previousView = app.state.view;
@@ -129,6 +134,9 @@ function unlock() {
 function renderShell() {
   const st = app.state;
   const navItems = [
+    // The home panel (Story 5.10, FR-18): above Misiones in the shell's nav
+    // idiom — but the DEFAULT landing view stays Missions (FR-1.4 stands).
+    { id: "dashboard", label: t("rc.nav.dashboard"), icon: "home" },
     { id: "missions", label: t("rc.nav.home"), icon: "target" },
     { id: "refs", label: t("rc.nav.refs"), icon: "book" },
     { id: "review", label: t("rc.nav.review"), icon: "sparkle" },
@@ -245,6 +253,7 @@ function renderMain() {
   if (!main) return;
   let html = "";
   switch (app.state.view) {
+    case "dashboard": html = renderDashboard(app); break;
     case "missions": html = renderMissionsHome(app); break;
     case "refs": html = renderRefs(app); break;
     case "review": html = renderReview(app); break;
@@ -294,6 +303,19 @@ async function loadMissions() {
   } catch (e) {
     console.error(e);
     app.data.missionsLoaded = true;
+    renderMainOnly();
+  }
+}
+
+// The dashboard's one aggregated read (Story 5.10, FR-18.1): six widgets
+// over ONE read-only fold — a render never creates events.
+async function loadDashboard() {
+  try {
+    app.data.dashboard = await api.getDashboardSummary();
+    renderMainOnly();
+  } catch (e) {
+    console.error(e);
+    app.data.dashboard = null;
     renderMainOnly();
   }
 }
@@ -350,16 +372,44 @@ async function loadRefs() {
   } catch (e) { console.error(e); }
 }
 
+// The AI provider configuration read (Stories 5.7–5.9): what the
+// assistant's configure-provider state, the model picker, and Ajustes → IA
+// render — never the key, only its presence.
+async function loadAiConfig() {
+  const ai = await guard(api.getAiConfig(), null);
+  if (ai) app.data.aiConfig = ai;
+  renderMainOnly();
+}
+
+// The assistant view's data (Stories 5.4–5.9): the conversation list, the
+// skills registry, the missions (the scope selector's options), and the AI
+// provider configuration (the unconfigured gate + the model picker).
+async function loadAssistant() {
+  const [chats, skills, ai] = await Promise.all([
+    guard(api.listChats(app.data.project?.id || "p1", "asistente"), null),
+    guard(api.listSkills(), null),
+    guard(api.getAiConfig(), null),
+  ]);
+  if (chats) app.data.chats = chats;
+  if (skills) app.data.skills = skills;
+  if (ai) app.data.aiConfig = ai;
+  if (!app.data.missionsLoaded) await loadMissions();
+  renderMainOnly();
+}
+
 function loadViewData(view) {
+  if (view === "dashboard") loadDashboard();
   if (view === "missions") loadMissions();
   if (view === "refs") loadRefs();
+  if (view === "assistant") loadAssistant();
   if (view === "digest") loadDigest();
-  if (view === "settings") { loadTrust(); loadTargets(); }
+  if (view === "settings") { loadTrust(); loadTargets(); loadAiConfig(); }
 }
 
 // ========== COMMAND PALETTE ==========
 function renderCommandPalette() {
   const commands = [
+    { name: t("rc.nav.dashboard"), action: "RC.navigate('dashboard')" },
     { name: t("rc.nav.home"), action: "RC.navigate('missions')" },
     { name: t("rc.nav.refs"), action: "RC.navigate('refs')" },
     { name: t("rc.nav.review"), action: "RC.navigate('review')" },
@@ -567,12 +617,12 @@ Object.assign(RC_BUS, {
 window.RC = RC_BUS;
 Object.assign(ctx, {
   app, render, renderMainOnly, navigate,
-  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData,
+  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
 });
 
 export { app, render, renderMainOnly, navigate };
 export {
-  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData,
+  loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
 };
 
 // ========== BOOT ==========

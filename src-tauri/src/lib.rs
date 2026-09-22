@@ -1,11 +1,14 @@
 mod agent;
+mod chat_commands;
 mod checkpoints_commands;
 mod commands;
+mod dashboard_commands;
 mod db;
 mod evidence_commands;
 mod export_commands;
 mod hypotheses_commands;
 mod jobs_commands;
+mod library_commands;
 mod mcp;
 mod missions_commands;
 mod nightshift_commands;
@@ -146,11 +149,19 @@ pub fn run() {
             commands::toggle_action,
             commands::update_action,
             commands::delete_action,
-            commands::list_chats,
-            commands::create_chat,
-            commands::get_chat,
-            commands::send_message,
-            commands::delete_chat,
+            chat_commands::list_chats,
+            chat_commands::create_chat,
+            chat_commands::get_chat,
+            chat_commands::send_message,
+            chat_commands::delete_chat,
+            chat_commands::set_chat_scope,
+            chat_commands::set_chat_skill,
+            chat_commands::set_chat_model,
+            chat_commands::list_skills,
+            chat_commands::add_skill,
+            chat_commands::pick_attachment_files,
+            chat_commands::add_chat_attachments,
+            chat_commands::remove_chat_attachment,
             commands::list_agents,
             commands::toggle_agent,
             commands::list_mcp_servers,
@@ -171,6 +182,11 @@ pub fn run() {
             commands::set_lock_key,
             commands::lock_state,
             commands::test_cli,
+            commands::get_ai_config,
+            commands::configure_ai_provider,
+            commands::use_cli_bridge,
+            commands::test_provider_connection,
+            commands::list_provider_models,
             missions_commands::create_mission,
             missions_commands::list_missions,
             missions_commands::get_mission_runs,
@@ -213,8 +229,21 @@ pub fn run() {
             search_commands::run_search,
             search_commands::get_search_disclosure,
             readiness_commands::get_readiness_report,
+            // dashboard (Story 5.10, FR-18): the home panel's one
+            // read-only aggregated fold — a composition over the read
+            // models above, never a write.
+            dashboard_commands::dashboard_summary,
             onboarding_commands::run_first_value,
             onboarding_commands::run_first_value_from_ref,
+            // library (evented references CRUD, FR-15, Epic 5): the adds
+            // (arXiv paste / manual / Zotero import) and the auditable
+            // remove/restore pair — mutations are evented in domain/library
+            // (AD-16); the legacy create_ref/delete_ref paths stay dead.
+            library_commands::add_ref_from_arxiv,
+            library_commands::add_ref_manual,
+            library_commands::import_refs_from_zotero,
+            library_commands::remove_ref,
+            library_commands::restore_ref,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

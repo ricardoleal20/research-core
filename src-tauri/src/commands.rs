@@ -2,7 +2,7 @@ use crate::agent;
 use crate::db::{self, Db};
 use crate::mcp::{self, McpRegistry, McpServerDef};
 use crate::AppPaths;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::State;
@@ -80,20 +80,15 @@ pub async fn get_dashboard(db: State<'_, Db>, project_id: String) -> Result<Valu
 }
 
 // ---------- Refs ----------
+// The library read re-folds the evented library projection (FR-15, Epic 5):
+// the legacy `refs` table is the implicit baseline, `ref.added` /
+// `ref.removed` / `ref.restored` events apply on top — archived refs read
+// with their `removed` flag. The legacy `create_ref`/`delete_ref` paths
+// stay dead (AD-16): mutations are evented in domain/library.
 #[tauri::command]
-pub async fn list_refs(db: State<'_, Db>, project_id: String, filter: Option<String>) -> Result<Vec<Value>, String> {
+pub async fn list_refs(db: State<'_, Db>, project_id: String, filter: Option<String>) -> Result<Vec<crate::domain::library::LibraryRef>, String> {
     let c = db.0.lock().await;
-    let sql = match filter.as_deref().unwrap_or("all") {
-        "used" => "SELECT * FROM refs WHERE project_id=?1 AND used=1 ORDER BY year DESC",
-        "unused" => "SELECT * FROM refs WHERE project_id=?1 AND used=0 ORDER BY year DESC",
-        f if f.starts_with("status:") => {
-            let st = f.trim_start_matches("status:");
-            let s = format!("SELECT * FROM refs WHERE project_id=?1 AND status='{st}' ORDER BY year DESC");
-            return db::query_all(&c, &s, &[&project_id]).map_err(err);
-        }
-        _ => "SELECT * FROM refs WHERE project_id=?1 ORDER BY year DESC",
-    };
-    db::query_all(&c, sql, &[&project_id]).map_err(err)
+    crate::library_commands::list_refs_inner(&c, Some(&project_id), filter.as_deref())
 }
 #[tauri::command]
 pub async fn get_ref(db: State<'_, Db>, id: String) -> Result<Value, String> {
@@ -220,81 +215,10 @@ pub async fn delete_action(db: State<'_, Db>, id: String) -> Result<(), String> 
 }
 
 // ---------- Chats ----------
-#[tauri::command]
-pub async fn list_chats(db: State<'_, Db>, project_id: String, kind: Option<String>) -> Result<Vec<Value>, String> {
-    let c = db.0.lock().await;
-    match kind {
-        Some(k) => db::query_all(&c, "SELECT * FROM chats WHERE project_id=?1 AND kind=?2 ORDER BY updated_at DESC", &[&project_id, &k]).map_err(err),
-        None => db::query_all(&c, "SELECT * FROM chats WHERE project_id=?1 ORDER BY updated_at DESC", &[&project_id]).map_err(err),
-    }
-}
-#[tauri::command]
-pub async fn create_chat(db: State<'_, Db>, project_id: String, kind: String, title: String) -> Result<Value, String> {
-    let id = uid();
-    let c = db.0.lock().await;
-    c.execute("INSERT INTO chats(id,project_id,kind,title,preview,created_at,updated_at) VALUES(?1,?2,?3,?4,'',?5,?6)",
-        params![id, project_id, kind, title, now(), now()]).map_err(err)?;
-    db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&id]).map(|o| o.unwrap_or(Value::Null)).map_err(err)
-}
-#[tauri::command]
-pub async fn get_chat(db: State<'_, Db>, id: String) -> Result<Value, String> {
-    let c = db.0.lock().await;
-    let chat = db::query_one(&c, "SELECT * FROM chats WHERE id=?1", &[&id]).map_err(err)?;
-    let messages = db::query_all(&c, "SELECT * FROM messages WHERE chat_id=?1 ORDER BY created_at", &[&id]).unwrap_or_default();
-    let mut out = chat.unwrap_or(Value::Null);
-    if let Value::Object(ref mut m) = out { m.insert("messages".into(), Value::Array(messages)); }
-    Ok(out)
-}
-#[tauri::command]
-pub async fn send_message(db: State<'_, Db>, chat_id: String, content: String) -> Result<Value, String> {
-    let c = db.0.lock().await;
-    let chat = db::query_one(&c, "SELECT project_id, kind FROM chats WHERE id=?1", &[&chat_id]).map_err(err)?.ok_or("chat not found")?;
-    let project_id = chat.get("project_id").and_then(|v| v.as_str()).ok_or("no project")?.to_string();
-    let kind = chat.get("kind").and_then(|v| v.as_str()).unwrap_or("asistente").to_string();
-    // store user message
-    let user_id = uid();
-    c.execute("INSERT INTO messages(id,chat_id,role,content,created_at) VALUES(?1,?2,'user',?3,?4)",
-        params![user_id, chat_id, &content, now()]).map_err(err)?;
-    c.execute("UPDATE chats SET preview=?2, updated_at=?3 WHERE id=?1", params![chat_id, &content, now()]).map_err(err)?;
-    drop(c);
-
-    if kind == "review" {
-        // run a review and return an agent message summarizing it
-        let result = agent::run_review(&db, &project_id, &content).await?;
-        let score = result.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let number = result.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
-        let agent_text = format!("Revisión #{} completa. Puntaje **{}/10**. Guardé la revisión y creé actions para los hallazgos de alta/media severidad.", number, score);
-        let c = db.0.lock().await;
-        let mid = uid();
-        c.execute("INSERT INTO messages(id,chat_id,role,content,classify_tag,meta,created_at) VALUES(?1,?2,'agent',?3,'review',?4,?5)",
-            params![mid, chat_id, &agent_text, result.to_string(), now()]).map_err(err)?;
-        c.execute("UPDATE chats SET updated_at=?2 WHERE id=?1", params![chat_id, now()]).map_err(err)?;
-        return Ok(json!({ "user_id": user_id, "agent_id": mid, "agent_content": agent_text, "review": result }));
-    }
-
-    // asistente: load history and reply
-    let c = db.0.lock().await;
-    let msgs_rows = db::query_all(&c, "SELECT role, content FROM messages WHERE chat_id=?1 ORDER BY created_at", &[&chat_id]).unwrap_or_default();
-    drop(c);
-    let history: Vec<agent::ChatMsg> = msgs_rows.into_iter().filter_map(|r| {
-        let role = r.get("role")?.as_str()?.to_string();
-        let content = r.get("content")?.as_str()?.to_string();
-        Some(agent::ChatMsg { role, content })
-    }).collect();
-    let (reply, tag) = agent::assistant_reply(&db, &project_id, history).await?;
-    let c = db.0.lock().await;
-    let mid = uid();
-    c.execute("INSERT INTO messages(id,chat_id,role,content,classify_tag,created_at) VALUES(?1,?2,'agent',?3,?4,?5)",
-        params![mid, chat_id, &reply, tag, now()]).map_err(err)?;
-    c.execute("UPDATE chats SET updated_at=?2 WHERE id=?1", params![chat_id, now()]).map_err(err)?;
-    Ok(json!({ "user_id": user_id, "agent_id": mid, "agent_content": reply, "tag": tag }))
-}
-#[tauri::command]
-pub async fn delete_chat(db: State<'_, Db>, id: String) -> Result<(), String> {
-    let c = db.0.lock().await;
-    c.execute("DELETE FROM chats WHERE id=?1", params![id]).map_err(err)?;
-    Ok(())
-}
+// The chat surface lives in chat_commands.rs (Epic 5): mission scoping with
+// board context, attachments, and the per-conversation skill — the
+// chats/messages tables are the legacy baseline, the scope/skill/attachment
+// movements are events in the log.
 
 // ---------- Agents ----------
 #[tauri::command]
@@ -560,16 +484,177 @@ pub async fn test_cli(command: String) -> Result<Value, String> {
 }
 
 fn which_cli(cmd: &str) -> Option<String> {
-    // Use the same augmented PATH the MCP spawner uses, so GUI .app bundles
-    // can find Homebrew/nvm-installed CLIs.
-    let path_env = mcp::augmented_path();
-    for dir in path_env.split(':') {
-        if dir.is_empty() { continue; }
-        let candidate = std::path::Path::new(dir).join(cmd);
-        if candidate.is_file() {
-            return Some(candidate.display().to_string());
+    // The provider layer's honest availability check (Story 5.8) — the
+    // same one the CLI adapter's `cli_unavailable:` refusal uses.
+    crate::adapters::providers::cli::available(cmd)
+}
+
+// ---------- AI provider configuration (Story 5.7/5.8, FR-17.2/17.3) ----------
+
+/// Does the OS keychain hold a key for one provider? (AD-16: the value
+/// never crosses this boundary — only its presence does.)
+fn keychain_has_key(conn: &Connection, provider: &str) -> bool {
+    let account = crate::eventstore::migration::keychain_account(provider);
+    if let Ok(entry) =
+        keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
+    {
+        if let Ok(key) = entry.get_password() {
+            if !key.trim().is_empty() {
+                return true;
+            }
         }
     }
-    None
+    // the legacy settings fallback (keys that could not be moved)
+    provider.trim() == db::get_setting(conn, "provider").trim()
+        && !db::get_setting(conn, "api_key").trim().is_empty()
+}
+
+/// The AI provider configuration read (Stories 5.7–5.9): everything the
+/// assistant surface and Ajustes → IA render — mode, provider, base URL,
+/// model, whether a key is stored (never the key itself), the CLI bridge
+/// state with honest per-binary detection, the model list the picker
+/// offers, and whether a REAL provider is configured (the assistant's
+/// unconfigured state renders from this).
+#[tauri::command]
+pub async fn get_ai_config(db: State<'_, Db>) -> Result<Value, String> {
+    let c = db.0.lock().await;
+    ai_config_inner(&c)
+}
+
+pub fn ai_config_inner(c: &Connection) -> Result<Value, String> {
+    use crate::adapters::providers as prov;
+    let mode = db::get_setting(c, "llm_mode");
+    let provider = db::get_setting(c, "provider");
+    let base_url = db::get_setting(c, "base_url");
+    let model = db::get_setting(c, "model");
+    let cli = prov::cli::Cli::binary_name(&db::get_setting(c, "llm_cli"));
+    let cli_model = db::get_setting(c, "llm_cli_model");
+    let has_key = keychain_has_key(c, &provider);
+    // honest CLI detection — present/absent chips (never a dead spawn)
+    let cli_available: Value = ["codex", "claude", "opencode"]
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                match which_cli(name) {
+                    Some(path) => json!({ "path": path }),
+                    None => Value::Null,
+                },
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into();
+    // is a REAL provider configured? (FR-17.1 — the assistant's gate)
+    let configured = match mode.trim() {
+        "simulate" => false,
+        "cli" => which_cli(&cli).is_some(),
+        _ => {
+            // provider mode, or legacy auto: a key + a resolvable endpoint
+            has_key
+                && (!base_url.trim().is_empty()
+                    || prov::default_base_url(&provider).is_some())
+        }
+    };
+    let models = if mode.trim() == "cli" {
+        prov::cli_models()
+    } else {
+        prov::curated_models(&provider)
+    };
+    Ok(json!({
+        "mode": mode,
+        "provider": provider,
+        "baseUrl": base_url,
+        "model": model,
+        "hasKey": has_key,
+        "cli": cli,
+        "cliModel": cli_model,
+        "cliAvailable": cli_available,
+        "models": models,
+        "configured": configured,
+    }))
+}
+
+/// Configure an API provider (FR-17.2): OpenAI / Anthropic / Google /
+/// OpenRouter, or a custom base URL + key. The key goes to the OS keychain
+/// (AD-16) — never the database, never the event log; an empty key keeps
+/// the one already stored (switching providers stores under the new
+/// provider's account).
+#[tauri::command]
+pub async fn configure_ai_provider(
+    db: State<'_, Db>,
+    provider: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<Value, String> {
+    let provider = provider.trim().to_string();
+    if provider.is_empty() {
+        return Err("configure_ai_provider: a provider name is required".into());
+    }
+    {
+        let c = db.0.lock().await;
+        db::set_setting(&c, "llm_mode", "provider").map_err(err)?;
+        db::set_setting(&c, "provider", &provider).map_err(err)?;
+        db::set_setting(&c, "base_url", base_url.trim()).map_err(err)?;
+        db::set_setting(&c, "model", model.trim()).map_err(err)?;
+        // move semantics: a legacy settings row key never (re-)enters the db
+        if !db::get_setting(&c, "api_key").trim().is_empty() {
+            db::set_setting(&c, "api_key", "").map_err(err)?;
+        }
+    }
+    if !api_key.trim().is_empty() {
+        let account = crate::eventstore::migration::keychain_account(&provider);
+        let entry = keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
+            .map_err(err)?;
+        entry.set_password(api_key.trim()).map_err(err)?;
+    }
+    let c = db.0.lock().await;
+    ai_config_inner(&c)
+}
+
+/// Switch the assistant onto a CLI bridge provider (FR-17.3, Story 5.8):
+/// `codex` or `claude` as the provider adapter. The CLI's own auth stays
+/// with the CLI — no key is stored, none is ever embedded in the spawn
+/// (NFR-10). An absent binary is honestly reported by `get_ai_config`'s
+/// detection (the UI refuses to configure a bridge it cannot detect).
+#[tauri::command]
+pub async fn use_cli_bridge(db: State<'_, Db>, cli: String) -> Result<Value, String> {
+    let cli = crate::adapters::providers::cli::Cli::binary_name(&cli);
+    let path = which_cli(&cli)
+        .ok_or_else(|| format!("cli_unavailable: the `{cli}` CLI was not found on PATH — install it first / el CLI `{cli}` no está en PATH"))?;
+    {
+        let c = db.0.lock().await;
+        db::set_setting(&c, "llm_mode", "cli").map_err(err)?;
+        db::set_setting(&c, "llm_cli", &cli).map_err(err)?;
+    }
+    let _ = path;
+    let c = db.0.lock().await;
+    ai_config_inner(&c)
+}
+
+/// Test the configured API provider's connection (Story 5.7): one GET
+/// against its models endpoint with the keychain-stored key, through the
+/// provider layer's own HTTP surface (AD-9). A success returns the LIVE
+/// model list — the picker refreshes from it (FR-17.4).
+#[tauri::command]
+pub async fn test_provider_connection(db: State<'_, Db>) -> Result<Value, String> {
+    let s = {
+        let c = db.0.lock().await;
+        crate::adapters::providers::ProviderSettings::load(&c)
+    };
+    let test = crate::adapters::providers::models::test_connection(&s).await;
+    Ok(json!({
+        "ok": test.ok,
+        "models": test.models,
+        "error": test.error,
+    }))
+}
+
+/// The model list one provider's picker offers (Story 5.9): the curated
+/// per-provider list in v1; empty for custom base URLs (free entry). CLI
+/// bridges list exactly ["default"] ("vía CLI").
+#[tauri::command]
+pub async fn list_provider_models(provider: String) -> Result<Vec<String>, String> {
+    Ok(crate::adapters::providers::curated_models(&provider))
 }
 

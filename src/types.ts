@@ -30,6 +30,35 @@ export interface Ref {
   citation_count: number;
   created_at: string;
   usages?: Usage[];
+  // Evented library state (FR-15, Epic 5): the source of the ref.added
+  // event (arxiv | zotero | manual, derived for legacy baseline rows), the
+  // archived flag while a ref.removed event masks the ref, the Zotero/arXiv
+  // identity, and the ref's own mini-timeline (receipt voice).
+  source?: string;
+  removed?: boolean;
+  zotero_item_key?: string | null;
+  arxiv_id?: string | null;
+  timeline?: RefAuditEntry[];
+}
+
+// One entry of a ref's own mini-timeline — the audit trail the detail
+// drawer renders (mono, seq + ts + actor).
+export interface RefAuditEntry {
+  seq: number;
+  ts: string;
+  actor: string; // "user" | "agent:<run_id>" | "system:<component>"
+  kind: string; // ref.added | ref.removed | ref.restored
+}
+
+// The honest Zotero import summary (FR-15.2): imported / skipped / failed
+// counts — no item is silently dropped.
+export interface ZoteroImportResult {
+  imported: number;
+  skipped: number;
+  failed: number;
+  refs: Ref[];
+  skippedItems: string[];
+  failedItems: string[];
 }
 
 export interface Usage {
@@ -85,9 +114,13 @@ export interface Chat {
   kind: string; // asistente | review
   title: string;
   preview: string;
+  mission_id: string | null; // Story 5.4 (FR-16.4): the mission scope; null = General
+  skill: string | null; // Story 5.6 (FR-16.8): the per-conversation skill; null = plain persona
+  model: string | null; // Story 5.9 (FR-17.4): the chosen model; null = the provider default
   created_at: string;
   updated_at: string;
   messages?: Message[];
+  attachments?: ChatAttachment[]; // Story 5.5: the folded active attachment chips
 }
 
 export interface Message {
@@ -97,7 +130,22 @@ export interface Message {
   content: string;
   classify_tag: string | null;
   meta: string | null;
+  mission_id: string | null; // Story 5.4: the scope the message was sent under
   created_at: string;
+}
+
+// One conversation attachment (Story 5.5, FR-16.1–16.3): stored by its
+// digest-addressed ref; text/pdf are included as provider context, binary
+// is flagged "unsupported-inline v1" — never silently dropped.
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  kind: "text" | "pdf" | "binary";
+  digest: string;
+  size_bytes: number;
+  included: boolean;
+  truncated: boolean;
+  note: string; // "" | "unsupported-inline v1" | "pdf-extraction-failed" | …
 }
 
 export interface Agent {
@@ -134,8 +182,30 @@ export type SpendState = "ok" | "near" | "blocked";
 
 // One agent role of a mission's runtime config (Story 2.1, NFR-3): a named
 // role bound to a (provider, model) pair — the core rejects a config whose
-// critic shares a drafter's pair (same_model_critic).
-export type AgentRoleName = "drafter" | "critic";
+// critic shares a drafter's pair (same_model_critic). Story 5.6 (FR-16.7)
+// grows the vocabulary with the six scientific skill roles; NFR-3's
+// different-model rule stays mission-scoped — skill roles are per-chat.
+export type AgentRoleName =
+  | "drafter"
+  | "critic"
+  | "librarian"
+  | "verifier"
+  | "synthesizer"
+  | "note_taker";
+
+// A skill definition (Story 5.6, FR-16.6–16.8): data, not code — a name,
+// a RoleConfig-shaped (provider, model) pair (empty = the configured
+// layer's model, exactly as the default drafter resolves), a system-prompt
+// role, and an allowed tool set from the closed vocabulary. The curated
+// six ship pre-installed; the registry is extensible (add_skill).
+export interface Skill {
+  name: AgentRoleName;
+  provider: string; // "" = the configured layer; "simulated" | "cli" | BYOK
+  model: string; // "" = the configured layer's model
+  systemPrompt: string;
+  tools: string[]; // closed vocabulary: search | read_board | read_library | verify
+  builtin: boolean;
+}
 
 export interface RoleConfig {
   name: AgentRoleName; // the role's name is its identity
@@ -265,6 +335,7 @@ export interface EvidencePin {
   confidence: number; // 0.0–1.0, agent-assessed
   assessingModel: string; // e.g. "GLM-5.3" — the confidence's attribution
   refLabel: string | null; // author-year from the library (citation pins only)
+  refRemoved?: boolean | null; // FR-15.6: the pinned ref was removed — "source removed" flag
   verification: PinVerification | null; // latest machine verification; null = unverified
 }
 
@@ -921,4 +992,41 @@ export interface ReadinessReport {
   blockers: ReadinessItem[];
   infos: ReadinessItem[];
   trail: ReadinessTrailRow[];
+}
+
+// The dashboard's aggregated read (Story 5.10, FR-18.1): every widget's
+// data in ONE fold over the log — a transport envelope over the existing
+// read models (missions, boards, digest, trust, receipts, readiness),
+// never a new domain model. A dashboard render never appends events.
+export interface DashboardSummary {
+  missions: Mission[]; // widget 1 (FR-18.2): status counts + active shortlist
+  hypotheses: Hypothesis[]; // widget 2 (FR-18.3): every board, across missions
+  digest: MorningDigest; // widget 3 (FR-18.4): the digest teaser's source
+  trust: TrustStatus; // widget 4 (FR-18.5): spend-vs-ceiling meters
+  recentReceipts: RunReceipt[]; // widget 5 (FR-18.6): last N runs, newest first
+  readiness: ReadinessReport; // widget 6 (FR-18.7): workspace-scoped verdict
+}
+
+// The AI provider configuration (Stories 5.7–5.9, FR-17): what Ajustes → IA
+// and the assistant surface render. The key itself NEVER crosses this
+// boundary — only its presence (NFR-10: keychain-only credentials).
+export interface AiConfig {
+  mode: string; // "" | "simulate" | "cli" | "provider"
+  provider: string; // openai | anthropic | google | openrouter | custom | …
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  cli: string; // the CLI bridge binary ("claude" when unset)
+  cliModel: string;
+  cliAvailable: Record<string, { path: string } | null>; // honest per-binary detection
+  models: string[]; // the picker's list (curated; [] = free entry; CLI = ["default"])
+  configured: boolean; // a REAL provider is configured — the assistant's gate
+}
+
+// One test-connection run (Story 5.7): ok + the live model list (the
+// picker refreshes from it), or the honest error string.
+export interface AiConnectionTest {
+  ok: boolean;
+  models: string[];
+  error: string | null;
 }

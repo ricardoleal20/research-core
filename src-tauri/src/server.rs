@@ -6,6 +6,8 @@
 // satisfies the AD-7 browser-identity AC — bridges, auth, and remote access
 // are v0.2.0.
 
+use crate::chat_commands::list_skills_inner;
+use crate::dashboard_commands::{dashboard_summary_inner, DashboardSummary};
 use crate::db::Db;
 use crate::domain::checkpoints::{fold_checkpoints, CheckpointsView};
 use crate::domain::evidence::Claim;
@@ -19,12 +21,14 @@ use crate::nightshift::morning_digest;
 use crate::proposals_commands::list_proposals_inner;
 use crate::domain::readiness::ReadinessReport;
 use crate::domain::search::SearchDisclosure;
+use crate::domain::skills::Skill;
 use crate::readiness_commands::readiness_report_inner;
 use crate::search_commands::search_disclosure_inner;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
+use serde_json::Value;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
@@ -42,6 +46,7 @@ struct ServerState {
 pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
     Router::new()
         .route("/api/missions", get(list_missions))
+        .route("/api/dashboard", get(dashboard))
         .route("/api/missions/{mission_id}/runs", get(mission_runs))
         .route("/api/missions/{mission_id}/hypotheses", get(mission_hypotheses))
         .route(
@@ -70,7 +75,10 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         )
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
+        .route("/api/skills", get(list_skills))
+        .route("/api/ai-config", get(ai_config))
         .route("/api/host-allowlist", get(host_allowlist))
+        .route("/api/refs", get(library_refs))
         .with_state(ServerState { db })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
@@ -80,6 +88,17 @@ async fn list_missions(State(state): State<ServerState>) -> Result<Json<Vec<Miss
     let c = state.db.0.lock().await;
     let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
     MissionsProjection::fold(&events).map_err(|_| internal()).map(Json)
+}
+
+/// The dashboard summary (Story 5.10, FR-18.1 — read-only per AD-14): the
+/// home panel's one aggregated read, folded over the shared core — the
+/// identical summary the desktop webview renders via the `dashboard_summary`
+/// command. No mutation is routed; a dashboard render never appends.
+async fn dashboard(
+    State(state): State<ServerState>,
+) -> Result<Json<DashboardSummary>, StatusCode> {
+    let c = state.db.0.lock().await;
+    dashboard_summary_inner(&c).map(Json).map_err(|_| internal())
 }
 
 async fn mission_runs(
@@ -96,6 +115,23 @@ async fn mission_runs(
 
 fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
+}
+
+/// The skills registry (Story 5.6, FR-16.8): the read-only list the served
+/// browser view's chat header renders — the curated six plus user-added.
+async fn list_skills(State(state): State<ServerState>) -> Result<Json<Vec<Skill>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    list_skills_inner(&c).map_err(|_| internal()).map(Json)
+}
+
+/// The AI provider configuration read (Stories 5.7–5.9, read-only per
+/// AD-14): what the served view's chat header and unconfigured state
+/// render — never the key itself, only its presence.
+async fn ai_config(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
+    let c = state.db.0.lock().await;
+    crate::commands::ai_config_inner(&c)
+        .map(Json)
+        .map_err(|_| internal())
 }
 
 /// The hypothesis board of one mission (Story 1.5, read-only per AD-14).
@@ -318,6 +354,25 @@ async fn host_allowlist(
     Ok(Json(crate::domain::jobs::fold_host_allowlist(&events)))
 }
 
+/// The references library (FR-15, Epic 5 — read-only per AD-14): the
+/// evented library fold (legacy baseline + ref.added/removed/restored
+/// events), optionally scoped to one project via `?project_id=`. Adds,
+/// removes, restores, and the Zotero import are mutations — they stay on
+/// the Tauri command path.
+async fn library_refs(
+    State(state): State<ServerState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Vec<crate::domain::library::LibraryRef>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    crate::library_commands::list_refs_inner(
+        &c,
+        params.get("project_id").map(String::as_str),
+        params.get("filter").map(String::as_str),
+    )
+    .map(Json)
+    .map_err(|_| internal())
+}
+
 /// Resolve the frontend dist dir: `RC_DIST_DIR` override, else the compile-time
 /// repo path (dev and local runs). In an installed bundle the UI ships as
 /// Tauri assets and this dir does not exist — the server then serves only the
@@ -520,13 +575,20 @@ mod tests {
         let db = test_db();
         let hypothesis_id = {
             let c = db.0.lock().await;
-            // A minimal refs table: the read path enriches pin labels from it.
-            c.execute_batch(
-                "CREATE TABLE refs (id TEXT PRIMARY KEY, title TEXT, authors TEXT, year INTEGER);",
+            // The real relational schema + one library ref: the evidence
+            // read enriches pin labels + removed flags from the library
+            // fold over it (the legacy baseline, FR-15).
+            crate::db::Db::migrate(&c).unwrap();
+            c.execute(
+                "INSERT INTO projects(id,name,folder,kind,tags,color,chapter_index,chapter_count,created_at,updated_at,is_active) \
+                 VALUES('p1','Research','~','paper','','#3B5BDB',1,1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1)",
+                [],
             )
             .unwrap();
             c.execute(
-                "INSERT INTO refs(id,title,authors,year) VALUES('ref-1','Attention Is All You Need','Vaswani et al.',2017)",
+                "INSERT INTO refs(id,project_id,title,authors,year,venue,doi,url,tags,status,used,citation_count,created_at) \
+                 VALUES('ref-1','p1','Attention Is All You Need','Vaswani et al.',2017,'NeurIPS',\
+                 '10.48550/arXiv.1706.03762','https://arxiv.org/abs/1706.03762','','read',1,2,'2026-01-01T00:00:00Z')",
                 [],
             )
             .unwrap();
@@ -926,6 +988,7 @@ mod tests {
                         mission_id: Some(mission.id),
                         role: Some("drafter".into()),
                         run_id: Some("step-1".into()),
+                        note: None,
                     })
                     .unwrap(),
                 )
@@ -1324,5 +1387,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The dashboard route (Story 5.10, FR-18.1 — read-only per AD-14): the
+    /// home panel's aggregated read over the shared core — the same fold the
+    /// `dashboard_summary` command serves the desktop webview. POST is not
+    /// routed (single writer, AD-14): a dashboard render never appends.
+    #[tokio::test]
+    async fn get_api_dashboard_folds_the_six_widgets_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold up?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A blind rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
+                        roles: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/dashboard").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let summary: DashboardSummary = body_json(res.into_body()).await;
+        assert_eq!(summary.missions.len(), 1);
+        assert!(summary.hypotheses.is_empty());
+        assert_eq!(
+            summary.digest.outcome,
+            crate::domain::digest::DigestOutcome::NoRuns
+        );
+        assert!(summary.recent_receipts.is_empty());
+        assert_eq!(summary.readiness.scope, None);
+        // single writer (AD-14): the dashboard is a read — POST is not routed
+        let res = app(db)
+            .oneshot(Request::post("/api/dashboard").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }

@@ -957,6 +957,7 @@ mod tests {
                 mission_id: Some(mission),
                 role: Some("drafter".into()),
                 run_id: Some("run-a".into()),
+                        note: None,
             })
             .unwrap())
             .unwrap();
@@ -970,6 +971,7 @@ mod tests {
                 mission_id: None,
                 role: None,
                 run_id: Some("run-a".into()),
+                        note: None,
             })
             .unwrap())
             .unwrap();

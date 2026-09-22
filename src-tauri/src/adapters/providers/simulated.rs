@@ -10,6 +10,10 @@
 
 use serde_json::json;
 
+use crate::domain::chat::{
+    ATTACHMENTS_END, ATTACHMENTS_MARKER, BOARD_CONTEXT_MARKER, SKILL_MARKER,
+};
+
 use super::{
     ChatRequest, ChatResponse, Message, ProviderClient, ProviderError, Usage,
 };
@@ -67,7 +71,13 @@ impl ProviderClient for Simulated {
             } else if system.contains(CANDIDATES_MARKER) {
                 candidates_json(system)
             } else {
-                assistant_reply(&last_user, refs_from_system(system))
+                // The assistant reply carries the honest context echo: the
+                // markers the scoped prompt carries (board context, skill,
+                // attachments) are read back so `vite` dev demonstrates the
+                // wiring (Stories 5.4–5.6 ACs).
+                let mut reply = assistant_reply(&last_user, refs_from_system(system));
+                reply.push_str(&context_echo(system));
+                reply
             };
             // Simulated calls are free: no usage to report, no spend to record.
             Ok(ChatResponse { content, usage: Usage::ZERO })
@@ -80,6 +90,40 @@ fn refs_from_system(system: &str) -> &str {
     match system.split_once(REFS_LIST_MARKER) {
         Some((_, rest)) => rest.split_once(REFS_LIST_END).map(|(refs, _)| refs).unwrap_or(rest),
         None => "",
+    }
+}
+
+/// The honest context echo (Stories 5.4–5.6): whatever scoped context the
+/// prompt carried — board context (with its mission label), the active
+/// skill, the attachments — is echoed back as a receipt line, so the mock
+/// demonstrates the wiring instead of pretending context traveled.
+fn context_echo(system: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some((_, rest)) = system.split_once(BOARD_CONTEXT_MARKER) {
+        if let Some(label) = rest.split_once(" «").map(|(label, _)| label.trim()) {
+            if !label.is_empty() {
+                parts.push(format!("contexto: tablero {label} sincronizado"));
+            }
+        }
+    }
+    if let Some((_, rest)) = system.split_once(SKILL_MARKER) {
+        if let Some(skill) = rest.split_once('»').map(|(s, _)| s.trim()) {
+            if !skill.is_empty() {
+                parts.push(format!("skill: {skill}"));
+            }
+        }
+    }
+    if let Some((_, rest)) = system.split_once(ATTACHMENTS_MARKER) {
+        let block = rest.split_once(ATTACHMENTS_END).map(|(b, _)| b).unwrap_or(rest);
+        let n = block.lines().filter(|l| l.starts_with("- ")).count();
+        if n > 0 {
+            parts.push(format!("adjuntos: {n}"));
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n— {}", parts.join(" · "))
     }
 }
 
@@ -287,6 +331,47 @@ mod tests {
         );
         assert_eq!(refs_from_system(&system), "- Ref A (x, 2020) — V");
         assert_eq!(refs_from_system("sin marcador"), "");
+    }
+
+    /// Stories 5.4–5.6: the mock echoes the scoped context it was handed —
+    /// board context (mission label), skill, attachments — and stays silent
+    /// for a plain unscoped conversation.
+    #[test]
+    fn the_mock_echoes_the_scoped_context_honestly() {
+        use crate::domain::chat::{
+            assemble_attachments_context, assemble_board_context, AttachmentContext,
+            AttachmentKind, BoardContext, BoardHypothesis,
+        };
+        let scoped = format!(
+            "Eres el Bibliotecario. {}librarian{}. {}{}\nRedacta en español.\n\n{}\n\n{}",
+            SKILL_MARKER,
+            "».",
+            REFS_LIST_MARKER,
+            "- Ref A",
+            assemble_board_context(Some(&BoardContext {
+                mission_label: "M-3".into(),
+                question: "q".into(),
+                hypotheses: vec![BoardHypothesis {
+                    label: "H-1".into(),
+                    statement: "s".into(),
+                    status: "proposed".into(),
+                    pins: vec![],
+                }],
+            })),
+            assemble_attachments_context(&[AttachmentContext {
+                name: "notas.md".into(),
+                kind: AttachmentKind::Text,
+                text: Some("x".into()),
+                truncated: false,
+            }]),
+        );
+        let echo = context_echo(&scoped);
+        assert!(echo.contains("contexto: tablero M-3 sincronizado"), "echo: {echo}");
+        assert!(echo.contains("skill: librarian"));
+        assert!(echo.contains("adjuntos: 1"));
+        // a plain conversation echoes nothing
+        let plain = format!("Eres el Asistente. {}- Ref A\n{}Redacta en español.", REFS_LIST_MARKER, "");
+        assert_eq!(context_echo(&plain), "");
     }
 
     #[test]

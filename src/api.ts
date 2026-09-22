@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
+
+// One attachment as picked, shaped for both transports: the desktop sends
+// the picked {name, path} pairs (the core reads + classifies + stores
+// locally); the pure-vite browser mock sends the client-read {name,
+// content} pairs instead. Never both.
+export type AttachmentPick = { name: string; path?: string | null; content?: string | null };
 
 // A type alias (not an interface) so it stays assignable to Tauri's
 // `InvokeArgs` (Record<string, unknown>) via the implicit index signature.
@@ -35,8 +41,213 @@ async function httpJson<T>(path: string): Promise<T> {
 
 const browserApi = {
   ...mockApi,
+  // Chat intelligence (Stories 5.4–5.6): the skills list is a read (the
+  // served view renders the chat header's selector over the same-origin
+  // API); every send, scope/skill change, and attachment mutation is
+  // refused in the served read-only view (AD-14) — the pure-vite mock
+  // keeps all of it working in-browser.
+  listSkills: async (): Promise<Skill[]> => {
+    if (await servedByCore) return httpJson<Skill[]>("/api/skills");
+    return mockApi.listSkills();
+  },
+  createChat: async (
+    _projectId: string,
+    _kind: string,
+    _title: string,
+    _missionId?: string | null,
+    _skill?: string | null,
+    _model?: string | null,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.createChat(_projectId, _kind, _title, _missionId, _skill, _model);
+  },
+  sendMessage: async (_chatId: string, _content: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — send messages from the desktop app / " +
+          "Vista de solo lectura — envía mensajes desde la app de escritorio",
+      );
+    }
+    return mockApi.sendMessage(_chatId, _content);
+  },
+  setChatScope: async (_chatId: string, _missionId: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.setChatScope(_chatId, _missionId);
+  },
+  setChatSkill: async (_chatId: string, _skill: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.setChatSkill(_chatId, _skill);
+  },
+  // The per-conversation model choice (Story 5.9, FR-17.4): a mutation —
+  // the served read-only view refuses it; the pure-vite mock serves it.
+  setChatModel: async (_chatId: string, _model: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage chats from the desktop app / " +
+          "Vista de solo lectura — gestiona los chats desde la app de escritorio",
+      );
+    }
+    return mockApi.setChatModel(_chatId, _model);
+  },
+  // The AI provider configuration read (Stories 5.7–5.9): over the
+  // same-origin read-only API when served by the core, the in-memory mock
+  // in plain `vite` dev. Never carries the key — only its presence.
+  getAiConfig: async (): Promise<AiConfig> => {
+    if (await servedByCore) return httpJson<AiConfig>("/api/ai-config");
+    return mockApi.getAiConfig();
+  },
+  // Provider configuration + CLI bridge switching + connection testing
+  // (Stories 5.7/5.8): mutations — the served read-only view refuses them.
+  configureAiProvider: async (
+    _provider: string,
+    _baseUrl: string,
+    _model: string,
+    _apiKey: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — configure providers from the desktop app / " +
+          "Vista de solo lectura — configura proveedores desde la app de escritorio",
+      );
+    }
+    return mockApi.configureAiProvider(_provider, _baseUrl, _model, _apiKey);
+  },
+  useCliBridge: async (_cli: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — configure providers from the desktop app / " +
+          "Vista de solo lectura — configura proveedores desde la app de escritorio",
+      );
+    }
+    return mockApi.useCliBridge(_cli);
+  },
+  testProviderConnection: async (): Promise<AiConnectionTest> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — test connections from the desktop app / " +
+          "Vista de solo lectura — prueba conexiones desde la app de escritorio",
+      );
+    }
+    return mockApi.testProviderConnection();
+  },
+  // The curated per-provider model list (Story 5.9): pure data, both
+  // transports answer locally.
+  listProviderModels: async (_provider: string): Promise<string[]> => {
+    return mockApi.listProviderModels(_provider);
+  },
+  addChatAttachments: async (
+    _chatId: string,
+    _files: AttachmentPick[],
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — attach files from the desktop app / " +
+          "Vista de solo lectura — adjunta archivos desde la app de escritorio",
+      );
+    }
+    return mockApi.addChatAttachments(_chatId, _files);
+  },
+  removeChatAttachment: async (_chatId: string, _attachmentId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage attachments from the desktop app / " +
+          "Vista de solo lectura — gestiona los adjuntos desde la app de escritorio",
+      );
+    }
+    return mockApi.removeChatAttachment(_chatId, _attachmentId);
+  },
+  // The references library (FR-15, Epic 5): the read goes to the
+  // same-origin read-only API over the shared core (the evented library
+  // fold — legacy baseline + ref.added/removed/restored); every mutation
+  // below is refused in the served read-only browser view (AD-14) and
+  // served by the in-memory mock in plain `vite` dev.
+  listRefs: async (projectId: string, filter?: string | null) => {
+    if (await servedByCore) {
+      const params = new URLSearchParams({ projectId });
+      if (filter) params.set("filter", filter);
+      return httpJson<Ref[]>(`/api/refs?${params.toString()}`);
+    }
+    return mockApi.listRefs(projectId, filter);
+  },
+  addRefFromArxiv: async (_url: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.addRefFromArxiv(_url);
+  },
+  addRefManual: async (
+    _title: string,
+    _authors: string,
+    _year: number | null,
+    _venue: string,
+    _doi: string,
+    _url: string,
+    _tags: string,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.addRefManual(_title, _authors, _year, _venue, _doi, _url, _tags);
+  },
+  importRefsFromZotero: async () => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.importRefsFromZotero();
+  },
+  removeRef: async (_refId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.removeRef(_refId);
+  },
+  restoreRef: async (_refId: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.restoreRef(_refId);
+  },
   listMissions: async () =>
     (await servedByCore) ? httpJson<Mission[]>("/api/missions") : mockApi.listMissions(),
+  // The dashboard's one aggregated read (Story 5.10, FR-18.1): over the
+  // same-origin read-only API when served by the core (the identical fold
+  // the desktop webview renders via the `dashboard_summary` command); the
+  // in-memory mock in plain `vite` dev. A pure composition over the
+  // existing read models — never a write, never an event.
+  getDashboardSummary: async (): Promise<DashboardSummary> => {
+    if (await servedByCore) return httpJson<DashboardSummary>("/api/dashboard");
+    return mockApi.getDashboardSummary();
+  },
   getMissionRuns: async (missionId: string) =>
     (await servedByCore)
       ? httpJson<MissionRun[]>(`/api/missions/${missionId}/runs`)
@@ -450,14 +661,38 @@ export const api = mockActive ? browserApi : {
 
   // dashboard
   getDashboard: (projectId: string) => invoke<any>("get_dashboard", { projectId }),
+  // The home panel's one read-only aggregated fold (Story 5.10, FR-18.1):
+  // six widgets over one log read — never a write.
+  getDashboardSummary: () => invoke<DashboardSummary>("dashboard_summary"),
 
-  // refs
-  listRefs: (projectId: string, filter?: string) => invoke<Ref[]>("list_refs", { projectId, filter: filter ?? null }),
+  // refs — the read re-folds the evented library projection (legacy
+  // baseline + ref.* events, FR-15); the legacy create_ref/update_ref/
+  // delete_ref relational commands stay dead (AD-16) — the mutations are
+  // the evented pair below.
+  listRefs: (projectId: string, filter?: string | null) =>
+    invoke<Ref[]>("list_refs", { projectId, filter: filter ?? null }),
   getRef: (id: string) => invoke<Ref>("get_ref", { id }),
   createRef: (r: any) => invoke<Ref>("create_ref", r),
   updateRef: (r: any) => invoke<void>("update_ref", r),
   deleteRef: (id: string) => invoke<void>("delete_ref", { id }),
   searchRefs: (projectId: string, q: string) => invoke<Ref[]>("search_refs", { projectId, q }),
+  // evented references CRUD (FR-15, Epic 5): arXiv paste (the shared
+  // fetch adapter behind the onboarding first-value flow), manual entry
+  // (title + one identifier), the deduped Zotero import, and the
+  // auditable remove/restore pair.
+  addRefFromArxiv: (url: string) => invoke<Ref>("add_ref_from_arxiv", { url }),
+  addRefManual: (
+    title: string,
+    authors: string,
+    year: number | null,
+    venue: string,
+    doi: string,
+    url: string,
+    tags: string,
+  ) => invoke<Ref>("add_ref_manual", { title, authors, year, venue, doi, url, tags }),
+  importRefsFromZotero: () => invoke<ZoteroImportResult>("import_refs_from_zotero"),
+  removeRef: (refId: string) => invoke<Ref>("remove_ref", { refId }),
+  restoreRef: (refId: string) => invoke<Ref>("restore_ref", { refId }),
   searchRefsExternal: (q: string) => invoke<any[]>("search_refs_external", { q }),
   listCollections: (projectId: string) => invoke<any[]>("list_collections", { projectId }),
 
@@ -472,12 +707,68 @@ export const api = mockActive ? browserApi : {
   updateAction: (a: any) => invoke<void>("update_action", a),
   deleteAction: (id: string) => invoke<void>("delete_action", { id }),
 
-  // chats
+  // chats — the scoped surface (Stories 5.4–5.6): mission scope + skill per
+  // conversation, messages carrying the scope, attachments as digest-stored
+  // refs; every binding movement is evented in the core (chat.scoped /
+  // chat.skill_set / chat.attachment_*)
   listChats: (projectId: string, kind?: string) => invoke<Chat[]>("list_chats", { projectId, kind: kind ?? null }),
-  createChat: (projectId: string, kind: string, title: string) => invoke<Chat>("create_chat", { projectId, kind, title }),
+  createChat: (
+    projectId: string,
+    kind: string,
+    title: string,
+    missionId?: string | null,
+    skill?: string | null,
+    model?: string | null,
+  ) =>
+    invoke<Chat>("create_chat", {
+      projectId,
+      kind,
+      title,
+      missionId: missionId ?? null,
+      skill: skill ?? null,
+      model: model ?? null,
+    }),
   getChat: (id: string) => invoke<Chat>("get_chat", { id }),
   sendMessage: (chatId: string, content: string) => invoke<any>("send_message", { chatId, content }),
   deleteChat: (id: string) => invoke<void>("delete_chat", { id }),
+  setChatScope: (chatId: string, missionId: string | null) =>
+    invoke<Chat>("set_chat_scope", { chatId, missionId }),
+  setChatSkill: (chatId: string, skill: string | null) =>
+    invoke<Chat>("set_chat_skill", { chatId, skill }),
+  // The per-conversation model choice (Story 5.9, FR-17.4): one
+  // `chat.model_set` event + the row's projection; null = the provider
+  // default. History-preserving — earlier messages keep their attribution.
+  setChatModel: (chatId: string, model: string | null) =>
+    invoke<Chat>("set_chat_model", { chatId, model }),
+  // The AI provider configuration (Stories 5.7–5.9): the read the
+  // assistant's unconfigured state and Ajustes → IA render, the API/CLI
+  // bridge configuration mutations, and the test-connection run (through
+  // the provider layer's models endpoint — the live model list).
+  getAiConfig: () => invoke<AiConfig>("get_ai_config"),
+  configureAiProvider: (provider: string, baseUrl: string, model: string, apiKey: string) =>
+    invoke<AiConfig>("configure_ai_provider", { provider, baseUrl, model, apiKey }),
+  useCliBridge: (cli: string) => invoke<AiConfig>("use_cli_bridge", { cli }),
+  testProviderConnection: () =>
+    invoke<AiConnectionTest>("test_provider_connection"),
+  listProviderModels: (provider: string) =>
+    invoke<string[]>("list_provider_models", { provider }),
+  // skills (Story 5.6): the registry is data — the curated six plus
+  // user-added; addSkill grows the pool without code changes
+  listSkills: () => invoke<Skill[]>("list_skills"),
+  addSkill: (name: string, provider: string, model: string, systemPrompt: string, tools: string[]) =>
+    invoke<Skill>("add_skill", { name, provider, model, systemPrompt, tools }),
+  // attachments (Story 5.5): the desktop file picker + the attach/remove
+  // pair; the core reads, classifies (text/pdf/binary), digests, and
+  // stores locally — content leaves only inside the provider call (NFR-12)
+  pickAttachmentFiles: () =>
+    invoke<{ name: string; path: string }[]>("pick_attachment_files"),
+  addChatAttachments: (chatId: string, files: { name: string; path: string }[]) =>
+    invoke<{ attached: ChatAttachment[]; refused: { name: string; reason: string }[] }>(
+      "add_chat_attachments",
+      { chatId, files },
+    ),
+  removeChatAttachment: (chatId: string, attachmentId: string) =>
+    invoke<ChatAttachment[]>("remove_chat_attachment", { chatId, attachmentId }),
 
   // agents
   listAgents: () => invoke<Agent[]>("list_agents"),
