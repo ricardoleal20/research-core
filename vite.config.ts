@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 // Tauri expects a fixed dev server port and the same host.
 export default defineConfig({
@@ -14,4 +15,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
   },
+  // Svelte 5 (runes) surfaces are added view-by-view alongside the existing
+  // vanilla TS views (AD-8); the plugin only compiles .svelte files.
+  plugins: [svelte()],
 });

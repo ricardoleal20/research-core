@@ -1,8 +1,15 @@
+use crate::eventstore;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub struct Db(pub Mutex<Connection>);
+/// The one database handle. `Arc` inside so the in-process server shell
+/// (AD-7) reads the SAME core instance the Tauri commands use — one process,
+/// one writer (AD-14); the clone shares the single connection, never opens a
+/// second one.
+#[derive(Clone)]
+pub struct Db(pub Arc<Mutex<Connection>>);
 
 impl Db {
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
@@ -10,13 +17,23 @@ impl Db {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
         Self::migrate(&conn)?;
         Self::seed(&conn)?;
-        Ok(Self(Mutex::new(conn)))
+        Self::init_eventstore(&conn)?;
+        Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
-    fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    /// Create the append-only `events` table and run the one-time legacy
+    /// import (AD-16). Idempotent: re-opens detect the `migration.completed`
+    /// marker and skip.
+    fn init_eventstore(conn: &Connection) -> rusqlite::Result<()> {
+        eventstore::EventStore::init(conn).map_err(ev_err)?;
+        eventstore::migration::run(conn).map_err(ev_err)?;
+        Ok(())
+    }
+
+    pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS projects (
@@ -157,7 +174,7 @@ impl Db {
         Ok(())
     }
 
-    fn seed(conn: &Connection) -> rusqlite::Result<()> {
+    pub(crate) fn seed(conn: &Connection) -> rusqlite::Result<()> {
         // Settings defaults (only if absent)
         let defaults = [
             ("lang", "es"),
@@ -226,6 +243,48 @@ impl Db {
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opening a workspace runs the one-time import (AD-16); re-opening it
+    /// must not re-import — the `migration.completed` marker makes it
+    /// idempotent (Story 1.1 AC).
+    #[test]
+    fn opening_a_workspace_twice_does_not_reimport() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("rc-db-open-test-{}.sqlite", uuid::Uuid::new_v4()));
+
+        let head_after_first;
+        {
+            let db = Db::open(&path).unwrap();
+            let conn = db.0.blocking_lock();
+            let store = eventstore::EventStore::new(&conn);
+            let all = store.events_all().unwrap();
+            assert!(!all.is_empty(), "first open must import the legacy state");
+            assert!(
+                all.iter().any(|e| e.kind == "migration.completed"),
+                "first open must append the marker"
+            );
+            head_after_first = store.head_seq().unwrap();
+        }
+        {
+            let db = Db::open(&path).unwrap();
+            let conn = db.0.blocking_lock();
+            let store = eventstore::EventStore::new(&conn);
+            assert_eq!(
+                store.head_seq().unwrap(),
+                head_after_first,
+                "re-opening must not append anything"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    }
 }
 
 fn uid() -> String {
@@ -345,6 +404,7 @@ fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
 pub fn recreate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA foreign_keys=OFF;
+         DROP TABLE IF EXISTS events;
          DROP TABLE IF EXISTS messages;
          DROP TABLE IF EXISTS chats;
          DROP TABLE IF EXISTS actions;
@@ -363,7 +423,17 @@ pub fn recreate(conn: &Connection) -> rusqlite::Result<()> {
     Db::seed(conn)?;
     // Remove the demo seed project so the user starts with no projects.
     conn.execute("DELETE FROM projects", [])?;
+    // Rebuild the event log and re-import the freshly-seeded legacy state.
+    Db::init_eventstore(conn)?;
     Ok(())
+}
+
+/// Map eventstore errors into the Db's rusqlite::Result.
+fn ev_err(e: eventstore::EventError) -> rusqlite::Error {
+    match e {
+        eventstore::EventError::Db(e) => e,
+        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+    }
 }
 
 pub fn row_to_value(r: &rusqlite::Row) -> rusqlite::Result<Value> {

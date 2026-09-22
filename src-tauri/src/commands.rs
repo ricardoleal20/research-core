@@ -162,12 +162,12 @@ pub async fn list_reviews(db: State<'_, Db>, project_id: String) -> Result<Vec<V
     for r in reviews.iter_mut() {
         if let Some(d) = r.get("dims").and_then(|v| v.as_str()) {
             if let Ok(parsed) = serde_json::from_str::<Value>(d) {
-                if let Value::Object(ref mut m) = r { m.insert("dims".into(), parsed); }
+                if let Value::Object(m) = r { m.insert("dims".into(), parsed); }
             }
         }
         let rid = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let findings = db::query_all(&c, "SELECT * FROM findings WHERE review_id=?1 ORDER BY rowid", &[&rid]).unwrap_or_default();
-        if let Value::Object(ref mut m) = r { m.insert("findings".into(), Value::Array(findings)); }
+        if let Value::Object(m) = r { m.insert("findings".into(), Value::Array(findings)); }
     }
     Ok(reviews)
 }
@@ -400,6 +400,33 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<Value, String> {
 pub async fn update_setting(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
     let c = db.0.lock().await;
     db::set_setting(&c, &key, &value).map_err(err)
+}
+
+/// Store the provider API key in the OS keychain (AD-16 / Story 1.6:
+/// keychain-only credentials) under the currently configured provider's
+/// account, and clear the legacy `settings.api_key` row so the value never
+/// (re-)enters the database. An empty key clears the stored credential
+/// (the wizard's simulate/cli modes).
+#[tauri::command]
+pub async fn set_provider_key(db: State<'_, Db>, key: String) -> Result<(), String> {
+    let c = db.0.lock().await;
+    let provider = db::get_setting(&c, "provider");
+    let account = crate::eventstore::migration::keychain_account(&provider);
+    let entry = keyring::Entry::new(crate::eventstore::migration::KEYCHAIN_SERVICE, &account)
+        .map_err(err)?;
+    let key = key.trim();
+    if key.is_empty() {
+        // Clearing: best effort — a keychain we cannot delete from is the
+        // same keychain we cannot read from, so the key stays unusable.
+        let _ = entry.delete_credential();
+    } else {
+        entry.set_password(key).map_err(err)?;
+    }
+    // Move semantics: the key never (re-)enters the database.
+    if !db::get_setting(&c, "api_key").trim().is_empty() {
+        db::set_setting(&c, "api_key", "").map_err(err)?;
+    }
+    Ok(())
 }
 
 /// Danger zone: drop every table and rebuild the schema + seed defaults.

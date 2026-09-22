@@ -1,7 +1,28 @@
 mod agent;
+mod checkpoints_commands;
 mod commands;
 mod db;
+mod evidence_commands;
+mod export_commands;
+mod hypotheses_commands;
+mod jobs_commands;
 mod mcp;
+mod missions_commands;
+mod nightshift_commands;
+mod onboarding_commands;
+mod proposals_commands;
+mod readiness_commands;
+mod trust_commands;
+mod verifier_commands;
+mod nightshift;
+mod runtime;
+mod search_commands;
+mod server;
+mod trust;
+
+pub mod adapters;
+pub mod domain;
+pub mod eventstore;
 
 use db::Db;
 use mcp::McpRegistry;
@@ -30,8 +51,15 @@ pub fn run() {
             app.manage(AppPaths { data_dir: data_dir.clone(), log_dir });
             let db_path = data_dir.join("research-core.sqlite");
             let db = Db::open(&db_path).expect("failed to open database");
-            app.manage(db);
+            app.manage(db.clone());
             app.manage(McpRegistry::new());
+            // In-process server shell (AD-7): the same app in the browser —
+            // same core instance, one writer (AD-14), read-only API.
+            server::spawn(db.clone());
+            // Night Shift scheduler (FR-4.1): one tick per minute — due
+            // missions run their nightly literature scan, dead runs are
+            // reaped honestly, and terminators evaluate (AD-12).
+            nightshift::spawn(db);
 
             // native macOS menu
             #[cfg(target_os = "macos")]
@@ -133,6 +161,7 @@ pub fn run() {
             commands::list_mcp_tools,
             commands::get_settings,
             commands::update_setting,
+            commands::set_provider_key,
             commands::reset_database,
             commands::app_log,
             commands::get_app_paths,
@@ -142,6 +171,50 @@ pub fn run() {
             commands::set_lock_key,
             commands::lock_state,
             commands::test_cli,
+            missions_commands::create_mission,
+            missions_commands::list_missions,
+            missions_commands::get_mission_runs,
+            missions_commands::get_run_receipt,
+            missions_commands::run_agent_step,
+            jobs_commands::declare_compute_target,
+            jobs_commands::list_compute_targets,
+            jobs_commands::get_host_allowlist,
+            jobs_commands::set_host_allowlist,
+            jobs_commands::submit_job,
+            jobs_commands::poll_jobs,
+            jobs_commands::fetch_job,
+            jobs_commands::fetch_job_results,
+            nightshift_commands::get_morning_digest,
+            nightshift_commands::run_night_shift_now,
+            nightshift_commands::set_mission_schedule,
+            hypotheses_commands::create_hypothesis,
+            hypotheses_commands::list_hypotheses,
+            hypotheses_commands::transition_hypothesis,
+            hypotheses_commands::add_relation,
+            evidence_commands::register_claim,
+            evidence_commands::pin_claim_to_citation,
+            evidence_commands::pin_claim_to_numerical,
+            evidence_commands::list_evidence,
+            verifier_commands::run_pin_verification,
+            export_commands::export_workspace,
+            export_commands::inspect_export,
+            proposals_commands::list_proposals,
+            proposals_commands::approve_proposal,
+            proposals_commands::reject_proposal,
+            trust_commands::get_trust_status,
+            trust_commands::configure_autonomy,
+            trust_commands::configure_ceiling,
+            trust_commands::kill_runtime,
+            trust_commands::resume_runtime,
+            checkpoints_commands::create_checkpoint,
+            checkpoints_commands::list_checkpoints,
+            checkpoints_commands::preview_rollback,
+            checkpoints_commands::rollback_to_checkpoint,
+            search_commands::run_search,
+            search_commands::get_search_disclosure,
+            readiness_commands::get_readiness_report,
+            onboarding_commands::run_first_value,
+            onboarding_commands::run_first_value_from_ref,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -251,6 +251,36 @@ impl McpRegistry {
 
 // ---- built-in research adapters (REST, not MCP) ----
 
+/// Probe one research connection (FR-9.1 telemetry, Story 2.6): is the
+/// connector reachable? Any HTTP answer means ALIVE — even a 4xx/5xx proves
+/// the connection carries traffic; only a timeout or network error is a
+/// failure, reported as a code-form reason (bilingual-safe, EXPERIENCE.md).
+/// Unknown names probe nothing (`Ok`): nothing is configured to check.
+/// Budget: 5 seconds per probe.
+pub async fn probe_connection(name: &str) -> Result<(), String> {
+    let url = match name {
+        "arxiv" => "https://export.arxiv.org/api/query?id_list=1706.03762",
+        "semantic_scholar" => {
+            "https://api.semanticscholar.org/graph/v1/paper/arXiv:1706.03762?fields=paperId"
+        }
+        // Zotero's local connector answers on its well-known port — any HTTP
+        // answer (even 404) means the connector is running.
+        "zotero" => "http://localhost:23119/api/",
+        _ => return Ok(()),
+    };
+    let client = reqwest::Client::builder()
+        .user_agent("research-core/0.1")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("probe_error: {e}"))?;
+    match client.get(url).send().await {
+        Ok(_) => Ok(()),
+        Err(e) if e.is_timeout() => Err("timeout".into()),
+        Err(e) if e.is_connect() => Err("unreachable".into()),
+        Err(e) => Err(format!("probe_error: {e}")),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub title: String,
@@ -273,6 +303,25 @@ pub async fn arxiv_search(query: &str, max: u32) -> Result<Vec<SearchResult>, St
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let text = resp.text().await.map_err(|e| e.to_string())?;
     Ok(parse_arxiv_atom(&text))
+}
+
+/// Fetch one paper's metadata by arXiv id via the public export API (the
+/// onboarding paste flow, Story 1.9). A data fetch, not an LLM call — so it
+/// lives here in the research-adapters module rather than behind the provider
+/// layer (AD-9 governs LLM calls only). `Ok(None)` = the id exists on no
+/// paper.
+pub async fn arxiv_fetch(arxiv_id: &str) -> Result<Option<SearchResult>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("research-core/0.1")
+        .timeout(std::time::Duration::from_secs(20))
+        .build().map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://export.arxiv.org/api/query?id_list={}",
+        urlencoding::encode(arxiv_id)
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(parse_arxiv_atom(&text).into_iter().next())
 }
 
 fn parse_arxiv_atom(xml: &str) -> Vec<SearchResult> {
