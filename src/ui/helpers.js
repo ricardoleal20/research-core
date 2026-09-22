@@ -47,6 +47,9 @@ const iconMap = {
   personal: `<svg class="{cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-7"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M9 8h6"/><path d="M9 12h6"/><rect x="7" y="12" width="10" height="3" rx="1"/></svg>`,
   target: `<svg class="{cls}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2"/></svg>`,
   sun: `<svg class="{cls}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m10 10 1.4 1.4m0-12.8-1.4 1.4m-10 10L5.6 18.4"/><circle cx="12" cy="12" r="4"/></svg>`,
+  globe: `<svg class="{cls}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" stroke-linejoin="round" d="M3 12h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>`,
+  key: `<svg class="{cls}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path stroke-linecap="round" stroke-linejoin="round" d="m21 2-9.6 9.6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15.5 7.5 3 3L22 7l-3-3"/></svg>`,
+  power: `<svg class="{cls}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M18.4 6.6a9 9 0 1 1-12.8 0"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v10"/></svg>`,
 };
 
 export const icon = (name, cls = "w-5 h-5") => (iconMap[name] || "").split(`{cls}`).join(cls);
