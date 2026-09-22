@@ -551,6 +551,19 @@ const DICT: Record<string, Record<Lang, string>> = {
     pt: "sustenta a mesma alegação que",
     fr: "soutient la même affirmation que",
   },
+  // symmetric relation — the same wording reads correctly in both directions
+  "hyp.rel.supports_the_same_claim.out": {
+    es: "sostiene la misma afirmación que",
+    en: "supports-the-same-claim-as",
+    pt: "sustenta a mesma alegação que",
+    fr: "soutient la même affirmation que",
+  },
+  "hyp.rel.supports_the_same_claim.in": {
+    es: "sostiene la misma afirmación que",
+    en: "supports-the-same-claim-as",
+    pt: "sustenta a mesma alegação que",
+    fr: "soutient la même affirmation que",
+  },
   // relation-kind picker labels (fuller forms of the same vocabulary)
   "hyp.relKind.contradicts": { es: "contradice", en: "contradicts", pt: "contradiz", fr: "contredit" },
   "hyp.relKind.extends": { es: "extiende", en: "extends", pt: "estende", fr: "étend" },
@@ -743,6 +756,8 @@ const DICT: Record<string, Record<Lang, string>> = {
   // the current layer: papers, candidates, one mission with its stop
   // condition and criterion.
   "onb.pasteTitle": { es: "Pega un enlace de arXiv", en: "Paste an arXiv URL", pt: "Cola um link do arXiv", fr: "Colle un lien arXiv" },
+  "onb.modeArxiv": { es: "arXiv", en: "arXiv", pt: "arXiv", fr: "arXiv" },
+  "onb.modeManual": { es: "Manual", en: "Manual", pt: "Manual", fr: "Manuel" },
   "onb.urlPh": { es: "https://arxiv.org/abs/1706.03762", en: "https://arxiv.org/abs/1706.03762", pt: "https://arxiv.org/abs/1706.03762", fr: "https://arxiv.org/abs/1706.03762" },
   "onb.generate": { es: "Generar", en: "Generate", pt: "Gerar", fr: "Générer" },
   "onb.generating": { es: "Generando…", en: "Generating…", pt: "A gerar…", fr: "Génération…" },
@@ -1338,6 +1353,7 @@ const DICT: Record<string, Record<Lang, string>> = {
   "rc.review.themes": { es: "Temas", en: "Themes", pt: "Temas", fr: "Thèmes" },
   "rc.review.gaps": { es: "Vacíos", en: "Gaps", pt: "Lacunas", fr: "Lacunes" },
   "rc.review.conflicts": { es: "Conflictos", en: "Conflicts", pt: "Conflitos", fr: "Conflits" },
+  "rc.review.initializing": { es: "Inicializando agente de revisión...", en: "Initializing review agent...", pt: "A inicializar o agente de revisão...", fr: "Initialisation de l'agent de révision..." },
   "rc.assistant.title": { es: "Asistente", en: "Assistant", pt: "Assistente", fr: "Assistant" },
   "rc.assistant.placeholder": { es: "Escribe una pregunta sobre tu proyecto...", en: "Ask a question about your project...", pt: "Escreve uma pergunta sobre o teu projeto...", fr: "Posez une question sur votre projet..." },
   "rc.assistant.send": { es: "Enviar", en: "Send", pt: "Enviar", fr: "Envoyer" },
@@ -1382,7 +1398,7 @@ const DICT: Record<string, Record<Lang, string>> = {
   "rc.actions.noTasks": { es: "No hay tareas", en: "No tasks", pt: "Sem tarefas", fr: "Aucune tâche" },
   "rc.actions.s.backlog": { es: "Backlog", en: "Backlog", pt: "Backlog", fr: "Backlog" },
   "rc.actions.s.todo": { es: "Por hacer", en: "To Do", pt: "Por fazer", fr: "À faire" },
-  "rc.actions.s.inProgress": { es: "En progreso", en: "In Progress", pt: "Em progresso", fr: "En cours" },
+  "rc.actions.s.in_progress": { es: "En progreso", en: "In Progress", pt: "Em progresso", fr: "En cours" },
   "rc.actions.s.done": { es: "Hecho", en: "Done", pt: "Concluído", fr: "Terminé" },
   "rc.actions.p.urgent": { es: "Urgente", en: "Urgent", pt: "Urgente", fr: "Urgent" },
   "rc.actions.p.high": { es: "Alta", en: "High", pt: "Alta", fr: "Haute" },
@@ -1465,6 +1481,7 @@ const DICT: Record<string, Record<Lang, string>> = {
   "prov.test": { es: "Probar conexión", en: "Test connection", pt: "Testar ligação", fr: "Tester la connexion" },
   "prov.testing": { es: "Probando…", en: "Testing…", pt: "A testar…", fr: "Test en cours…" },
   "prov.testOk": { es: "Conexión correcta", en: "Connection ok", pt: "Ligação correta", fr: "Connexion réussie" },
+  "prov.testFail": { es: "Conexión fallida", en: "Connection failed", pt: "Ligação falhada", fr: "Connexion échouée" },
   "prov.save": { es: "Guardar proveedor", en: "Save provider", pt: "Guardar fornecedor", fr: "Enregistrer le fournisseur" },
   "prov.saved": { es: "Proveedor configurado — el asistente ya está disponible.", en: "Provider configured — the assistant is ready.", pt: "Fornecedor configurado — o assistente está pronto.", fr: "Fournisseur configuré — l'assistant est prêt." },
   "prov.active": { es: "activo", en: "active", pt: "ativo", fr: "actif" },

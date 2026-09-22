@@ -372,7 +372,7 @@ function renderInitStep(app) {
         <p class="text-muted text-sm mt-1">${t("missions.emptyHint")}</p>
       </div>
       <div class="grid grid-cols-2 gap-2 rounded-lg border border-border bg-gray-50 p-1">
-        ${[["ai", t("rc.wizard.next") + " · arXiv"], ["manual", "Manual"]].map(([val, label]) => `
+        ${[["ai", t("onb.modeArxiv")], ["manual", t("onb.modeManual")]].map(([val, label]) => `
           <button type="button" onclick="RC.wizInitMode('${val}')" class="rounded-md py-2 text-sm font-medium transition ${mode === val ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${label}</button>
         `).join("")}
       </div>
