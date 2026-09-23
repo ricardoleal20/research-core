@@ -21,6 +21,7 @@ pub mod receipts;
 pub mod search;
 pub mod skills;
 pub mod spend;
+pub mod support;
 pub mod telemetry;
 pub mod trust;
 pub mod verifier;

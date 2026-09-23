@@ -64,6 +64,11 @@ pub enum SystemComponent {
     Migration,
     Scheduler,
     Verifier,
+    /// The claim-support engine (Story 6.9, FR-23.1): the LLM entailment
+    /// check on pinned claims — deliberately a distinct component from
+    /// `Verifier` (the NON-LLM existence verifier, Story 4.2), so the two
+    /// signals can never be conflated on the actor axis either.
+    Support,
     Telemetry,
     Runtime,
     /// The bridge channel (Story 6.14): failed-push events — a push that
@@ -287,6 +292,7 @@ mod tests {
             SystemComponent::Verifier,
             SystemComponent::Telemetry,
             SystemComponent::Runtime,
+            SystemComponent::Support,
             SystemComponent::Bridge,
         ] {
             let s = serde_json::to_string(&Actor::System { component }).unwrap();

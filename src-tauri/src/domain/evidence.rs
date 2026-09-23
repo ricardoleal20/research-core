@@ -29,6 +29,10 @@ use uuid::Uuid;
 use crate::domain::proposals::{
     MergeApprovedPayload, ProposalCreatedPayload, MERGE_APPROVED, PROPOSAL_CREATED,
 };
+use crate::domain::support::{
+    models_differ, PinSupportCheckedPayload, PinSupportCheck, SupportStatus,
+    PIN_SUPPORT_CHECKED,
+};
 use crate::domain::verifier::{EvidenceVerifiedPayload, EVIDENCE_VERIFIED};
 use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
@@ -315,6 +319,14 @@ pub struct EvidencePin {
     /// (unverified). Never confusable with `confidence`: verification is
     /// existence by code; confidence is a named model's judgment.
     pub verification: Option<PinVerification>,
+    /// The LATEST support check of this pin (Story 6.9, FR-23.2) — the
+    /// THIRD signal: an entailment judgment by a DIFFERENT model (never the
+    /// pin's assessing model, NFR-3 extended). None = unchecked — a state
+    /// entirely distinct from both `confidence` (the assessing model's own
+    /// judgment) and `verification` (existence by code). Three signals,
+    /// never conflated.
+    #[serde(default)]
+    pub support: Option<PinSupportCheck>,
 }
 
 /// The LATEST verification status of one pin (Story 4.2, AD-15): a
@@ -461,6 +473,19 @@ fn apply_pin(
             ts: v.ts,
         })
     });
+    // Story 6.9 on re-pin: a previous pin's support check NEVER silently
+    // carries over to the new excerpt — it stays VISIBLE as `stale` (the
+    // judgment predates the current pin), so the re-check affordance
+    // renders. Honesty, not amnesia — the same rule the machine
+    // verification carries.
+    let carried_stale_support = claim.pin.as_ref().and_then(|old| {
+        old.support.as_ref().map(|s| PinSupportCheck {
+            status: SupportStatus::Stale,
+            confidence: s.confidence,
+            judging_model: s.judging_model.clone(),
+            ts: s.ts,
+        })
+    });
     claim.pin = Some(EvidencePin {
         seq,
         ts,
@@ -476,6 +501,7 @@ fn apply_pin(
         ref_label: None,
         ref_removed: false,
         verification: carried_stale,
+        support: carried_stale_support,
     });
     Ok(())
 }
@@ -596,6 +622,84 @@ impl EvidenceProjection {
                             detail: payload.detail,
                             source: payload.source,
                             ts: event.ts,
+                        });
+                    }
+                }
+                PIN_SUPPORT_CHECKED => {
+                    // Story 6.9 (AD-15, FR-23.1): a support-check result —
+                    // actor system/support, an LLM entailment judgment
+                    // attributed to its judging model (the deliberate
+                    // counterpart of the NON-LLM existence verifier). The
+                    // result applies to the claim's CURRENT pin only when
+                    // its `pin_seq` matches; a result for an older pin
+                    // marks the current one `stale` when nothing newer
+                    // holds. The LATEST event for the current pin wins.
+                    // The constructor's guarantees (judging model non-empty,
+                    // confidence in range, closed verdict vocabulary) are
+                    // re-checked on read — plus THE DIFFERENT-MODEL TEST
+                    // (NFR-3 extended): a judge identical to the pin's own
+                    // assessing model is corrupt and fails the fold loudly,
+                    // never a model grading its own pin.
+                    let payload: PinSupportCheckedPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|e| {
+                            EventError::Invalid(format!(
+                                "corrupt {PIN_SUPPORT_CHECKED} payload at seq {}: {e}",
+                                event.seq
+                            ))
+                        })?;
+                    if payload.judging_model.trim().is_empty() {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {PIN_SUPPORT_CHECKED} event at seq {}: judging_model is \
+                             empty — a support verdict is never anonymous (FR-23.2)",
+                            event.seq
+                        )));
+                    }
+                    if !(0.0..=1.0).contains(&payload.confidence)
+                        || payload.confidence.is_nan()
+                    {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {PIN_SUPPORT_CHECKED} event at seq {}: confidence {} is \
+                             outside [0.0, 1.0]",
+                            event.seq, payload.confidence
+                        )));
+                    }
+                    let Some(&i) = index.get(&payload.claim_id) else {
+                        continue; // references no known claim — skipped
+                    };
+                    let claim = &mut claims[i];
+                    let Some(pin) = claim.pin.as_mut() else {
+                        continue; // the claim has no pin to judge — skipped
+                    };
+                    let check = PinSupportCheck {
+                        status: SupportStatus::from_verdict(payload.verdict),
+                        confidence: payload.confidence,
+                        judging_model: payload.judging_model,
+                        ts: event.ts,
+                    };
+                    if pin.seq == payload.pin_seq {
+                        // The different-model test on read, against the pin
+                        // the event actually names: a judge matching the
+                        // CURRENT pin's assessing model never constructed
+                        // legitimately — corrupt.
+                        if !models_differ(&pin.assessing_model, &check.judging_model) {
+                            return Err(EventError::Invalid(format!(
+                                "corrupt {PIN_SUPPORT_CHECKED} event at seq {}: the judging \
+                                 model `{}` is the pin's own assessing model — never the same \
+                                 model grading its own pin (NFR-3 extended)",
+                                event.seq, check.judging_model
+                            )));
+                        }
+                        pin.support = Some(check);
+                    } else if pin.support.as_ref().is_some_and(|s| {
+                        matches!(s.status, SupportStatus::Stale)
+                    }) || pin.support.is_none()
+                    {
+                        // A result for an older version of this pin —
+                        // visible as stale (re-checkable), never carried as
+                        // a verdict for text it did not judge.
+                        pin.support = Some(PinSupportCheck {
+                            status: SupportStatus::Stale,
+                            ..check
                         });
                     }
                 }
@@ -1711,5 +1815,427 @@ mod tests {
         assert!(EvidenceProjection::fold(&store.events_all().unwrap())
             .unwrap()
             .is_empty());
+    }
+
+    // ---------- the support check (Story 6.9, FR-23.1/23.2) ----------
+
+    /// THE THREE-SIGNAL SEPARATION, end to end: a pinned claim carrying all
+    /// three signals at once — agent-assessed confidence (attributed to the
+    /// assessing model), machine existence verification (by code), and the
+    /// support check (attributed to its judging model) — folds with each
+    /// signal exactly its own, none driving another's label. A claim with
+    /// NO support event reads support=None (unchecked — a fourth, honest
+    /// state).
+    #[test]
+    fn a_pin_folds_three_distinct_signals_none_driving_another() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Attention drops recurrence.", h, None).unwrap())
+            .unwrap();
+        let pin = store
+            .append(
+                NewEvent::evidence_pinned_citation(
+                    claim.id,
+                    h,
+                    "ref-1",
+                    "Attention dispenses with recurrence entirely.",
+                    0.82,
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // No checks yet: confidence present, verification None, support None.
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let read = c.pin.as_ref().expect("the pin is present");
+        assert_eq!(read.confidence, 0.82);
+        assert_eq!(read.assessing_model, "GLM-5.3");
+        assert_eq!(read.verification, None);
+        assert_eq!(read.support, None, "unchecked until the first event");
+
+        // Both checks land: existence by code, support by a DIFFERENT model.
+        store
+            .append(
+                NewEvent::evidence_verified(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::verifier::VerificationOutcome::Verified,
+                    crate::domain::verifier::DETAIL_EXCERPT_MATCHED,
+                    "arxiv:1706.03762",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::support::SupportVerdict::Supported,
+                    0.9,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let read = c.pin.as_ref().expect("the pin is present");
+        // Signal 1 — agent-assessed confidence, untouched by both checks.
+        assert_eq!(read.confidence, 0.82);
+        assert_eq!(read.assessing_model, "GLM-5.3");
+        // Signal 2 — existence by code, its own actor and detail.
+        let v = read.verification.as_ref().expect("verified");
+        assert_eq!(v.status, VerificationStatus::Verified);
+        // Signal 3 — the support judgment, attributed to ITS model.
+        let s = read.support.as_ref().expect("support checked");
+        assert_eq!(s.status, crate::domain::support::SupportStatus::Supported);
+        assert_eq!(s.confidence, 0.9);
+        assert_eq!(s.judging_model, "claude-sonnet-4-5");
+        assert_eq!(s.ts, store.events_all().unwrap().last().unwrap().ts);
+        // The event kinds are distinct — three signals, three kinds.
+        let all = store.events_all().unwrap();
+        let kinds: Vec<&str> = all.iter().map(|e| e.kind.as_str()).collect();
+        assert!(kinds.contains(&crate::domain::verifier::EVIDENCE_VERIFIED));
+        assert!(kinds.contains(&crate::domain::support::PIN_SUPPORT_CHECKED));
+        assert_eq!(
+            kinds.iter().filter(|k| **k == crate::domain::support::PIN_SUPPORT_CHECKED).count(),
+            1
+        );
+    }
+
+    /// The different-model test on READ (NFR-3 extended): a hand-built
+    /// support event whose judging model IS the current pin's assessing
+    /// model is corrupt and fails the fold loudly — the constructor refuses
+    /// it first; only a raw append can produce it, and the fold catches it.
+    #[test]
+    fn a_same_model_support_event_fails_the_fold_loudly() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        let pin = store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Excerpt.", 0.5, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        let payload = json!({
+            "claim_id": claim.id.to_string(),
+            "hypothesis_id": h.to_string(),
+            "pin_seq": pin.seq,
+            "verdict": "supported",
+            "confidence": 0.9,
+            "judging_model": "glm-5.3", // the pin's own assessing model
+        });
+        store
+            .append(
+                NewEvent::new(
+                    crate::domain::support::PIN_SUPPORT_CHECKED,
+                    Actor::System {
+                        component: crate::eventstore::SystemComponent::Support,
+                    },
+                    payload,
+                )
+                .unwrap()
+                .with_causes(vec![claim.id, h]),
+            )
+            .unwrap();
+        let err = EvidenceProjection::fold(&store.events_all().unwrap())
+            .expect_err("a same-model support event must fail the fold");
+        assert!(
+            err.to_string().contains("grading its own pin"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// An UNSUPPORTED verdict marks the pin visibly and the pin STAYS — the
+    /// no-deletion guarantee (NFR-8, honesty over amnesia): the claim
+    /// remains pinned and flagged, the confidence axis is untouched, and a
+    /// later re-check (the latest event wins) flips the verdict without
+    /// rewriting history.
+    #[test]
+    fn an_unsupported_verdict_marks_the_pin_and_never_deletes_it() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        let pin = store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Excerpt.", 0.82, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::support::SupportVerdict::Unsupported,
+                    0.7,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        assert!(c.pinned, "an unsupported verdict never deletes the pin");
+        let read = c.pin.as_ref().expect("the pin stays in place");
+        let s = read.support.as_ref().expect("flagged");
+        assert_eq!(s.status, crate::domain::support::SupportStatus::Unsupported);
+        assert_eq!(s.judging_model, "claude-sonnet-4-5");
+        // the confidence axis is untouched by the judgment
+        assert_eq!(read.confidence, 0.82);
+        assert_eq!(read.assessing_model, "GLM-5.3");
+
+        // Re-check appends: the latest event wins — unsupported→supported,
+        // with a NEW dated judgment (never silently assumed fresh).
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::support::SupportVerdict::Supported,
+                    0.95,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let s = c.pin.as_ref().unwrap().support.as_ref().unwrap();
+        assert_eq!(s.status, crate::domain::support::SupportStatus::Supported);
+        assert_eq!(s.confidence, 0.95);
+        // append-only: both events are in the log
+        assert_eq!(
+            store
+                .events_all()
+                .unwrap()
+                .iter()
+                .filter(|e| e.kind == crate::domain::support::PIN_SUPPORT_CHECKED)
+                .count(),
+            2
+        );
+    }
+
+    /// A support result for an OLDER pin never applies to a re-pinned
+    /// excerpt: a re-pin carries the old result forward as STALE
+    /// (re-checkable), and a late event for the old pin reads stale too —
+    /// never a silent verdict for text that was never judged.
+    #[test]
+    fn a_support_result_for_an_older_pin_reads_stale_never_carried() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let claim = store
+            .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+            .unwrap();
+        let first = store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "First excerpt.", 0.5, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    first.seq,
+                    crate::domain::support::SupportVerdict::Supported,
+                    0.9,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // Re-pin with a NEW excerpt: the old judgment must not apply.
+        store
+            .append(
+                NewEvent::evidence_pinned_citation(claim.id, h, "ref-1", "Second excerpt.", 0.9, "GLM-5.3")
+                    .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let read = c.pin.as_ref().expect("the pin is present");
+        assert_eq!(read.excerpt, "Second excerpt.");
+        let s = read.support.as_ref().expect("the old judgment stays visible");
+        assert_eq!(
+            s.status,
+            crate::domain::support::SupportStatus::Stale,
+            "stale, never carried as a verdict"
+        );
+
+        // A late event for the OLD pin_seq also reads stale.
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    first.seq,
+                    crate::domain::support::SupportVerdict::Unsupported,
+                    0.8,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let s = c.pin.as_ref().unwrap().support.as_ref().unwrap();
+        assert_eq!(s.status, crate::domain::support::SupportStatus::Stale);
+
+        // A judgment of the CURRENT pin wins over the stale marker.
+        let second_seq = c.pin.as_ref().unwrap().seq;
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    second_seq,
+                    crate::domain::support::SupportVerdict::Partially,
+                    0.6,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
+            .unwrap()
+            .try_into()
+            .ok()
+            .expect("one claim");
+        let s = c.pin.as_ref().unwrap().support.as_ref().unwrap();
+        assert_eq!(s.status, crate::domain::support::SupportStatus::Partially);
+    }
+
+    /// A support event for a claim with no pin, or an unknown claim, or a
+    /// corrupt payload (blank model, bad confidence), pins nothing, judges
+    /// nothing — skipped or loud, per the fold's contract.
+    #[test]
+    fn support_events_without_their_pin_are_skipped_and_corrupt_ones_fail_loudly() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let h = seed_hypothesis(&store);
+        let unpinned = store
+            .append(NewEvent::claim_registered("Unpinned claim.", h, None).unwrap())
+            .unwrap();
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    unpinned.id,
+                    h,
+                    42,
+                    crate::domain::support::SupportVerdict::Supported,
+                    0.9,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    Uuid::new_v4(), // no such claim
+                    h,
+                    7,
+                    crate::domain::support::SupportVerdict::Unsupported,
+                    0.5,
+                    "claude-sonnet-4-5",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let claims = EvidenceProjection::fold(&store.events_all().unwrap()).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert!(!claims[0].pinned);
+        assert_eq!(claims[0].pin, None);
+
+        // Corrupt payloads: a blank judging model and an out-of-range
+        // confidence fail the fold loudly (the constructor's guarantees,
+        // re-checked on read).
+        for (confidence, model) in [(0.5, "  "), (1.5, "judge-model")] {
+            let conn = mem_conn();
+            let store = EventStore::new(&conn);
+            let h = seed_hypothesis(&store);
+            let claim = store
+                .append(NewEvent::claim_registered("Claim.", h, None).unwrap())
+                .unwrap();
+            let pin = store
+                .append(
+                    NewEvent::evidence_pinned_citation(
+                        claim.id, h, "ref-1", "Excerpt.", 0.5, "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let payload = json!({
+                "claim_id": claim.id.to_string(),
+                "hypothesis_id": h.to_string(),
+                "pin_seq": pin.seq,
+                "verdict": "supported",
+                "confidence": confidence,
+                "judging_model": model,
+            });
+            store
+                .append(
+                    NewEvent::new(
+                        crate::domain::support::PIN_SUPPORT_CHECKED,
+                        Actor::System {
+                            component: crate::eventstore::SystemComponent::Support,
+                        },
+                        payload,
+                    )
+                    .unwrap()
+                    .with_causes(vec![claim.id, h]),
+                )
+                .unwrap();
+            let err = EvidenceProjection::fold(&store.events_all().unwrap())
+                .expect_err("a corrupt support event must fail the fold");
+            assert!(
+                err.to_string().contains(crate::domain::support::PIN_SUPPORT_CHECKED),
+                "unexpected: {err}"
+            );
+        }
     }
 }
