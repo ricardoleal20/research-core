@@ -38,6 +38,11 @@ pub const REFS_LIST_END: &str = "\nRedacta";
 /// Story 1.9). The paper title sits between `PAPER_TITLE_MARKER` and the
 /// closing "»"; the output language follows `LANG_MARKER`.
 pub const CANDIDATES_MARKER: &str = "Eres el generador de candidatos de hipótesis";
+/// Marks the Journal Fit Finder system prompt (Story 6.12): the simulated
+/// layer answers a deterministic seeded ranking in the strict code form —
+/// `venue_id | score | rationale` — so `vite` dev and the simulated
+/// path demo the wiring without a real model.
+pub const FIT_MARKER: &str = "Eres un asesor de publicaciones científicas";
 /// The paper title sits between this marker and `PAPER_TITLE_END`.
 pub const PAPER_TITLE_MARKER: &str = "Artículo: «";
 /// … and ends here.
@@ -70,6 +75,8 @@ impl ProviderClient for Simulated {
                 review_json(system)
             } else if system.contains(CANDIDATES_MARKER) {
                 candidates_json(system)
+            } else if system.contains(FIT_MARKER) {
+                fit_reply()
             } else {
                 // The assistant reply carries the honest context echo: the
                 // markers the scoped prompt carries (board context, skill,
@@ -125,6 +132,16 @@ fn context_echo(system: &str) -> String {
     } else {
         format!("\n\n— {}", parts.join(" · "))
     }
+}
+
+/// The simulated Fit Finder reply (Story 6.12, FR-19.3): a deterministic
+/// seed ranking in the strict `venue_id | score | rationale` code form —
+/// nothing invented outside the dataset (NFR-1). The rationale cites scope
+/// tags only, so the seeded output carries no unverified board refs.
+fn fit_reply() -> String {
+    "siam-jsc | 92 | encaja por numerical-analysis y hpc en el scope\n\
+     physrev-e | 71 | statistical-physics en el scope\n\
+     acm-toms | 64 | software y algorithms en el scope".to_string()
 }
 
 /// The simulated Asistente reply — keyword heuristics over the last user
