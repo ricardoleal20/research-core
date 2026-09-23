@@ -794,12 +794,14 @@ export function renderSettings(app) {
     { id: "ai", label: t("rc.settings.ai") },
     { id: "trust", label: t("sec.trust") },
     { id: "local", label: t("rc.settings.local") },
+    { id: "manuscript", label: t("rc.settings.manuscript") },
     { id: "vault", label: t("rc.settings.vault") },
     { id: "danger", label: t("rc.settings.danger") },
   ];
   let content = "";
   if (activeTab === "interface") content = renderSettingsInterface(app);
   else if (activeTab === "ai") content = renderSettingsAi(app);
+  else if (activeTab === "manuscript") content = renderSettingsManuscript(app);
   else if (activeTab === "trust") content = renderTrustCenter(app);
   else if (activeTab === "local") content = `
     <div class="space-y-5">
@@ -847,6 +849,63 @@ function renderSettingsInterface(app) {
         <span class="text-sm font-medium">${t("rc.wizard.animations")}<span class="block text-xs font-normal text-muted">${t("rc.wizard.animationsDesc")}</span></span>
         <input type="checkbox" class="switch" ${app.state.settings.animations ? "checked" : ""} onchange="RC.setAnimations(this.checked)">
       </label>
+    </div>`;
+}
+
+// Ajustes → Manuscrito (Story 6.6, FR-20.1): the registration surface —
+// the repo IS the manuscript, so registration only REFERENCES a .tex
+// project dir (picked on disk) for a mission. Once registered, the
+// manuscript surface opens on the mission's board (progressive
+// disclosure: the board itself never shows manuscript vocabulary until
+// then, FR-1.4/FR-8.2).
+function renderSettingsManuscript(app) {
+  const missions = app.data.missions || [];
+  const registered = app.data.manuscriptsList || [];
+  const draft = app.state.msReg || (app.state.msReg = {
+    missionId: missions[0]?.id || "",
+    dir: "",
+    mainFile: "main.tex",
+    saving: false,
+  });
+  const regByMission = new Map(registered.map((m) => [m.missionId, m]));
+  return `
+    <div class="space-y-6">
+      <div>
+        <p class="text-sm font-medium">${t("ms.reg.title")}</p>
+        <p class="text-xs text-muted mt-1">${t("ms.reg.sub")}</p>
+      </div>
+      ${missions.length ? `
+      <div class="space-y-4">
+        <div><label class="block text-sm font-medium mb-1.5">${t("ms.reg.mission")}</label>${rcSelect({ id: "ms-reg-mission", options: missions.map((m) => ({ value: m.id, label: `M-${m.seq} — ${m.question.slice(0, 60)}` })), value: draft.missionId || missions[0].id, onChange: "RC.msRegField('missionId', this.value)" })}</div>
+        <div>
+          <label class="block text-sm font-medium mb-1.5">${t("ms.reg.dir")}</label>
+          <div class="flex gap-2">
+            <input id="ms-reg-dir" value="${esc(draft.dir)}" oninput="RC.msRegField('dir', this.value)" placeholder="/Users/…/papers/stiff-systems" class="flex-1 rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
+            ${btn({ label: t("ms.reg.pick"), variant: "secondary", size: "sm", onClick: "RC.msRegPickFolder()" })}
+          </div>
+        </div>
+        <div><label class="block text-sm font-medium mb-1.5">${t("ms.reg.mainFile")}</label><input id="ms-reg-main" value="${esc(draft.mainFile)}" oninput="RC.msRegField('mainFile', this.value)" placeholder="main.tex" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+        <div class="flex justify-end">
+          ${btn({ label: draft.saving ? t("ms.reg.registering") : t("ms.reg.register"), onClick: "RC.msRegSubmit()", disabled: draft.saving })}
+        </div>
+      </div>` : `<p class="text-sm text-muted">${t("ms.reg.noneMissions")}</p>`}
+      <div class="pt-4 border-t border-border">
+        <p class="caption text-muted mb-2">${t("ms.reg.registered")}</p>
+        ${registered.length ? `
+        <div class="space-y-1.5">
+          ${registered.map((m) => {
+            const mission = missions.find((x) => x.id === m.missionId);
+            return `
+            <div class="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+              <div class="min-w-0">
+                <p class="text-sm font-medium truncate">${mission ? esc(mission.question) : m.missionId}</p>
+                <p class="font-mono text-[11px] text-muted truncate" title="${esc(m.dir)}">${esc(m.dir)} · ${esc(m.mainFile)}</p>
+              </div>
+              ${btn({ label: t("ms.reg.open"), variant: "secondary", size: "sm", onClick: `RC.openBoard('${esc(m.missionId)}')` })}
+            </div>`;
+          }).join("")}
+        </div>` : `<p class="text-sm text-muted">${t("ms.reg.none")}</p>`}
+      </div>
     </div>`;
 }
 
@@ -1534,6 +1593,48 @@ Object.assign(RC, {
     const app = ctx.app;
     const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
     draft[field] = value;
+  },
+  // Ajustes → Manuscrito registration form (Story 6.6, FR-20.1): transient
+  // draft — the dir is picked on disk (pickFolder) or typed; registration
+  // appends one manuscript.registered event (the dir is referenced, never
+  // copied — the repo IS the manuscript).
+  msRegField(field, value) {
+    const app = ctx.app;
+    const draft = app.state.msReg || (app.state.msReg = { missionId: "", dir: "", mainFile: "main.tex", saving: false });
+    draft[field] = value;
+  },
+  async msRegPickFolder() {
+    const app = ctx.app;
+    try {
+      const dir = await api.pickFolder();
+      if (dir) {
+        const draft = app.state.msReg || (app.state.msReg = { missionId: "", dir: "", mainFile: "main.tex", saving: false });
+        draft.dir = dir;
+        ctx.renderMainOnly();
+      }
+    } catch (e) {
+      alert((e?.message || e));
+    }
+  },
+  async msRegSubmit() {
+    const app = ctx.app;
+    const draft = app.state.msReg;
+    if (!draft || draft.saving) return;
+    const read = (id) => document.getElementById(id)?.value.trim() || "";
+    const missionId = draft.missionId || read("ms-reg-mission") || app.data.missions?.[0]?.id;
+    const dir = read("ms-reg-dir") || draft.dir;
+    const mainFile = read("ms-reg-main") || draft.mainFile || "main.tex";
+    if (!missionId || !dir) return;
+    draft.saving = true;
+    ctx.renderMainOnly();
+    try {
+      await api.registerManuscript(missionId, dir, mainFile);
+      await ctx.loadManuscriptsList();
+    } catch (e) {
+      alert(t("ms.reg.error") + (e?.message || e));
+    }
+    draft.saving = false;
+    ctx.renderMainOnly();
   },
   aiDraftProvider(value) {
     const app = ctx.app;

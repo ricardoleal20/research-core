@@ -10,6 +10,7 @@ mod hypotheses_commands;
 mod jobs_commands;
 mod library_commands;
 mod mcp;
+mod manuscript_commands;
 mod missions_commands;
 mod nightshift_commands;
 mod onboarding_commands;
@@ -58,7 +59,7 @@ pub fn run() {
             app.manage(McpRegistry::new());
             // In-process server shell (AD-7): the same app in the browser —
             // same core instance, one writer (AD-14), read-only API.
-            server::spawn(db.clone());
+            server::spawn(db.clone(), data_dir.clone());
             // Night Shift scheduler (FR-4.1): one tick per minute — due
             // missions run their nightly literature scan, dead runs are
             // reaped honestly, and terminators evaluate (AD-12).
@@ -248,6 +249,15 @@ pub fn run() {
             library_commands::import_refs_from_zotero,
             library_commands::remove_ref,
             library_commands::restore_ref,
+            // manuscript (Story 6.6, FR-20.1/20.2): the .tex repo IS the
+            // manuscript — registration + scan + compile + the desktop-only
+            // editing surface; the served browser view reads it read-only.
+            manuscript_commands::register_manuscript,
+            manuscript_commands::get_manuscript,
+            manuscript_commands::list_manuscripts,
+            manuscript_commands::read_manuscript_file,
+            manuscript_commands::write_manuscript_file,
+            manuscript_commands::compile_manuscript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -960,7 +960,14 @@ export type ReadinessItemKind =
   | "load_bearing_refuted" // things rest on it; refuted
   | "unreckoned_null_result" // null search; its mission still unresolved
   | "pin_verification_failed" // INFO: pinned, but the machine check failed
-  | "merge_queue_pending"; // INFO: quarantine is not board state (AD-3)
+  | "merge_queue_pending" // INFO: quarantine is not board state (AD-3)
+  // manuscript scope (Story 6.8, FR-20.5): the paper cannot quietly outrun
+  // the evidence — each flag references the hypothesis card AND the
+  // manuscript location (file + line + marker)
+  | "manuscript_hypothesis_unresolved" // \hyp cites a testing/proposed hypothesis
+  | "manuscript_hypothesis_refuted" // \hyp cites a refuted hypothesis
+  | "manuscript_claim_unpinned" // \claim cites a claim without an evidence pin
+  | "manuscript_claim_unlinked"; // a marker that resolves to no board object
 
 // One typed relation tie on a load-blocking hypothesis: the kind, the other
 // endpoint's H-{n}, and whether it reads incoming ("contradicted-by H-3")
@@ -983,6 +990,11 @@ export interface ReadinessItem {
   claimTies: number[]; // CLAIMS-{n} resting on the hypothesis
   relationTies: ReadinessRelationTie[];
   pendingCount: number; // the merge-queue info row's count
+  // manuscript scope (Story 6.8): the flag's manuscript location — the
+  // file (repo-relative), the 1-based line, and the raw marker text
+  manuscriptFile?: string | null;
+  manuscriptLine?: number | null;
+  marker?: string | null;
 }
 
 // One evidence-trail row — the clean board's justification: what was
@@ -993,7 +1005,10 @@ export type ReadinessTrailKind =
   | "claims_pinned" // N/N claims pinned (+ how many machine-verified)
   | "hypotheses_resolved" // N/N resolved (supported or refuted)
   | "nulls_disclosed" // N/N null-result searches reckoned with
-  | "merge_queue"; // pending count; cites the last decided proposal when clean
+  | "merge_queue" // pending count; cites the last decided proposal when clean
+  // manuscript scope (Story 6.8): N/N board markers linked clean — present
+  // only when a manuscript is registered (progressive disclosure)
+  | "manuscript_consistency";
 
 export interface ReadinessTrailRow {
   kind: ReadinessTrailKind;
@@ -1062,4 +1077,97 @@ export interface AiConnectionTest {
   ok: boolean;
   models: string[];
   error: string | null;
+}
+
+// ---- Manuscript (Stories 6.6–6.8, FR-20) ----
+// The .tex repo IS the manuscript (FR-20.1): a mission registers a .tex
+// project directory on disk; the event log references it, never copies it.
+
+// One mission's registered manuscript: the registration receipt (seq/ts),
+// the ABSOLUTE .tex project dir on disk, and the repo-relative main file
+// to compile.
+export interface Manuscript {
+  missionId: string;
+  seq: number;
+  ts: string;
+  dir: string;
+  mainFile: string;
+}
+
+// One .tex source as the file list renders it: the repo-relative path,
+// the word count, and the board-link marker counts (`\hyp{…}` / `\claim{…}`
+// — the FR-20.4 convention agent diffs insert).
+export interface TexFileScan {
+  path: string;
+  words: number;
+  hypMarkers: number;
+  claimMarkers: number;
+  bytes: number;
+}
+
+// The detected LaTeX toolchain (FR-20.2): null is the honest
+// `tex_not_found` state — never a fake render (NFR-9).
+export interface ToolchainView {
+  name: string;
+  path: string;
+  configured: boolean; // the tex_compiler setting named it (vs. the search)
+}
+
+// The compile outcome: "ok" produced a PDF, "error" ran and failed (the
+// log tail is the receipt), "tex_not_found" is the honest missing
+// toolchain state with the install hint.
+export type CompileOutcome = "ok" | "error" | "tex_not_found";
+
+export interface CompileView {
+  seq: number;
+  ts: string;
+  outcome: CompileOutcome;
+  tool: string | null;
+  logTail: string;
+  pdfUrl: string | null; // the served PDF url (the side pane's <object>)
+}
+
+// The manuscript surface's one read (progressive disclosure: the surface
+// renders only when one exists — null until registered).
+export interface ManuscriptView {
+  manuscript: Manuscript;
+  files: TexFileScan[];
+  toolchain: ToolchainView | null;
+  lastCompile: CompileView | null;
+}
+
+// One manuscript file's content (the editing surface's read/write).
+export interface ManuscriptFileView {
+  path: string;
+  content: string;
+}
+
+// One before/after hunk of an agent's proposed LaTeX edit (Story 6.7,
+// FR-20.3): the exact text replaced and the text replacing it — never a
+// freeform overwrite.
+export interface ManuscriptDiffHunk {
+  before: string;
+  after: string;
+}
+
+// One quarantined LaTeX diff (Story 6.7): an agent-actor proposal excluded
+// from the manuscript until the human merges it (AD-3). The basis carries
+// the file's content digest + the log seq it derived from; a merge whose
+// file has advanced past its basis is refused with `basis_stale:` unless
+// force-approved (the marker is recorded and surfaced).
+export interface ManuscriptDiffProposal {
+  id: string;
+  seq: number;
+  ts: string;
+  runId: string;
+  missionId: string;
+  file: string;
+  hunks: ManuscriptDiffHunk[];
+  basisDigest: string;
+  basisSeq: number;
+  basisStale: boolean; // derived: the file changed since the proposal
+  status: "pending" | "merged" | "rejected";
+  decided: { seq: number; ts: string; actor: string } | null;
+  backupPath: string | null; // the pre-merge file backup (merge safety)
+  note: string;
 }

@@ -11,6 +11,7 @@ pub mod nightshift;
 pub mod hypotheses;
 pub mod jobs;
 pub mod library;
+pub mod manuscript;
 pub mod missions;
 pub mod onboarding;
 pub mod proposals;
