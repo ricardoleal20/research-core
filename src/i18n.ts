@@ -1647,6 +1647,29 @@ const DICT: Record<string, Record<Lang, string>> = {
     fr: "Aucune recherche consignée pour l'instant — la divulgation naît avec la première.",
   },
   "sd.noFilters": { es: "sin filtros", en: "no filters", pt: "sem filtros", fr: "sans filtres" },
+
+  // ---- Honest-demo labels (no silent demo): the notes under the bilingual
+  // "Demo data · Datos de ejemplo" chip on the surfaces still carrying bible
+  // demo data — the lock passphrase (mock transport), the wizard's manual
+  // init mode, and the actions board.
+  "demo.lockNote": {
+    es: "En esta demo, cualquier contraseña desbloquea — aún no hay bóveda real.",
+    en: "In this demo any passphrase unlocks — no real vault yet.",
+    pt: "Nesta demo, qualquer palavra-passe desbloqueia — ainda sem cofre real.",
+    fr: "Dans cette démo, toute phrase secrète déverrouille — pas encore de coffre réel.",
+  },
+  "demo.wizardNote": {
+    es: "El modo manual aún no crea la misión al finalizar — estos campos son de ejemplo.",
+    en: "Manual mode does not create a mission on finish yet — these fields are demo data.",
+    pt: "O modo manual ainda não cria uma missão ao terminar — estes campos são de exemplo.",
+    fr: "Le mode manuel ne crée pas encore de mission à la fin — ces champs sont des données de démo.",
+  },
+  "demo.actionsNote": {
+    es: "Este tablero renderiza los datos de ejemplo de la biblia — no tus misiones reales.",
+    en: "This board renders the bible's demo data — not your real missions.",
+    pt: "Este quadro renderiza os dados de exemplo da bíblia — não as tuas missões reais.",
+    fr: "Ce tableau affiche les données de démo de la bible — pas vos vraies missions.",
+  },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];

@@ -86,6 +86,11 @@ export const btn = ({ label, variant = "default", size = "md", iconName, cls = "
 export const card = (children, cls = "") =>
   `<div class="bg-card rounded-xl border border-border shadow-sm hover-lift ${cls}">${children}</div>`;
 
+// The honest-demo chip (no silent demo): shown on surfaces that still render
+// bible demo data. Always bilingual — the label survives any UI language.
+export const demoChip = () =>
+  `<span class="inline-flex items-center gap-1.5 rounded-full bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20 px-2.5 py-0.5 text-xs font-medium">${icon("sparkle", "w-3 h-3")} Demo data · Datos de ejemplo</span>`;
+
 // shadcn-style select — the bible's rcSelect verbatim; handlers on RC.
 export function rcSelect({ id, options, value, onChange = "", size = "md", cls = "", dir = "up", variant = "default" }) {
   const opts = options.map((o) => (typeof o === "string" ? { value: String(o), label: String(o) } : o));

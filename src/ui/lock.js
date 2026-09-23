@@ -4,7 +4,8 @@
 // real i18n layer and its AI-init step binds run_first_value (the core's
 // sixty-second first value) when a URL is pasted.
 import { t, setLang, getLang } from "../i18n";
-import { icon, esc, btn, card } from "./helpers";
+import { mockActive } from "../mock-backend";
+import { icon, esc, btn, card, demoChip } from "./helpers";
 
 let _lockShaderRunning = false;
 let _lockShaderRaf = 0;
@@ -154,6 +155,11 @@ export function renderLock(app) {
             <p class="mt-4 text-center text-xs text-white/40">${t("rc.lock.idle")}</p>
           `}
         </div>
+        ${mockActive && !welcome ? `
+        <div class="mt-4 flex flex-col items-center gap-1.5">
+          ${demoChip()}
+          <p class="text-[11px] text-white/40 text-center">${t("demo.lockNote")}</p>
+        </div>` : ""}
         ${welcome ? `
         <div class="mt-6 flex items-center justify-center gap-2">
           ${[{ code: "en", label: t("rc.lang.en") }, { code: "es", label: t("rc.lang.es") }, { code: "pt", label: t("rc.lang.pt") }, { code: "fr", label: t("rc.lang.fr") }].map(({ code, label }) => `
@@ -385,6 +391,10 @@ function renderInitStep(app) {
         ${s.initResult ? renderFirstValueResult(app, s.initResult) : ""}
       ` : `
         <div class="space-y-4">
+          <div class="flex flex-col gap-1">
+            ${demoChip()}
+            <p class="text-xs text-muted">${t("demo.wizardNote")}</p>
+          </div>
           <div><label class="block text-sm font-medium mb-1.5">${t("missions.composer.question")}</label><input id="wiz-q" value="${esc(s.initQuestion)}" class="w-full rounded-lg border border-border bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
           <div><label class="block text-sm font-medium mb-1.5">${t("missions.stopCondition")}</label><input id="wiz-stop" value="${esc(s.initStop)}" class="w-full rounded-lg border border-border bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
         </div>

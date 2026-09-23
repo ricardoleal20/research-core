@@ -8,7 +8,7 @@
 import { t, getLang } from "../i18n";
 import { api } from "../api";
 import { mockActive } from "../mock-backend";
-import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
+import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs, demoChip } from "./helpers";
 import { RC, ctx } from "./rc";
 
 // ========== REFERENCES ==========
@@ -585,6 +585,10 @@ export function renderActions(app) {
           <p class="caption text-muted mb-1">${t("rc.actions.title")}</p>
           <h1 class="display-md">${t("rc.actions.title")}</h1>
           <p class="text-sm text-muted mt-1">${esc(app.data.project?.name || "")} · <span class="tabular">${items.length}</span> ${t("rc.actions.counts")}</p>
+          <div class="mt-2 flex flex-col items-start gap-1">
+            ${demoChip()}
+            <p class="text-xs text-muted">${t("demo.actionsNote")}</p>
+          </div>
         </div>
       </div>
       <div class="flex flex-col xl:flex-row gap-3">
