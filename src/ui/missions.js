@@ -155,7 +155,7 @@ function renderMissionCard(app, m, i) {
           <span class="font-mono text-[10px] text-muted tabular">M-${m.seq}</span>
           ${badge(t("missions.status." + m.status), statusColor[m.status] || "muted")}
         </div>
-        <h3 class="heading-3 leading-snug cursor-pointer hover:text-primary transition" onclick="RC.openBoard('${esc(m.id)}')">${esc(m.question)}</h3>
+        <h3 class="heading-3 leading-snug cursor-pointer hover:text-primary transition" data-board-id="${esc(m.id)}" onclick="RC.openBoard(this.dataset.boardId)">${esc(m.question)}</h3>
         <div class="space-y-1.5">
           <p class="text-xs text-muted"><span class="font-medium text-foreground">${t("missions.stopCondition")}:</span> ${esc(m.stopCondition)}</p>
           <p class="text-xs text-muted"><span class="font-medium text-foreground">${t("missions.successCriterion")}:</span> ${esc(m.successCriterion)}</p>
@@ -166,8 +166,8 @@ function renderMissionCard(app, m, i) {
             <span class="font-mono tabular">${m.schedule === "off" ? "— " + t("missions.autonomy." + m.autonomy) : t("missions.autonomy." + m.autonomy)}</span>
           </div>
           <div class="flex items-center gap-2">
-            ${btn({ label: t("board.title"), variant: "secondary", size: "sm", onClick: `RC.openBoard('${esc(m.id)}')` })}
-            ${btn({ label: open ? t("missions.hideRuns") : t("missions.showRuns"), variant: "ghost", size: "sm", onClick: `RC.toggleRuns('${esc(m.id)}')` })}
+            ${btn({ label: t("board.title"), variant: "secondary", size: "sm", onClick: "RC.openBoard(this.dataset.boardId)", data: { "board-id": m.id } })}
+            ${btn({ label: open ? t("missions.hideRuns") : t("missions.showRuns"), variant: "ghost", size: "sm", onClick: "RC.toggleRuns(this.dataset.boardId)", data: { "board-id": m.id } })}
           </div>
         </div>
         ${open ? renderRunsDrill(app, m.id, runs) : ""}
@@ -186,7 +186,7 @@ function renderRunsDrill(app, missionId, runs) {
               <span class="font-mono text-xs tabular text-muted truncate">e-${r.seq} · ${esc(r.kind)} · ${esc(r.actor)}${r.role ? " · " + esc(r.role) : ""}</span>
               <span class="flex items-center gap-2 shrink-0">
                 <span class="font-mono text-[10px] text-muted tabular">${fmtTs(r.ts)}</span>
-                ${r.runId ? `<button onclick="RC.openReceipt('${esc(r.runId)}')" class="text-xs font-medium text-primary hover:underline">${t("receipt.open")}</button>` : ""}
+                ${r.runId ? `<button data-run-id="${esc(r.runId)}" onclick="RC.openReceipt(this.dataset.runId)" class="text-xs font-medium text-primary hover:underline">${t("receipt.open")}</button>` : ""}
               </span>
             </div>
           `).join("")}
@@ -209,8 +209,8 @@ export function renderBoard(app) {
         <h1 class="font-serif text-4xl italic max-w-2xl">${esc(mission ? mission.question : t("board.title"))}</h1>
       </div>
       <div class="flex gap-2">
-        ${btn({ label: t("rd.report"), variant: "secondary", size: "sm", iconName: "check", onClick: `RC.openReadiness('${esc(missionId || "")}')` })}
-        ${mission ? btn({ label: t("missions.roles.drafter"), variant: "default", size: "sm", iconName: "bolt", onClick: `RC.runStep('${esc(mission.id)}','drafter')` }) : ""}
+        ${btn({ label: t("rd.report"), variant: "secondary", size: "sm", iconName: "check", onClick: "RC.openReadiness(this.dataset.boardId)", data: { "board-id": missionId || "" } })}
+        ${mission ? btn({ label: t("missions.roles.drafter"), variant: "default", size: "sm", iconName: "bolt", onClick: "RC.runStep(this.dataset.boardId, 'drafter')", data: { "board-id": mission.id } }) : ""}
       </div>
     </div>`;
   if (!mission) return `${header}${card(`<div class="p-12 text-center text-muted text-sm">${t("board.loadError")}</div>`)}`;
@@ -257,7 +257,7 @@ function renderHypothesisCard(app, h, claims, i) {
         <div class="flex items-start justify-between gap-3">
           <span class="font-mono text-[10px] text-muted tabular">H-${h.seq}</span>
           <div class="flex items-center gap-2">
-            ${btn({ label: t("hyp.relate"), variant: "ghost", size: "sm", onClick: `RC.openRelateForm('${esc(h.id)}')` })}
+            ${btn({ label: t("hyp.relate"), variant: "ghost", size: "sm", onClick: "RC.openRelateForm(this.dataset.hypId)", data: { "hyp-id": h.id } })}
             ${allowed.length ? rcSelect({ id: `hyp-status-${h.seq}`, size: "sm", cls: "w-auto min-w-[9rem]", options: [{ value: h.status, label: t("hyp.status." + h.status) }, ...allowed.map((a) => ({ value: a, label: "→ " + t("hyp.status." + a) }))], value: h.status, onChange: `RC.transitionHyp('${esc(h.id)}', this.value)` }) : badge(t("hyp.status." + h.status), chipColor)}
           </div>
         </div>
@@ -269,7 +269,7 @@ function renderHypothesisCard(app, h, claims, i) {
         ${claims.length ? renderEvidenceRows(h, claims) : ""}
         <div class="flex items-center gap-2 pt-1">
           <input id="claim-${esc(h.id)}" placeholder="${t("ev.addPh")}" class="flex-1 rounded-lg border border-border bg-white px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30">
-          ${btn({ label: t("ev.add"), variant: "secondary", size: "sm", onClick: `RC.addClaim('${esc(h.id)}')` })}
+          ${btn({ label: t("ev.add"), variant: "secondary", size: "sm", onClick: "RC.addClaim(this.dataset.hypId)", data: { "hyp-id": h.id } })}
         </div>
         <p class="pt-2 border-t border-border caption text-muted">e-${h.audit.seq} · ${esc(h.audit.actor)} · ${esc(h.audit.basis)} · <span class="font-mono">${fmtTs(h.audit.ts)}</span></p>
       </div>`)}
@@ -291,7 +291,7 @@ function renderEvidenceRows(h, claims) {
         <div class="rounded-lg bg-white border border-border px-3 py-2">
           <div class="flex items-start justify-between gap-2">
             <p class="text-xs leading-snug"><span class="font-mono text-[10px] text-muted tabular">CLAIMS-${c.seq}</span> ${esc(c.text)}</p>
-            ${c.pinned ? "" : `<span class="flex items-center gap-1.5 shrink-0">${badge(t("ev.unpinned"), "warning")}${btn({ label: t("ev.pin"), variant: "secondary", size: "sm", onClick: `RC.openPinForm('${esc(c.id)}','${esc(h.id)}')` })}</span>`}
+            ${c.pinned ? "" : `<span class="flex items-center gap-1.5 shrink-0">${badge(t("ev.unpinned"), "warning")}${btn({ label: t("ev.pin"), variant: "secondary", size: "sm", onClick: "RC.openPinForm(this.dataset.claimId, this.dataset.hypId)", data: { "claim-id": c.id, "hyp-id": h.id } })}</span>`}
           </div>
           ${c.pinned && c.pin ? `
             <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -356,10 +356,10 @@ function renderProposal(app, p) {
           <p class="text-xs font-medium text-amber-700">${t("quarantine.basisStale")}</p>
         </div>` : ""}
       <div class="flex items-center gap-2 pt-1">
-        ${btn({ label: t("quarantine.reject"), variant: "secondary", size: "sm", onClick: `RC.rejectProposal('${esc(p.id)}')` })}
+        ${btn({ label: t("quarantine.reject"), variant: "secondary", size: "sm", onClick: "RC.rejectProposal(this.dataset.proposalId)", data: { "proposal-id": p.id } })}
         ${p.basisStale
-          ? btn({ label: t("quarantine.forceApprove"), variant: "destructive", size: "sm", onClick: `RC.approveProposal('${esc(p.id)}', true)` })
-          : btn({ label: t("quarantine.approve"), variant: "default", size: "sm", onClick: `RC.approveProposal('${esc(p.id)}', false)` })}
+          ? btn({ label: t("quarantine.forceApprove"), variant: "destructive", size: "sm", onClick: "RC.approveProposal(this.dataset.proposalId, true)", data: { "proposal-id": p.id } })
+          : btn({ label: t("quarantine.approve"), variant: "default", size: "sm", onClick: "RC.approveProposal(this.dataset.proposalId, false)", data: { "proposal-id": p.id } })}
       </div>
     </div>`;
 }
@@ -381,7 +381,7 @@ function renderMissionMeta(mission) {
         <span>${t("missions.autonomy")}</span>
         <span class="font-medium text-foreground">${t("missions.autonomy." + mission.autonomy)}</span>
       </div>
-      ${btn({ label: t("missions.roles.critic"), variant: "outline", size: "sm", iconName: "bolt", cls: "w-full", onClick: `RC.runStep('${esc(mission.id)}','critic')` })}
+      ${btn({ label: t("missions.roles.critic"), variant: "outline", size: "sm", iconName: "bolt", cls: "w-full", onClick: "RC.runStep(this.dataset.boardId, 'critic')", data: { "board-id": mission.id } })}
     </div>`);
 }
 
@@ -811,7 +811,7 @@ Object.assign(RC, {
         </div>
         <div class="mt-6 flex justify-end gap-2">
           ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.closeRcModal()" })}
-          ${btn({ label: t("hyp.relate"), variant: "default", onClick: `RC.submitRelation('${esc(hypId)}')` })}
+          ${btn({ label: t("hyp.relate"), variant: "default", onClick: "RC.submitRelation(this.dataset.hypId)", data: { "hyp-id": hypId } })}
         </div>` : `<p class="text-sm text-muted text-center py-6">${t("hyp.empty")}</p>`}
       </div>
       </div>`;

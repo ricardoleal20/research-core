@@ -71,7 +71,7 @@ function renderMissionsWidget(summary) {
               <div class="rounded-xl border border-border bg-gray-50/50 p-4 space-y-2">
                 <div class="flex items-center gap-2">
                   <span class="font-mono text-[10px] text-muted tabular shrink-0">M-${m.seq}</span>
-                  <p class="text-sm font-medium truncate cursor-pointer hover:text-primary transition" onclick="RC.openBoard('${esc(m.id)}')">${esc(m.question)}</p>
+                  <p class="text-sm font-medium truncate cursor-pointer hover:text-primary transition" data-board-id="${esc(m.id)}" onclick="RC.openBoard(this.dataset.boardId)">${esc(m.question)}</p>
                   ${badge(t("missions.status." + m.status), statusColor[m.status] || "muted")}
                 </div>
                 ${spendMeter(m.spendCents, m.spendCeilingCents, m.spendState)}
@@ -110,7 +110,7 @@ function renderBoardWidget(summary) {
                 ${m ? `<span class="font-mono text-[10px] text-muted tabular shrink-0">M-${m.seq}</span>` : ""}
                 <p class="text-xs text-muted truncate">${esc(m ? m.question : missionId)}</p>
               </div>
-              <button onclick="RC.openBoard('${esc(missionId)}')" class="text-xs font-medium text-primary hover:underline shrink-0">${t("dash.board.viewBoard")}</button>
+              <button data-board-id="${esc(missionId)}" onclick="RC.openBoard(this.dataset.boardId)" class="text-xs font-medium text-primary hover:underline shrink-0">${t("dash.board.viewBoard")}</button>
             </div>`;
           }).join("")}
         </div>` : emptyState("dash.board.empty")}
@@ -145,7 +145,7 @@ function renderDigestWidget(summary) {
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                   ${badge(t("missions.status." + r.status), statusColor[r.status] || "muted")}
-                  <button onclick="RC.openReceipt('${esc(r.runId)}')" class="text-xs font-medium text-primary hover:underline">${t("digest.receipts")}</button>
+                  <button data-run-id="${esc(r.runId)}" onclick="RC.openReceipt(this.dataset.runId)" class="text-xs font-medium text-primary hover:underline">${t("digest.receipts")}</button>
                 </div>
               </div>
             </div>`).join("")}
@@ -203,7 +203,7 @@ function renderReceiptsWidget(summary) {
                   <p class="text-xs text-muted mt-0.5 truncate">${esc(r.verdict || r.reason || "—")}</p>
                   <p class="font-mono text-[10px] text-muted tabular mt-0.5">${fmtCents(r.spendCents)} ${t("missions.spendOf")} ${fmtCents(r.ceilingCents)} · ${fmtTs(r.startedTs)}</p>
                 </div>
-                <button onclick="RC.openReceipt('${esc(r.runId)}')" class="text-xs font-medium text-primary hover:underline shrink-0">${t("digest.receipts")}</button>
+                <button data-run-id="${esc(r.runId)}" onclick="RC.openReceipt(this.dataset.runId)" class="text-xs font-medium text-primary hover:underline shrink-0">${t("digest.receipts")}</button>
               </div>
             </div>`).join("")}
         </div>` : emptyState("dash.receipts.empty")}

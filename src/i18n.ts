@@ -1592,14 +1592,35 @@ export function getLang(): Lang {
   return activeLang;
 }
 
+/**
+ * HTML-escape one interpolated value (review R-03). Every `t(key, vars)`
+ * var is DATA that lands inside rendered markup — job stdout that became
+ * claim text, search queries, failure reasons, ref fields — so it is
+ * escaped at the interpolation seam, exactly once, before any sink
+ * (receipt drawer, digest rows, dashboard teasers) renders it. Dictionary
+ * strings themselves stay raw: they are developer-authored, not data.
+ *
+ * Hostile-string fixture (kept here as the contract this enforces):
+ *   escapeInterp('<img src=x onerror=alert(1)>')  → '&lt;img src=x onerror=alert(1)&gt;'
+ *   escapeInterp("it's \"quoted\" & <b>")          → 'it&#39;s &quot;quoted&quot; &amp; &lt;b&gt;'
+ */
+export function escapeInterp(v: unknown): string {
+  return String(v ?? "").replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
+  );
+}
+
 /** Resolve a translation key for the active language, falling back to Spanish
- *  then to the key itself if missing. Optional `vars` replaces {name} tokens. */
+ *  then to the key itself if missing. Optional `vars` replaces {name} tokens —
+ *  each var is HTML-escaped here (R-03): interpolated data can never carry
+ *  markup into the webview. */
 export function t(key: string, vars?: Record<string, string | number>): string {
   const entry = DICT[key];
   let str: string = entry ? (entry[activeLang] ?? entry.es ?? key) : key;
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
-      str = str.replaceAll(`{${k}}`, String(v));
+      str = str.replaceAll(`{${k}}`, escapeInterp(v));
     }
   }
   return str;

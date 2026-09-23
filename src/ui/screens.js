@@ -8,7 +8,7 @@
 import { t, getLang } from "../i18n";
 import { api } from "../api";
 import { mockActive } from "../mock-backend";
-import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
+import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs, safeHref } from "./helpers";
 import { RC, ctx } from "./rc";
 
 // ========== REFERENCES ==========
@@ -67,7 +67,7 @@ export function renderRefs(app) {
             <tbody class="divide-y divide-border">
               ${rows.length
                 ? rows.map((r) => `
-                <tr onclick="RC.openRefDetail('${esc(r.id)}')" class="hover-row cursor-pointer ${r.removed ? "opacity-60" : ""}">
+                <tr data-ref-id="${esc(r.id)}" onclick="RC.openRefDetail(this.dataset.refId)" class="hover-row cursor-pointer ${r.removed ? "opacity-60" : ""}">
                   <td class="px-6 py-4 font-medium ${r.removed ? "text-muted line-through" : "text-foreground"}">${esc(r.title)}</td>
                   <td class="px-6 py-4 text-muted">${esc(r.authors)}</td>
                   <td class="px-6 py-4">${esc(r.year ?? "")}</td>
@@ -126,7 +126,7 @@ function openRefDetail(id) {
         </div>
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.venue")}</p><p class="text-sm">${esc(r.venue || "")}</p></div>
         ${r.doi ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.doi")}</p><p class="text-sm font-mono">${esc(r.doi)}</p></div>` : ""}
-        ${r.url ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.url")}</p><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:underline break-all">${esc(r.url)}</a></div>` : ""}
+        ${r.url ? `<div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.url")}</p>${safeHref(r.url) ? `<a href="${esc(safeHref(r.url))}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:underline break-all">${esc(r.url)}</a>` : `<span class="text-sm text-muted break-all">${esc(r.url)}</span>`}</div>` : ""}
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.h.tags")}</p><div class="flex flex-wrap gap-2">${(r.tags || "").split(",").filter(Boolean).map((tag) => badge(tag.trim(), "muted")).join("")}</div></div>
         <div><p class="text-xs text-muted uppercase tracking-wider mb-1">${t("rc.refs.d.abstract")}</p><p class="text-sm text-muted leading-relaxed">${t("rc.refs.d.noAbstract")}</p></div>
         <div>
@@ -138,14 +138,14 @@ function openRefDetail(id) {
         </div>
         <div class="pt-2 border-t border-border space-y-2">
           ${r.removed
-            ? `<div class="flex gap-2">${btn({ label: t("rc.refs.restore"), variant: "default", iconName: "history", onClick: `RC.restoreRef('${esc(r.id)}')` })}</div>`
+            ? `<div class="flex gap-2">${btn({ label: t("rc.refs.restore"), variant: "default", iconName: "history", onClick: "RC.restoreRef(this.dataset.refId)", data: { "ref-id": r.id } })}</div>`
             : app.state.refConfirmingRemove === r.id
               ? `<p class="text-xs text-rose-700 leading-relaxed">${t("rc.refs.confirmRemove")}</p>
                  <div class="flex gap-2">
                    ${btn({ label: t("rc.common.cancel"), variant: "ghost", onClick: "RC.cancelRemoveRef()" })}
-                   ${btn({ label: t("rc.refs.confirmBtn"), variant: "destructive", iconName: "danger", onClick: `RC.removeRef('${esc(r.id)}')` })}
+                   ${btn({ label: t("rc.refs.confirmBtn"), variant: "destructive", iconName: "danger", onClick: "RC.removeRef(this.dataset.refId)", data: { "ref-id": r.id } })}
                  </div>`
-              : `<div class="flex gap-2">${btn({ label: t("rc.refs.remove"), variant: "destructive", iconName: "trash", onClick: `RC.confirmRemoveRef('${esc(r.id)}')` })}</div>`}
+              : `<div class="flex gap-2">${btn({ label: t("rc.refs.remove"), variant: "destructive", iconName: "trash", onClick: "RC.confirmRemoveRef(this.dataset.refId)", data: { "ref-id": r.id } })}</div>`}
         </div>
       </div>
     </div>`;
@@ -349,7 +349,7 @@ function renderAttachmentChip(a, pending = false) {
     <span class="max-w-[160px] truncate font-medium">${esc(a.name)}</span>
     <span class="font-mono text-[10px] text-muted uppercase shrink-0">${esc(pending ? "…" : a.kind)}</span>
     ${flags.length ? `<span class="text-[10px] font-medium text-amber-600 shrink-0">${esc(flags.join(" · "))}</span>` : ""}
-    <button type="button" onclick="RC.removeAttachment('${esc(key)}', ${pending})" class="rounded-full p-0.5 text-muted hover:text-foreground hover:bg-gray-200 transition shrink-0" aria-label="${t("rc.assistant.attachRemove")}">${icon("close", "w-3.5 h-3.5")}</button>
+    <button type="button" data-remove-key="${esc(key)}" data-remove-pending="${pending ? "1" : "0"}" onclick="RC.removeAttachment(this.dataset.removeKey, this.dataset.removePending === '1')" class="rounded-full p-0.5 text-muted hover:text-foreground hover:bg-gray-200 transition shrink-0" aria-label="${t("rc.assistant.attachRemove")}">${icon("close", "w-3.5 h-3.5")}</button>
   </span>`;
 }
 
@@ -682,7 +682,7 @@ export function renderDigest(app) {
             ${icon("danger", "w-5 h-5 text-rose-600 shrink-0")}
             <div class="min-w-0">
               <p class="text-xs font-semibold text-rose-700 uppercase tracking-wider">${t("digest.alertLabel")}</p>
-              <p class="text-sm text-rose-600 mt-0.5">${t("digest.alertBody", { runId: a.runId, time: fmtTs(a.heartbeatTs) })} · <button onclick="RC.openReceipt('${esc(a.runId)}')" class="font-medium underline hover:no-underline">${t("digest.receipts")}</button></p>
+              <p class="text-sm text-rose-600 mt-0.5">${t("digest.alertBody", { runId: a.runId, time: fmtTs(a.heartbeatTs) })} · <button data-run-id="${esc(a.runId)}" onclick="RC.openReceipt(this.dataset.runId)" class="font-medium underline hover:no-underline">${t("digest.receipts")}</button></p>
             </div>
           </div>`).join("")}
         ${d.connectionAlerts.map((c) => `
@@ -730,7 +730,7 @@ function digestRow(r) {
         </div>
         <div class="flex items-center gap-2 shrink-0">
           ${badge(t("missions.status." + r.status), missionStatusColor[r.status] || "muted")}
-          <button onclick="RC.openReceipt('${esc(r.runId)}')" class="text-xs font-medium text-primary hover:underline">${t("digest.receipts")}</button>
+          <button data-run-id="${esc(r.runId)}" onclick="RC.openReceipt(this.dataset.runId)" class="text-xs font-medium text-primary hover:underline">${t("digest.receipts")}</button>
         </div>
       </div>
     </div>`;
@@ -761,7 +761,7 @@ export function renderStatus(app) {
                 <td class="px-6 py-4">${badge(s.connected ? t("rc.status.healthy") : t("rc.status.degraded"), s.connected ? "success" : "warning")}</td>
                 <td class="px-6 py-4 text-muted font-mono text-xs">${esc(s.transport)}</td>
                 <td class="px-6 py-4 text-right">
-                  ${btn({ label: s.connected ? t("rc.status.deactivate") : t("rc.status.connect"), variant: s.connected ? "ghost" : "default", size: "sm", onClick: `RC.toggleMcp('${esc(s.id)}')` })}
+                  ${btn({ label: s.connected ? t("rc.status.deactivate") : t("rc.status.connect"), variant: s.connected ? "ghost" : "default", size: "sm", onClick: "RC.toggleMcp(this.dataset.mcpId)", data: { "mcp-id": s.id } })}
                 </td>
               </tr>`).join("")}
             </tbody>
@@ -900,7 +900,7 @@ function renderSettingsAi(app) {
           ${custom ? `<div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input value="${esc(draft.baseUrl)}" oninput="RC.aiDraftField('baseUrl', this.value)" placeholder="https://api.example.com/v1" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>` : ""}
           <div><label class="block text-sm font-medium mb-1.5">${t("prov.apiKey")}</label><input id="ai-key-input" type="password" value="${esc(draft.key)}" oninput="RC.aiDraftField('key', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"><p class="text-xs text-muted mt-1">${t("prov.note")} ${t("prov.keyKeep")}</p></div>
           <div><label class="block text-sm font-medium mb-1.5">${t("prov.model")} ${custom ? `<span class="text-xs text-muted font-normal">(${t("prov.modelFreeEntry")})</span>` : ""}</label><input value="${esc(draft.model)}" oninput="RC.aiDraftField('model', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-          ${savedModels.length ? `<div class="flex flex-wrap gap-1.5">${savedModels.map((m) => `<button type="button" onclick="RC.aiPickModel('${esc(m)}')" class="rounded-full border border-border bg-card px-3 py-1 text-xs font-mono text-muted hover:border-primary/40 hover:text-primary transition">${esc(m)}</button>`).join("")}</div>` : ""}
+          ${savedModels.length ? `<div class="flex flex-wrap gap-1.5">${savedModels.map((m) => `<button type="button" data-model="${esc(m)}" onclick="RC.aiPickModel(this.dataset.model)" class="rounded-full border border-border bg-card px-3 py-1 text-xs font-mono text-muted hover:border-primary/40 hover:text-primary transition">${esc(m)}</button>`).join("")}</div>` : ""}
           <div class="flex flex-wrap items-center gap-2">
             ${btn({ label: t("prov.save"), onClick: "RC.saveAiProvider()" })}
             ${btn({ label: test && test.testing ? t("prov.testing") : t("prov.test"), variant: "secondary", onClick: "RC.testAiConnection()" })}
@@ -929,7 +929,7 @@ function autonomyDial(id, mode) {
   const stops = [["watch", t("trust.watch")], ["suggest", t("trust.suggest")], ["act_with_receipts", t("trust.act")]];
   return `
     <div class="grid grid-cols-3 gap-1 rounded-lg border border-border bg-gray-50 p-1">
-      ${stops.map(([v, l]) => `<button type="button" onclick="RC.dial('${id.scope}','${id.scopeId || ""}','${v}')" class="rounded-md py-1.5 text-xs font-medium transition ${mode === v ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${l}</button>`).join("")}
+      ${stops.map(([v, l]) => `<button type="button" data-scope="${esc(id.scope)}" data-scope-id="${esc(id.scopeId || "")}" data-value="${esc(v)}" onclick="RC.dial(this.dataset.scope, this.dataset.scopeId, this.dataset.value)" class="rounded-md py-1.5 text-xs font-medium transition ${mode === v ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${l}</button>`).join("")}
     </div>`;
 }
 
@@ -1446,7 +1446,7 @@ Object.assign(RC, {
             const m = c.mission_id ? app.data.missions.find((x) => x.id === c.mission_id) : null;
             const s = c.skill ? app.data.skills.find((x) => x.name === c.skill) : null;
             return `
-          <button onclick="RC.loadChat('${esc(c.id)}')" class="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${c.id === app.data.activeChatId ? "bg-primary/10" : "hover:bg-gray-50"}">
+          <button data-chat-id="${esc(c.id)}" onclick="RC.loadChat(this.dataset.chatId)" class="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${c.id === app.data.activeChatId ? "bg-primary/10" : "hover:bg-gray-50"}">
             ${icon("message", `w-4 h-4 shrink-0 ${c.id === app.data.activeChatId ? "text-primary" : "text-muted"}`)}
             <span class="min-w-0 flex-1">
               <span class="block text-sm font-medium truncate ${c.id === app.data.activeChatId ? "text-primary" : "text-foreground"}">${esc(c.title)}</span>

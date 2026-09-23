@@ -322,8 +322,8 @@ export function renderWizard(app) {
               <p class="text-xs ${s2.connected ? "text-primary font-medium" : "text-muted"}">${s2.connected ? t("rc.wizard.mcpEnabled") : t("rc.wizard.mcpAvailable")}</p>
             </div>
             ${s2.connected
-              ? `<button onclick="RC.wizToggleMcp('${esc(s2.id)}')" class="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition">${t("rc.wizard.mcpEnabled")}</button>`
-              : `${btn({ label: t("rc.wizard.mcpActivate"), variant: "default", size: "sm", onClick: `RC.wizToggleMcp('${esc(s2.id)}')` })}`}
+              ? `<button data-mcp-id="${esc(s2.id)}" onclick="RC.wizToggleMcp(this.dataset.mcpId)" class="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition">${t("rc.wizard.mcpEnabled")}</button>`
+              : `${btn({ label: t("rc.wizard.mcpActivate"), variant: "default", size: "sm", onClick: "RC.wizToggleMcp(this.dataset.mcpId)", data: { "mcp-id": s2.id } })}`}
           </div>
         `).join("") || `<p class="text-sm text-muted text-center py-6">${t("mcp.empty")}</p>`}
       </div>

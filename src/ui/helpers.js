@@ -70,7 +70,7 @@ export const badge = (text, color = "primary") => {
   return `<span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset hover-scale ${map[color] || map.primary}">${esc(text)}</span>`;
 };
 
-export const btn = ({ label, variant = "default", size = "md", iconName, cls = "", onClick = "", type = "button", id = "", disabled = false }) => {
+export const btn = ({ label, variant = "default", size = "md", iconName, cls = "", onClick = "", type = "button", id = "", disabled = false, data = {} }) => {
   const base = "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-all duration-150 ring-focus";
   const sizes = { sm: "px-3 py-1.5 text-xs", md: "px-4 py-2 text-sm", lg: "px-5 py-2.5 text-sm" };
   const variants = {
@@ -80,7 +80,12 @@ export const btn = ({ label, variant = "default", size = "md", iconName, cls = "
     outline: "bg-transparent text-foreground border border-border hover:bg-gray-50",
     destructive: "bg-destructive text-white shadow-sm hover:bg-red-600 hover:-translate-y-0.5 active:scale-[0.98]",
   };
-  return `<button type="${type}" ${id ? `id="${id}"` : ""} class="${base} ${sizes[size]} ${variants[variant]} ${cls}"${disabled ? " disabled" : ""} ${onClick ? `onclick="${onClick}"` : ""}>${iconName ? icon(iconName, "w-4 h-4") : ""}${label}</button>`;
+  // Data rides in escaped data-* attributes (HTML attribute context) — never
+  // interpolated into the onclick JS string (R-04).
+  const dataAttrs = Object.entries(data)
+    .map(([k, v]) => `data-${k}="${esc(v)}"`)
+    .join(" ");
+  return `<button type="${type}" ${id ? `id="${id}"` : ""} ${dataAttrs} class="${base} ${sizes[size]} ${variants[variant]} ${cls}"${disabled ? " disabled" : ""} ${onClick ? `onclick="${onClick}"` : ""}>${iconName ? icon(iconName, "w-4 h-4") : ""}${label}</button>`;
 };
 
 export const card = (children, cls = "") =>
@@ -98,9 +103,9 @@ export function rcSelect({ id, options, value, onChange = "", size = "md", cls =
       ? "border-transparent bg-transparent text-muted hover:bg-gray-50 hover:text-foreground"
       : "border border-border bg-white text-foreground hover:border-primary/40";
   return `
-  <div class="rc-select relative ${cls}" data-select-id="${id}">
+  <div class="rc-select relative ${cls}" data-select-id="${esc(id)}">
     <input type="hidden" id="${id}" value="${esc(cur.value)}" ${onChange ? `onchange="${onChange}"` : ""}>
-    <button type="button" onclick="RC.toggleRcSelect('${id}', event)" class="flex w-full items-center justify-between gap-1.5 rounded-lg ${triggerCls} ${sizes[size]} text-left focus:outline-none focus:ring-2 focus:ring-primary/30 transition">
+    <button type="button" onclick="RC.toggleRcSelect(this.closest('[data-select-id]').dataset.selectId, event)" class="flex w-full items-center justify-between gap-1.5 rounded-lg ${triggerCls} ${sizes[size]} text-left focus:outline-none focus:ring-2 focus:ring-primary/30 transition">
       <span class="rc-select-label flex items-center gap-1 min-w-0"><span class="rc-select-icon">${cur.icon ? icon(cur.icon, size === "xs" ? "w-3 h-3 shrink-0" : "w-3.5 h-3.5 shrink-0") : ""}</span><span class="rc-select-txt truncate">${esc(cur.label)}</span></span>
       ${icon("chevronDown", (size === "xs" ? "w-3 h-3" : "w-4 h-4") + " text-muted shrink-0")}
     </button>
@@ -108,7 +113,7 @@ export function rcSelect({ id, options, value, onChange = "", size = "md", cls =
       ${opts
         .map(
           (o) => `
-        <button type="button" onclick="RC.pickRcSelect('${id}', '${esc(o.value)}', event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? "bg-primary/10 text-primary" : "text-foreground"}" data-value="${esc(o.value)}" data-icon="${esc(o.icon || "")}">
+        <button type="button" onclick="RC.pickRcSelect(this.closest('[data-select-id]').dataset.selectId, this.dataset.value, event)" class="rc-select-option flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-gray-100 transition ${o.value === cur.value ? "bg-primary/10 text-primary" : "text-foreground"}" data-value="${esc(o.value)}" data-icon="${esc(o.icon || "")}">
           <span class="flex items-center gap-1.5 min-w-0"><span class="rc-opt-icon">${o.icon ? icon(o.icon, "w-3.5 h-3.5 shrink-0") : ""}</span><span class="truncate">${esc(o.label)}</span></span>
           <span class="rc-opt-check">${o.value === cur.value ? icon("check", "w-4 h-4 shrink-0") : ""}</span>
         </button>`,
@@ -172,5 +177,13 @@ export const pageHeader = (kicker, title, actions = "") => `
 
 // The mono receipt voice: ids, seqs, timestamps, costs — tabular figures.
 export const mono = (s) => `<span class="font-mono text-xs tabular">${esc(s)}</span>`;
+
+// Only http(s) URLs render as links (review R-30): a ref's URL is
+// user/remote data, and `javascript:` (or any other scheme) through an
+// href is script execution on click — a non-http(s) URL stays plain text.
+export const safeHref = (url) => {
+  const u = String(url ?? "").trim();
+  return /^https?:\/\//i.test(u) ? u : "";
+};
 export const fmtCents = (c) => `$${(c / 100).toFixed(2)}`;
 export const fmtTs = (iso) => (iso ? iso.replace("T", " ").replace("Z", " UTC") : "—");
