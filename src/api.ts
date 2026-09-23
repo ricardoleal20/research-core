@@ -266,14 +266,14 @@ const browserApi = {
   },
   getMissionRuns: async (missionId: string) =>
     (await servedByCore)
-      ? httpJson<MissionRun[]>(`/api/missions/${missionId}/runs`)
+      ? httpJson<MissionRun[]>(`/api/missions/${encodeURIComponent(missionId)}/runs`)
       : mockApi.getMissionRuns(missionId),
   // Compute jobs (Story 3.2, FR-11.4): the mission card's jobs area reads
   // the last observed lifecycle over the same-origin API (polling and
   // submitting stay on the Tauri command path — mutations, AD-14).
   pollJobs: async (missionId: string) => {
     if (await servedByCore) {
-      return httpJson<Job[]>(`/api/missions/${missionId}/jobs`);
+      return httpJson<Job[]>(`/api/missions/${encodeURIComponent(missionId)}/jobs`);
     }
     return mockApi.pollJobs(missionId);
   },
@@ -353,7 +353,7 @@ const browserApi = {
   getSearchDisclosure: async (missionId: string | null) => {
     if (await servedByCore) {
       return missionId
-        ? httpJson<SearchDisclosure>(`/api/missions/${missionId}/search-disclosure`)
+        ? httpJson<SearchDisclosure>(`/api/missions/${encodeURIComponent(missionId)}/search-disclosure`)
         : httpJson<SearchDisclosure>("/api/search-disclosure");
     }
     return mockApi.getSearchDisclosure(missionId);
@@ -385,7 +385,7 @@ const browserApi = {
   },
   listHypotheses: async (missionId: string) =>
     (await servedByCore)
-      ? httpJson<Hypothesis[]>(`/api/missions/${missionId}/hypotheses`)
+      ? httpJson<Hypothesis[]>(`/api/missions/${encodeURIComponent(missionId)}/hypotheses`)
       : mockApi.listHypotheses(missionId),
   createHypothesis: async (statement: string, missionId: string) => {
     if (await servedByCore) {
@@ -420,7 +420,7 @@ const browserApi = {
   },
   listEvidence: async (hypothesisId: string) =>
     (await servedByCore)
-      ? httpJson<Claim[]>(`/api/hypotheses/${hypothesisId}/evidence`)
+      ? httpJson<Claim[]>(`/api/hypotheses/${encodeURIComponent(hypothesisId)}/evidence`)
       : mockApi.listEvidence(hypothesisId),
   registerClaim: async (hypothesisId: string, text: string, sourceMessageId: string | null) => {
     if (await servedByCore) {
@@ -585,7 +585,7 @@ const browserApi = {
   listProposals: async (missionId: string | null) => {
     if (await servedByCore) {
       return missionId
-        ? httpJson<Proposal[]>(`/api/missions/${missionId}/proposals`)
+        ? httpJson<Proposal[]>(`/api/missions/${encodeURIComponent(missionId)}/proposals`)
         : httpJson<Proposal[]>("/api/proposals");
     }
     return mockApi.listProposals(missionId);
