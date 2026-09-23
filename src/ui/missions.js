@@ -209,6 +209,7 @@ export function renderBoard(app) {
         <h1 class="font-serif text-4xl italic max-w-2xl">${esc(mission ? mission.question : t("board.title"))}</h1>
       </div>
       <div class="flex gap-2">
+        ${btn({ label: t("cp.title"), variant: "secondary", size: "sm", iconName: "history", onClick: "RC.openCheckpoints()" })}
         ${btn({ label: t("rd.report"), variant: "secondary", size: "sm", iconName: "check", onClick: `RC.openReadiness('${esc(missionId || "")}')` })}
         ${mission ? btn({ label: t("missions.roles.drafter"), variant: "default", size: "sm", iconName: "bolt", onClick: `RC.runStep('${esc(mission.id)}','drafter')` }) : ""}
       </div>
@@ -233,6 +234,7 @@ export function renderBoard(app) {
         </div>
         <div class="space-y-5">
           ${renderQuarantine(app, pending, decided)}
+          ${renderDisclosure(app, missionId)}
           ${renderMissionMeta(mission)}
         </div>
       </div>
@@ -383,6 +385,158 @@ function renderMissionMeta(mission) {
       </div>
       ${btn({ label: t("missions.roles.critic"), variant: "outline", size: "sm", iconName: "bolt", cls: "w-full", onClick: `RC.runStep('${esc(mission.id)}','critic')` })}
     </div>`);
+}
+
+// ========== SEARCH DISCLOSURE (Story 4.1, FR-12.1) ==========
+// The mission's Divulgación card: every search.run row in seq order —
+// PRISMA-style, null results named, nothing summarized away.
+function renderDisclosure(app, missionId) {
+  const d = app.data.disclosure[missionId];
+  const rows = d ? d.rows : null;
+  return card(`
+    <div class="p-5 space-y-3">
+      <div>
+        <h3 class="heading-3">${t("sd.title")}</h3>
+        <p class="text-xs text-muted mt-0.5">${t("sd.sub")}</p>
+      </div>
+      ${!rows ? `<p class="text-sm text-muted py-3 text-center">${t("rc.common.loading")}</p>` : rows.length === 0 ? `
+        <p class="text-sm text-muted py-3 text-center">${t("sd.empty")}</p>` : `
+        <div class="flex items-center gap-2">
+          ${badge(t("sd.total", { count: d.total }), "muted")}
+          ${d.nullResultCount ? badge(t("sd.nulls", { count: d.nullResultCount }), "warning") : ""}
+        </div>
+        <div class="space-y-2">
+          ${rows.map((r) => `
+            <div class="rounded-lg border border-border bg-white px-3 py-2.5">
+              <div class="flex items-start justify-between gap-2">
+                <p class="text-xs leading-snug min-w-0"><span class="font-mono text-[10px] text-muted tabular">#${r.seq}</span> ${esc(r.query)}</p>
+                ${r.nullResult ? badge(t("sd.nullResult"), "warning") : ""}
+              </div>
+              <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-muted">${esc(r.database)}</span>
+                ${r.order ? `<span class="text-[10px] text-muted">${esc(r.order)}</span>` : ""}
+                <span class="text-[10px] text-muted tabular">${fmtTs(r.startedAt)}</span>
+                <span class="text-[10px] font-medium ${r.nullResult ? "text-amber-700" : "text-foreground"} tabular">${t("sd.results", { count: r.resultCount })}</span>
+                ${r.firstPage ? `<span class="text-[10px] text-muted">${t("sd.firstPage")}</span>` : ""}
+              </div>
+              ${r.filters && Object.keys(r.filters).length ? `
+                <p class="mt-1 font-mono text-[10px] text-muted break-all">${esc(JSON.stringify(r.filters))}</p>` : ""}
+            </div>`).join("")}
+        </div>`}
+    </div>`);
+}
+
+// ========== CHECKPOINTS DRAWER (Story 2.6, FR-10.1) ==========
+// The board header's restore-point control: create named checkpoints, preview
+// a rollback (the orphaned list, never hidden), execute it, and read the
+// rollback history — all over the checkpoint.* API commands.
+export function renderCheckpointsDrawer(app) {
+  const view = app.data.checkpoints;
+  const confirming = app.state.rollbackConfirm;
+  const outcome = app.data.rollbackOutcome;
+  const overlay = document.createElement("div");
+  overlay.className = "rc-modal fixed inset-0 z-[60] flex justify-end";
+  const cpById = (id) => (view?.checkpoints || []).find((c) => c.id === id);
+  overlay.innerHTML = `
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="RC.closeCheckpoints()"></div>
+    <div class="relative w-full max-w-md h-full bg-white border-l border-border shadow-xl p-6 overflow-y-auto animate-slide-right">
+      <div class="flex items-center justify-between mb-1">
+        <h2 class="font-serif text-2xl italic">${t("cp.title")}</h2>
+        <button onclick="RC.closeCheckpoints()" class="p-1 rounded hover:bg-gray-100">${icon("close", "w-5 h-5")}</button>
+      </div>
+      <p class="text-xs text-muted mb-4">${t("cp.sub")}</p>
+      ${!view ? `<p class="text-sm text-muted py-8 text-center">${t("rc.common.loading")}</p>` : `
+      <div class="space-y-5">
+        ${outcome ? `
+          <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 flex items-start gap-3">
+            ${icon("check", "w-5 h-5 text-emerald-600 shrink-0 mt-0.5")}
+            <p class="text-sm text-emerald-700 leading-snug">${t("cp.rolledBack", { name: outcome.rollback.name, count: outcome.rollback.orphanedCount })}</p>
+          </div>` : ""}
+        <div class="flex items-center justify-between text-xs">
+          <span class="caption text-muted">${t("cp.head")}</span>
+          <span class="font-mono text-xs tabular">e-${view.headSeq}</span>
+        </div>
+        <div class="rounded-xl border border-border bg-white p-4 space-y-3">
+          <div class="flex gap-2">
+            <input id="cp-name" placeholder="${t("cp.namePlaceholder")}" class="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+            ${btn({ label: t("cp.create"), variant: "default", size: "sm", iconName: "plus", onClick: "RC.createCheckpoint()" })}
+          </div>
+        </div>
+        <div>
+          <p class="caption text-muted mb-2">${t("cp.restorePoints")}</p>
+          <div class="rounded-xl border border-border divide-y divide-border overflow-hidden bg-white">
+            ${view.checkpoints.length ? view.checkpoints.slice().reverse().map((c) => `
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium truncate">${esc(c.name)}</p>
+                    <p class="font-mono text-[10px] text-muted tabular">e-${c.seq} · ${fmtTs(c.ts)}</p>
+                  </div>
+                  ${confirming && confirming.checkpointId === c.id ? "" : btn({ label: t("cp.rollback"), variant: "outline", size: "sm", onClick: `RC.confirmRollback('${esc(c.id)}')` })}
+                </div>
+                ${confirming && confirming.checkpointId === c.id ? (confirming.plan ? renderRollbackConfirm(confirming.plan) : `<p class="mt-3 text-xs text-muted">${t("rc.common.loading")}</p>`) : ""}
+              </div>`).join("") : `<p class="px-4 py-6 text-sm text-muted text-center">${t("cp.empty")}</p>`}
+          </div>
+        </div>
+        ${view.rollbacks.length ? `
+        <div>
+          <p class="caption text-muted mb-2">${t("cp.history")}</p>
+          <div class="space-y-1">
+            ${view.rollbacks.slice().reverse().map((r) => `
+              <div class="flex items-center justify-between gap-2 text-xs">
+                <span class="font-mono text-[10px] text-muted tabular">e-${r.seq}</span>
+                <span class="text-muted truncate flex-1">${t("cp.historyEntry", { seq: r.seq, name: r.name, count: r.orphanedCount })}</span>
+                <span class="font-mono text-[10px] text-muted tabular shrink-0">${fmtTs(r.ts)}</span>
+              </div>`).join("")}
+          </div>
+        </div>` : ""}
+      </div>`}
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+// The two-step confirmation (EXPERIENCE.md): every orphaned event and every
+// orphaned proposal, by name, before the rollback is executed.
+function renderRollbackConfirm(plan) {
+  const cp = plan.checkpoint;
+  const orphans = plan.orphanedEvents.length + plan.orphanedProposals.length;
+  return `
+    <div class="mt-3 rounded-xl border-2 border-amber-300 bg-amber-50 p-4 space-y-3">
+      <div>
+        <p class="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">${t("cp.confirmTitle")}</p>
+        <p class="text-xs text-amber-700 leading-relaxed">${t("cp.confirmBody", { name: cp.name, seq: cp.seq, count: plan.orphanedEvents.length + plan.orphanedProposals.length })}</p>
+      </div>
+      ${orphans === 0 ? `<p class="text-xs text-muted">${t("cp.orphanedNone")}</p>` : `
+        <div class="space-y-2">
+          ${plan.orphanedEvents.length ? `
+            <div>
+              <p class="caption text-muted mb-1">${t("cp.orphanedEvents")} · ${plan.orphanedEvents.length}</p>
+              <div class="space-y-0.5">
+                ${plan.orphanedEvents.map((e) => `
+                  <div class="flex items-center justify-between gap-2 text-xs">
+                    <span class="font-mono text-[10px] tabular text-muted">e-${e.seq}</span>
+                    <span class="font-mono text-[10px] truncate">${esc(e.kind)}</span>
+                    <span class="text-[10px] text-muted shrink-0">${esc(e.actor)}</span>
+                  </div>`).join("")}
+              </div>
+            </div>` : ""}
+          ${plan.orphanedProposals.length ? `
+            <div>
+              <p class="caption text-muted mb-1">${t("cp.orphanedProposals")} · ${plan.orphanedProposals.length}</p>
+              <div class="space-y-1">
+                ${plan.orphanedProposals.map((p) => `
+                  <div class="text-xs">
+                    <p class="truncate"><span class="font-mono text-[10px] text-muted tabular">pr-${p.seq}</span> ${esc(p.targetLabel || "—")} <span class="font-mono text-[10px]">${esc(p.proposedTo || "")}</span></p>
+                    ${p.basis ? `<p class="text-[10px] text-muted truncate">${esc(p.basis)}</p>` : ""}
+                  </div>`).join("")}
+              </div>
+            </div>` : ""}
+        </div>`}
+      <div class="flex items-center gap-2 pt-1">
+        ${btn({ label: t("cp.cancel"), variant: "ghost", size: "sm", onClick: "RC.cancelRollback()" })}
+        ${btn({ label: t("cp.confirm"), variant: "destructive", size: "sm", onClick: `RC.executeRollback('${esc(cp.id)}')` })}
+      </div>
+    </div>`;
 }
 
 // ========== READINESS DRAWER ==========
@@ -668,6 +822,75 @@ Object.assign(RC, {
   },
   closeReceipt() {
     ctx.app.state.receiptRunId = null;
+    ctx.render();
+  },
+  // ---- Checkpoints (Story 2.6, FR-10.1): the restore-point control ----
+  async openCheckpoints() {
+    const app = ctx.app;
+    app.state.checkpointsOpen = true;
+    app.state.rollbackConfirm = null;
+    app.data.rollbackOutcome = null;
+    app.data.checkpoints = undefined;
+    ctx.render();
+    try {
+      app.data.checkpoints = await api.listCheckpoints();
+    } catch (e) {
+      console.error(e);
+      app.data.checkpoints = null;
+    }
+    ctx.render();
+  },
+  closeCheckpoints() {
+    const app = ctx.app;
+    app.state.checkpointsOpen = false;
+    app.state.rollbackConfirm = null;
+    app.data.rollbackOutcome = null;
+    ctx.render();
+  },
+  async createCheckpoint() {
+    const app = ctx.app;
+    const name = document.getElementById("cp-name")?.value.trim() || "";
+    if (!name) return;
+    try {
+      await api.createCheckpoint(name);
+      app.data.checkpoints = await api.listCheckpoints();
+    } catch (e) {
+      alert(t("onb.error") + " " + (e?.message || e));
+    }
+    ctx.render();
+    const input = document.getElementById("cp-name");
+    if (input) input.value = "";
+  },
+  async confirmRollback(checkpointId) {
+    const app = ctx.app;
+    app.state.rollbackConfirm = { checkpointId, plan: null };
+    ctx.render();
+    try {
+      app.state.rollbackConfirm = { checkpointId, plan: await api.previewRollback(checkpointId) };
+    } catch (e) {
+      console.error(e);
+      app.state.rollbackConfirm = null;
+      alert(t("onb.error") + " " + (e?.message || e));
+    }
+    ctx.render();
+  },
+  cancelRollback() {
+    ctx.app.state.rollbackConfirm = null;
+    ctx.render();
+  },
+  async executeRollback(checkpointId) {
+    const app = ctx.app;
+    try {
+      app.data.rollbackOutcome = await api.rollbackToCheckpoint(checkpointId);
+      app.state.rollbackConfirm = null;
+      app.data.checkpoints = await api.listCheckpoints();
+      // the board + missions are new folds of the restored state
+      app.data.missionsLoaded = false;
+      await ctx.loadMissions();
+      if (app.state.boardMissionId) await ctx.loadBoard(app.state.boardMissionId);
+    } catch (e) {
+      alert(t("onb.error") + " " + (e?.message || e));
+    }
     ctx.render();
   },
   async addHypothesis() {
