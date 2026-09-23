@@ -1160,6 +1160,181 @@ mod tests {
         let _ = (a.id, b.id);
     }
 
+    // ---- the support sweep (Story 6.10, FR-23.3) ----
+
+    /// A resolver whose every answer is a parseable support judgment — the
+    /// same layer serves the scan step (its one-line verdict is the reply's
+    /// first line, harmless here) and the sweep's judge.
+    fn support_answer_resolver(
+        db: &Db,
+        _conn: &Connection,
+        role: &crate::domain::missions::RoleConfig,
+    ) -> Result<ProviderLayer, ProviderError> {
+        Ok(fake_remote_layer(
+            db,
+            &role.provider,
+            &role.model,
+            "supported\nconfidence: 0.9",
+            Usage { input_tokens: 150, output_tokens: 12 },
+        ))
+    }
+
+    fn support_shift(db: &Db) -> NightShift {
+        NightShift::with_resolver_and_prober(db.clone(), support_answer_resolver, ok_prober())
+    }
+
+    /// Seed one mission + hypothesis + PINNED claim; returns the claim event
+    /// and the mission id.
+    async fn seed_pinned_claim(db: &Db) -> (StoredEvent, Uuid) {
+        let mission = create_mission(db, "daily-00:00", 500).await;
+        let hyp = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap()
+        };
+        let claim = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(NewEvent::claim_registered("X holds at 32k.", hyp.id, None).unwrap())
+                .unwrap()
+        };
+        {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(
+                    NewEvent::evidence_pinned_citation(
+                        claim.id,
+                        hyp.id,
+                        "ref-1",
+                        "X holds at 32k, stated.",
+                        0.82,
+                        "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        (claim, mission.id)
+    }
+
+    /// The tick sweeps support checks over never-judged pins: one
+    /// `support-sweep` run per mission with unchecked pins, the run closed
+    /// with the code-form rollup verdict, one `pin.support_checked` event
+    /// attributed to its judging model — and the de-dup holds: a second
+    /// tick the same night never re-asks a judged pin.
+    #[tokio::test]
+    async fn the_tick_sweeps_support_checks_and_never_re_asks_a_judged_pin() {
+        let db = test_db();
+        let (claim, _mission) = seed_pinned_claim(&db).await;
+        let shift = support_shift(&db);
+        let _ = shift.tick(now_local()).await.unwrap();
+
+        // The sweep run opened and closed with the rollup verdict.
+        let sweep_starts: Vec<StoredEvent> = events_of(&db, RUN_STARTED)
+            .await
+            .into_iter()
+            .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+            .collect();
+        assert_eq!(sweep_starts.len(), 1, "one support-sweep run");
+        assert_eq!(
+            sweep_starts[0].actor,
+            Actor::System { component: crate::eventstore::SystemComponent::Scheduler }
+        );
+        let sweep_finish = events_of(&db, RUN_FINISHED)
+            .await
+            .into_iter()
+            .find(|e| e.payload["run_id"] == sweep_starts[0].payload["run_id"])
+            .expect("the sweep run closed");
+        assert_eq!(sweep_finish.payload["verdict"], json!("support: 1 checked · 1 supported"));
+
+        // The judgment landed: actor system/support, attributed to its
+        // judging model (the simulated candidate — differs from GLM-5.3).
+        let checks = events_of(&db, crate::domain::support::PIN_SUPPORT_CHECKED).await;
+        assert_eq!(checks.len(), 1);
+        assert_eq!(
+            checks[0].actor,
+            Actor::System { component: crate::eventstore::SystemComponent::Support }
+        );
+        assert_eq!(checks[0].payload["verdict"], json!("supported"));
+        assert_eq!(checks[0].payload["judging_model"], json!("simulated"));
+        assert!(checks[0].causes.contains(&claim.id));
+
+        // The de-dup (Story 6.10): a second tick never re-asks a judged
+        // pin — no new sweep run, no new judgment, no new spend.
+        let _ = shift.tick(now_local()).await.unwrap();
+        assert_eq!(
+            events_of(&db, crate::domain::support::PIN_SUPPORT_CHECKED).await.len(),
+            1,
+            "a judged pin is never re-asked by a later sweep"
+        );
+        assert_eq!(
+            events_of(&db, RUN_STARTED)
+                .await
+                .into_iter()
+                .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+                .count(),
+            1,
+            "no second sweep run for a fully judged mission"
+        );
+
+        // The digest carries the sweep's row with its receipts link
+        // (FR-4.4 discipline).
+        let digest = morning_digest(&db).await.unwrap();
+        let row = digest
+            .rows
+            .iter()
+            .find(|r| r.support_checks > 0)
+            .expect("the sweep's digest row");
+        assert_eq!(row.support_checks, 1);
+        assert_eq!(row.support_unsupported, 0);
+        assert!(row.verdict_line().contains("1 support checked"));
+    }
+
+    /// A mission with NO pins never opens a sweep run — nothing to judge
+    /// costs no run and no spend; a terminal mission's pins sleep too.
+    #[tokio::test]
+    async fn missions_without_unchecked_pins_never_open_a_sweep_run() {
+        let db = test_db();
+        // no pins at all
+        create_mission(&db, "off", 500).await;
+        let shift = support_shift(&db);
+        shift.tick(now_local()).await.unwrap();
+        assert!(
+            events_of(&db, RUN_STARTED)
+                .await
+                .into_iter()
+                .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+                .count() == 0,
+            "no pins — no sweep run"
+        );
+
+        // a judged pin on a TERMINAL mission sleeps: the sweep skips it
+        let db2 = test_db();
+        let (_claim, mission2) = seed_pinned_claim(&db2).await;
+        {
+            let conn = db2.0.lock().await;
+            EventStore::new(&conn)
+                .append(
+                    NewEvent::new(MISSION_STOPPED, Actor::User, json!({ "reason": "user stopped" }))
+                        .unwrap()
+                        .with_causes(vec![mission2]),
+                )
+                .unwrap();
+        }
+        let shift2 = support_shift(&db2);
+        shift2.tick(now_local()).await.unwrap();
+        assert!(
+            events_of(&db2, RUN_STARTED)
+                .await
+                .into_iter()
+                .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+                .count() == 0,
+            "a terminal mission's pins sleep (AD-12)"
+        );
+        assert!(events_of(&db2, crate::domain::support::PIN_SUPPORT_CHECKED).await.is_empty());
+    }
+
     #[test]
     fn one_line_truncates_at_a_word_boundary() {
         assert_eq!(one_line("\n\n  first line  \nsecond"), "first line");

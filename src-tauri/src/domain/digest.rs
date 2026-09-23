@@ -21,6 +21,7 @@ use crate::domain::jobs::{JobLifecyclePayload, JOB_FAILED, JOB_FINISHED};
 use crate::domain::missions::{MissionStatus, MissionsProjection};
 use crate::domain::nightshift::{RUN_FAILED, RUN_FINISHED, RUN_STARTED};
 use crate::domain::proposals::{ProposalStatus, ProposalsProjection};
+use crate::domain::support::{SupportVerdict, PIN_SUPPORT_CHECKED};
 use crate::domain::telemetry::{connection_health, RUN_DEAD};
 use crate::eventstore::{EventError, StoredEvent};
 
@@ -87,6 +88,14 @@ pub struct DigestRow {
     /// finished/failed) — the structured form the UI composes its bilingual
     /// line from. `None` when no job completed in the window.
     pub job_verdict: Option<DigestJobVerdict>,
+    /// Support checks the night swept (Story 6.10, FR-23.3): the
+    /// `pin.support_checked` events in the window, attributed to the
+    /// mission through their hypothesis — the digest's one-line verdicts
+    /// carry the rollup.
+    pub support_checks: u32,
+    /// How many of the swept checks returned `unsupported` — the honest
+    /// count the researcher reads over coffee.
+    pub support_unsupported: u32,
 }
 
 /// One remote job completion's verdict line (Story 3.4): which target, which
@@ -135,6 +144,15 @@ impl DigestRow {
                     " · job failed: {}",
                     job.reason.as_deref().unwrap_or("unknown")
                 ));
+            }
+        }
+        // Support checks (Story 6.10, FR-23.3): the sweep's rollup rides the
+        // same one-line verdict — with the unsupported count named, never
+        // buried.
+        if self.support_checks > 0 {
+            line.push_str(&format!(" · {} support checked", self.support_checks));
+            if self.support_unsupported > 0 {
+                line.push_str(&format!(" · {} unsupported", self.support_unsupported));
             }
         }
         if self.ceiling_reached {
@@ -209,6 +227,10 @@ struct MissionNight {
     jobs_finished: u32,
     jobs_failed: u32,
     latest_job_verdict: Option<DigestJobVerdict>,
+    // Support checks (Story 6.10, FR-23.3): the sweep's verdicts, tallied
+    // per mission through their hypothesis.
+    support_checks: u32,
+    support_unsupported: u32,
 }
 
 impl MissionNight {
@@ -258,6 +280,23 @@ impl MissionNight {
             reason: payload.reason,
         });
     }
+
+    /// Note one support check (Story 6.10): `pin.support_checked` events
+    /// carry their hypothesis — the mission attribution resolves through
+    /// the hypotheses fold. A corrupt payload never breaks the digest.
+    fn note_support(&mut self, event: &StoredEvent) {
+        let Ok(payload) =
+            serde_json::from_value::<crate::domain::support::PinSupportCheckedPayload>(
+                event.payload.clone(),
+            )
+        else {
+            return; // a corrupt support event never breaks the digest
+        };
+        self.support_checks += 1;
+        if payload.verdict == SupportVerdict::Unsupported {
+            self.support_unsupported += 1;
+        }
+    }
 }
 
 /// The mission a run event belongs to (payload `mission_id`, then causes).
@@ -288,6 +327,13 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
     let events = &cursor.live_owned(events);
     let missions = MissionsProjection::fold(events)?;
     let proposals = ProposalsProjection::fold(events)?;
+    // Support checks (Story 6.10): their events carry the hypothesis — the
+    // mission attribution resolves through the hypotheses fold.
+    let hyp_mission: std::collections::HashMap<Uuid, Uuid> =
+        crate::domain::hypotheses::HypothesesProjection::fold(events)?
+            .into_iter()
+            .map(|h| (h.id, h.mission_id))
+            .collect();
     let window_start = now - Duration::hours(DIGEST_WINDOW_HOURS);
 
     // Dead runs in the window (FR-9.1/FR-4.3, Story 2.6): the `run.dead`
@@ -378,6 +424,26 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
             }
             continue;
         }
+        // Support checks (Story 6.10, FR-23.3): a night the sweep judged
+        // pins — tallied per mission, named in the verdict line.
+        if event.kind == PIN_SUPPORT_CHECKED {
+            let mission_id = event
+                .payload
+                .get("hypothesis_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .and_then(|h| hyp_mission.get(&h).copied());
+            if let Some(mission_id) = mission_id {
+                let i = *index
+                    .entry(mission_id)
+                    .or_insert_with(|| {
+                        nights.push((mission_id, MissionNight::default()));
+                        nights.len() - 1
+                    });
+                nights[i].1.note_support(event);
+            }
+            continue;
+        }
         let Some(mission_id) = run_event_mission(event) else {
             continue;
         };
@@ -396,8 +462,14 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
     let mut total_ceiling = 0u64;
     for (mission_id, night) in &nights {
         // A night with only remote job completions (no scan run) still
-        // earns its row (Story 3.4) — the digest reports job completions.
-        if night.started == 0 && night.jobs_finished == 0 && night.jobs_failed == 0 {
+        // earns its row (Story 3.4) — and so does a night the support sweep
+        // judged pins (Story 6.10): the sweep's own runs usually carry it,
+        // and the manual checks earn it on their own.
+        if night.started == 0
+            && night.jobs_finished == 0
+            && night.jobs_failed == 0
+            && night.support_checks == 0
+        {
             continue; // run terminal events without a start in-window (edge)
         }
         let Some(mission) = missions.iter().find(|m| m.id == *mission_id) else {
@@ -430,6 +502,8 @@ pub fn render_digest(events: &[StoredEvent], now: DateTime<Utc>) -> Result<Morni
             jobs_finished: night.jobs_finished,
             jobs_failed: night.jobs_failed,
             job_verdict: night.latest_job_verdict.clone(),
+            support_checks: night.support_checks,
+            support_unsupported: night.support_unsupported,
         });
     }
 
@@ -822,6 +896,88 @@ mod tests {
         let digest = render_digest(&store2.events_all().unwrap(), now).unwrap();
         assert_eq!(digest.outcome, DigestOutcome::NoRuns);
         assert!(digest.rows.is_empty());
+    }
+
+    // ---- the support sweep (Story 6.10, FR-23.3) ----
+
+    /// A night the support sweep judged pins: the mission's row carries the
+    /// rollup — counts in the structured fields, the one-line verdict names
+    /// the checks AND the unsupported count (never buried), and the sweep's
+    /// run events give the row its receipts link.
+    #[test]
+    fn a_support_sweep_night_carries_the_rollup_and_receipts_link() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let now = Utc.with_ymd_and_hms(2026, 9, 19, 9, 4, 0).unwrap();
+        let mission = seed_mission(&store, "Does the pinned evidence hold up?");
+        let hyp = store
+            .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+            .unwrap();
+        let claim = store
+            .append(NewEvent::claim_registered("X holds at 32k.", hyp.id, None).unwrap())
+            .unwrap();
+        let pin = store
+            .append(
+                NewEvent::evidence_pinned_citation(
+                    claim.id,
+                    hyp.id,
+                    "ref-1",
+                    "X holds at 32k, stated.",
+                    0.82,
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // The sweep's run, in the window.
+        append_at(
+            &store,
+            NewEvent::run_started(
+                "nightshift-support-1",
+                mission.id,
+                "daily-03:00",
+                crate::domain::support::SUPPORT_SWEEP_STEP,
+            )
+            .unwrap(),
+            night(now, 60),
+        );
+        append_at(
+            &store,
+            NewEvent::pin_support_checked(
+                claim.id,
+                hyp.id,
+                pin.seq,
+                crate::domain::support::SupportVerdict::Unsupported,
+                0.8,
+                "claude-sonnet-4-5",
+                "GLM-5.3",
+            )
+            .unwrap(),
+            night(now, 58),
+        );
+        append_at(
+            &store,
+            NewEvent::run_finished(
+                "nightshift-support-1",
+                mission.id,
+                "support: 1 checked · 1 unsupported",
+                0,
+            )
+            .unwrap(),
+            night(now, 55),
+        );
+
+        let digest = render_digest(&store.events_all().unwrap(), now).unwrap();
+        assert_eq!(digest.rows.len(), 1, "the sweep night earns its row");
+        let row = &digest.rows[0];
+        assert_eq!(row.runs, 1, "the sweep run counts");
+        assert_eq!(row.support_checks, 1);
+        assert_eq!(row.support_unsupported, 1);
+        assert_eq!(row.run_id, "nightshift-support-1", "the receipts link");
+        let line = row.verdict_line();
+        assert!(line.contains("1 support checked"), "the verdict line: {line}");
+        assert!(line.contains("1 unsupported"), "the unsupported count is named: {line}");
+        assert!(!line.contains('\n'));
     }
 
     #[test]
