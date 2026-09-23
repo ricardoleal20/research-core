@@ -55,7 +55,30 @@ impl StdioSession {
         if let Some(env_s) = &def.env {
             for pair in env_s.split(',') {
                 if let Some((k, v)) = pair.split_once('=') {
-                    command.env(k.trim(), v.trim());
+                    let (k, v) = (k.trim(), v.trim());
+                    // Keychain hydration (review R-02): a secret-named key
+                    // with an EMPTY column value is a migration tombstone —
+                    // the real credential lives in the OS keychain under
+                    // `mcp:<server id>:<KEY>`. A non-empty value is the
+                    // user's current setting and wins.
+                    let value = if v.is_empty()
+                        && crate::eventstore::migration::is_secret_setting(k)
+                    {
+                        match keyring::Entry::new(
+                            crate::eventstore::migration::KEYCHAIN_SERVICE,
+                            &crate::eventstore::migration::mcp_keychain_account(&def.id, k),
+                        )
+                        .and_then(|e| e.get_password())
+                        {
+                            Ok(p) if !p.is_empty() => p,
+                            _ => continue, // no keychain entry — nothing to set
+                        }
+                    } else {
+                        v.to_string()
+                    };
+                    if !k.is_empty() && !value.is_empty() {
+                        command.env(k, value);
+                    }
                 }
             }
         }

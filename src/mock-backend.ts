@@ -1816,8 +1816,18 @@ export const mockApi = {
   testMcpServer: async () => ({ ok: true }),
   listMcpTools: async () => [],
 
-  // settings
-  getSettings: async () => { await delay(); return { ...settings }; },
+  // settings — parity with the core's get_settings (review R-07/R-20):
+  // secret-named rows and lock material never cross to the webview
+  getSettings: async () => {
+    await delay();
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(settings)) {
+      const lk = k.toLowerCase();
+      if (["api_key", "token", "secret", "password", "credential", "passphrase"].some((n) => lk.includes(n)) || lk.endsWith("_key") || lk === "key" || lk.startsWith("lock_")) continue;
+      out[k] = v;
+    }
+    return out;
+  },
   updateSetting: async (key: string, value: string) => { settings[key] = value; },
   setProviderKey: async (key: string) => { settings.api_key = key; },
 

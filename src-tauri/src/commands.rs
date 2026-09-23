@@ -250,8 +250,36 @@ pub async fn add_mcp_server(db: State<'_, Db>, name: String, transport: String, 
 #[tauri::command]
 pub async fn update_mcp_server(db: State<'_, Db>, id: String, name: String, transport: String, command: String, args: String, env: String, url: String, tags: String, connected: bool) -> Result<(), String> {
     let c = db.0.lock().await;
+    // The env the update replaces — a secret-named key that disappears from
+    // the new env is the user REMOVING a credential: the keychain entry the
+    // migration may have written for it goes too (review R-02 — no stale
+    // credential can resurrect at spawn).
+    let old_env: Option<String> = c
+        .query_row("SELECT env FROM mcp_servers WHERE id=?1", params![id], |r| r.get(0))
+        .ok();
     c.execute("UPDATE mcp_servers SET name=?2,transport=?3,command=?4,args=?5,env=?6,url=?7,tags=?8,connected=?9 WHERE id=?1",
         params![id, name, transport, command, args, env, url, tags, connected as i64]).map_err(err)?;
+    if let Some(old_env) = old_env {
+        let new_keys: std::collections::HashSet<&str> = env
+            .split(',')
+            .filter_map(|p| p.split_once('=').map(|(k, _)| k.trim()))
+            .collect();
+        for pair in old_env.split(',') {
+            let Some((k, v)) = pair.split_once('=') else { continue };
+            let k = k.trim();
+            if !v.trim().is_empty()
+                && crate::eventstore::migration::is_secret_setting(k)
+                && !new_keys.contains(k)
+            {
+                if let Ok(entry) = keyring::Entry::new(
+                    crate::eventstore::migration::KEYCHAIN_SERVICE,
+                    &crate::eventstore::migration::mcp_keychain_account(&id, k),
+                ) {
+                    let _ = entry.delete_credential();
+                }
+            }
+        }
+    }
     Ok(())
 }
 #[tauri::command]
@@ -308,6 +336,16 @@ pub async fn list_mcp_tools(registry: State<'_, McpRegistry>) -> Result<Value, S
 }
 
 // ---------- Settings ----------
+/// Settings rows that never cross to the webview (review R-07/R-20):
+/// secret-named rows (the legacy `api_key` fallback among them) and the
+/// local-access-lock material (`lock_hash`/`lock_salt` — brute-forceable
+/// offline once leaked). `get_ai_config` is the presence-flag pattern the
+/// AI settings already use; nothing legitimate reads these rows from the
+/// webview.
+fn is_webview_hidden_setting(key: &str) -> bool {
+    crate::eventstore::migration::is_secret_setting(key) || key.starts_with("lock_")
+}
+
 #[tauri::command]
 pub async fn get_settings(db: State<'_, Db>) -> Result<Value, String> {
     let c = db.0.lock().await;
@@ -315,6 +353,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<Value, String> {
     let mut map = serde_json::Map::new();
     for r in rows {
         if let (Some(k), Some(v)) = (r.get("key").and_then(|v| v.as_str()), r.get("value").and_then(|v| v.as_str())) {
+            if is_webview_hidden_setting(k) {
+                continue; // secrets and lock material never cross to the webview
+            }
             map.insert(k.to_string(), Value::String(v.to_string()));
         }
     }

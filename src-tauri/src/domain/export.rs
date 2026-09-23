@@ -902,15 +902,23 @@ fn render_timeline(
 ) -> Result<Vec<ExportFile>, ExportError> {
     let mut files = Vec::new();
     // The raw timeline at the cut — one JSON object per line, git-friendly
-    // by construction (a diff shows exactly which events landed).
+    // by construction (a diff shows exactly which events landed). One
+    // boundary scrub (review R-02): `import.mcp_server` events written
+    // before the migration scrub existed are redacted HERE too, so an old
+    // log never ships a credential into the git-committed export.
     let mut jsonl = String::new();
     for event in events {
+        let payload = if event.kind == "import.mcp_server" {
+            crate::eventstore::migration::redact_mcp_server_row(&event.payload)
+        } else {
+            event.payload.clone()
+        };
         let line = serde_json::json!({
             "seq": event.seq,
             "ts": event.ts.to_rfc3339(),
             "actor": actor_label(&event.actor),
             "kind": event.kind,
-            "payload": event.payload,
+            "payload": payload,
             "causes": event.causes,
         });
         jsonl.push_str(&line.to_string());
@@ -1855,5 +1863,57 @@ mod tests {
         let mono_only = "# x\n\n- **Cut / Corte:** `e-7` · 2026-01-01\n";
         assert_eq!(parse_manifest_cut(mono_only), Some(7));
         assert_eq!(parse_manifest_cut("nothing here"), None);
+    }
+
+    /// The export boundary scrubs MCP secrets from the raw timeline
+    /// (review R-02): an `import.mcp_server` event written BEFORE the
+    /// migration scrub existed still renders redacted into
+    /// `timeline/events.jsonl` — the git-committed export never ships a
+    /// credential, whatever an old log holds.
+    #[test]
+    fn the_timeline_export_scrubs_mcp_secrets_from_old_logs() {
+        const SENTINEL: &str = "sk-export-NEVER-LEAK-3b8a";
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        seed_full_workspace(&store);
+        // an import event exactly as a pre-scrub migration wrote it: the
+        // secret sitting in plain sight in the payload
+        store
+            .append(
+                NewEvent::import_entity(
+                    "mcp_server",
+                    serde_json::json!({
+                        "id": "brave",
+                        "name": "Brave",
+                        "transport": "stdio",
+                        "command": "npx",
+                        "args": "-y @mcp/brave",
+                        "env": format!("BRAVE_API_KEY={SENTINEL},NODE_ENV=production"),
+                        "url": "https://api.brave.example/v1?token=leak-me&client=rc",
+                        "connected": 1,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // the log itself still holds the secret (append-only) — the export
+        // must not
+        assert!(serde_json::to_string(&store.events_all().unwrap()).unwrap().contains(SENTINEL));
+
+        let events = store.events_all().unwrap();
+        let dir = tmp_dir("mcp-scrub");
+        let outcome = export_events(&events, &dir, SCOPE_ALL, None, fixed_now()).unwrap();
+        let jsonl_path = outcome.files.iter().find(|p| *p == "timeline/events.jsonl").unwrap();
+        let jsonl = std::fs::read_to_string(dir.join(jsonl_path)).unwrap();
+        assert!(!jsonl.contains(SENTINEL), "the export leaked the MCP secret");
+        assert!(jsonl.contains("NODE_ENV=production"), "non-secret env survives");
+        assert!(jsonl.contains("BRAVE_API_KEY=[redacted]"), "the secret key is visibly redacted");
+        assert!(jsonl.contains("token=[redacted]"), "secret query values are redacted");
+        // every other file is secret-free too
+        for path in &outcome.files {
+            let text = std::fs::read_to_string(dir.join(path)).unwrap();
+            assert!(!text.contains(SENTINEL), "{path} leaked the MCP secret");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
