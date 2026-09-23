@@ -1,0 +1,303 @@
+# The bundled journal dataset (Story 6.11, FR-19.2, NFR-1/NFR-7): venue
+# templates as DATA — the FR-16.8 skills precedent applied to publishing.
+# This file ships with the app; ranking and the tier-2 gate read it and
+# nothing else — no cloud fetches ever (NFR-1). Community-extensible: the
+# shape below is the whole contract (add a [[venue]] block to add a venue;
+# add a criterion to deepen a checklist).
+#
+# Criterion kinds (machine-checkable unless kind = "human"):
+#   manuscript_consistency        — board-consistency flags empty (FR-20.4)
+#   load_bearing_support          — every pinned claim support-verified (FR-23)
+#   references_resolved           — every \cite key resolves: .bib → library
+#   compiled_pdf                  — last compile outcome ok
+#   statement_present             — structural statement section present
+#                                   (statement: data_availability |
+#                                    code_availability | ethics | funding |
+#                                    conflict_of_interest)
+#   abstract_within_words         — \begin{abstract} word count (max: N)
+#   main_text_within_words        — total .tex word count (max: N)
+#   figures_within                — \includegraphics count (max: N)
+#   pages_within                  — compiled PDF pages from the compile log
+#                                   (max: N)
+#   reference_style               — detected style matches (style: numeric |
+#                                    author_year)
+#   human                         — human-only item (id + label_en/label_es):
+#                                   never auto-passed, never agent-checkable
+
+[[venue]]
+id = "siam-jsc"
+name = "SIAM Journal on Scientific Computing"
+family = "SIAM"
+scope = ["numerical-analysis", "scientific-computing", "hpc"]
+description_en = "Computational methods for the solution of scientific and engineering problems."
+description_es = "Métodos computacionales para problemas científicos y de ingeniería."
+
+[[venue.criteria]]
+kind = "manuscript_consistency"
+[[venue.criteria]]
+kind = "load_bearing_support"
+[[venue.criteria]]
+kind = "references_resolved"
+[[venue.criteria]]
+kind = "compiled_pdf"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "data_availability"
+[[venue.criteria]]
+kind = "abstract_within_words"
+max = 250
+[[venue.criteria]]
+kind = "main_text_within_words"
+max = 9000
+[[venue.criteria]]
+kind = "figures_within"
+max = 12
+[[venue.criteria]]
+kind = "pages_within"
+max = 25
+[[venue.criteria]]
+kind = "reference_style"
+style = "numeric"
+[[venue.criteria]]
+kind = "human"
+id = "co_author_signoffs"
+label_en = "Co-author sign-offs"
+label_es = "Aprobación de coautores"
+[[venue.criteria]]
+kind = "human"
+id = "novelty_fit"
+label_en = "Novelty fit for the venue"
+label_es = "Ajuste de novedad para la revista"
+
+[[venue]]
+id = "siam-sinum"
+name = "SIAM Journal on Numerical Analysis"
+family = "SIAM"
+scope = ["numerical-analysis", "approximation-theory", "odes-pdes"]
+description_en = "The development and analysis of numerical methods for continuous problems."
+description_es = "Desarrollo y análisis de métodos numéricos para problemas continuos."
+
+[[venue.criteria]]
+kind = "manuscript_consistency"
+[[venue.criteria]]
+kind = "load_bearing_support"
+[[venue.criteria]]
+kind = "references_resolved"
+[[venue.criteria]]
+kind = "compiled_pdf"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "data_availability"
+[[venue.criteria]]
+kind = "abstract_within_words"
+max = 250
+[[venue.criteria]]
+kind = "main_text_within_words"
+max = 9000
+[[venue.criteria]]
+kind = "figures_within"
+max = 10
+[[venue.criteria]]
+kind = "pages_within"
+max = 25
+[[venue.criteria]]
+kind = "reference_style"
+style = "numeric"
+[[venue.criteria]]
+kind = "human"
+id = "co_author_signoffs"
+label_en = "Co-author sign-offs"
+label_es = "Aprobación de coautores"
+[[venue.criteria]]
+kind = "human"
+id = "novelty_fit"
+label_en = "Novelty fit for the venue"
+label_es = "Ajuste de novedad para la revista"
+
+[[venue]]
+id = "acm-toms"
+name = "ACM Transactions on Mathematical Software"
+family = "ACM"
+scope = ["scientific-computing", "software", "algorithms"]
+description_en = "Computer algorithms for mathematical software and their practical implementation."
+description_es = "Algoritmos para software matemático y su implementación práctica."
+
+[[venue.criteria]]
+kind = "manuscript_consistency"
+[[venue.criteria]]
+kind = "load_bearing_support"
+[[venue.criteria]]
+kind = "references_resolved"
+[[venue.criteria]]
+kind = "compiled_pdf"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "data_availability"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "code_availability"
+[[venue.criteria]]
+kind = "abstract_within_words"
+max = 250
+[[venue.criteria]]
+kind = "main_text_within_words"
+max = 9000
+[[venue.criteria]]
+kind = "figures_within"
+max = 10
+[[venue.criteria]]
+kind = "pages_within"
+max = 25
+[[venue.criteria]]
+kind = "reference_style"
+style = "numeric"
+[[venue.criteria]]
+kind = "human"
+id = "co_author_signoffs"
+label_en = "Co-author sign-offs"
+label_es = "Aprobación de coautores"
+[[venue.criteria]]
+kind = "human"
+id = "novelty_fit"
+label_en = "Novelty fit for the venue"
+label_es = "Ajuste de novedad para la revista"
+
+[[venue]]
+id = "physrev-e"
+name = "Physical Review E"
+family = "PhysRev"
+scope = ["statistical-physics", "nonlinear-dynamics", "complex-systems"]
+description_en = "Statistical, nonlinear, soft-matter and biological physics."
+description_es = "Física estadística, no lineal, materia blanda y biológica."
+
+[[venue.criteria]]
+kind = "manuscript_consistency"
+[[venue.criteria]]
+kind = "load_bearing_support"
+[[venue.criteria]]
+kind = "references_resolved"
+[[venue.criteria]]
+kind = "compiled_pdf"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "data_availability"
+[[venue.criteria]]
+kind = "abstract_within_words"
+max = 300
+[[venue.criteria]]
+kind = "main_text_within_words"
+max = 6000
+[[venue.criteria]]
+kind = "figures_within"
+max = 8
+[[venue.criteria]]
+kind = "pages_within"
+max = 15
+[[venue.criteria]]
+kind = "reference_style"
+style = "numeric"
+[[venue.criteria]]
+kind = "human"
+id = "co_author_signoffs"
+label_en = "Co-author sign-offs"
+label_es = "Aprobación de coautores"
+[[venue.criteria]]
+kind = "human"
+id = "novelty_fit"
+label_en = "Novelty fit for the venue"
+label_es = "Ajuste de novedad para la revista"
+
+[[venue]]
+id = "jcp-chem"
+name = "The Journal of Chemical Physics"
+family = "AIP"
+scope = ["chemical-physics", "molecular-simulation", "quantum-chemistry"]
+description_en = "Experimental and theoretical chemical physics, from molecules to materials."
+description_es = "Física química experimental y teórica, de moléculas a materiales."
+
+[[venue.criteria]]
+kind = "manuscript_consistency"
+[[venue.criteria]]
+kind = "load_bearing_support"
+[[venue.criteria]]
+kind = "references_resolved"
+[[venue.criteria]]
+kind = "compiled_pdf"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "data_availability"
+[[venue.criteria]]
+kind = "abstract_within_words"
+max = 250
+[[venue.criteria]]
+kind = "main_text_within_words"
+max = 8000
+[[venue.criteria]]
+kind = "figures_within"
+max = 10
+[[venue.criteria]]
+kind = "pages_within"
+max = 20
+[[venue.criteria]]
+kind = "reference_style"
+style = "numeric"
+[[venue.criteria]]
+kind = "human"
+id = "ethics_approval"
+label_en = "Ethics approval (human or animal subjects)"
+label_es = "Aprobación ética (sujetos humanos o animales)"
+[[venue.criteria]]
+kind = "human"
+id = "co_author_signoffs"
+label_en = "Co-author sign-offs"
+label_es = "Aprobación de coautores"
+[[venue.criteria]]
+kind = "human"
+id = "novelty_fit"
+label_en = "Novelty fit for the venue"
+label_es = "Ajuste de novedad para la revista"
+
+[[venue]]
+id = "jcp-comp"
+name = "Journal of Computational Physics"
+family = "Elsevier"
+scope = ["computational-physics", "cfd", "numerical-methods"]
+description_en = "Computational methods for physical problems and their numerical analysis."
+description_es = "Métodos computacionales para problemas físicos y su análisis numérico."
+
+[[venue.criteria]]
+kind = "manuscript_consistency"
+[[venue.criteria]]
+kind = "load_bearing_support"
+[[venue.criteria]]
+kind = "references_resolved"
+[[venue.criteria]]
+kind = "compiled_pdf"
+[[venue.criteria]]
+kind = "statement_present"
+statement = "data_availability"
+[[venue.criteria]]
+kind = "abstract_within_words"
+max = 250
+[[venue.criteria]]
+kind = "main_text_within_words"
+max = 10000
+[[venue.criteria]]
+kind = "figures_within"
+max = 15
+[[venue.criteria]]
+kind = "pages_within"
+max = 30
+[[venue.criteria]]
+kind = "reference_style"
+style = "numeric"
+[[venue.criteria]]
+kind = "human"
+id = "co_author_signoffs"
+label_en = "Co-author sign-offs"
+label_es = "Aprobación de coautores"
+[[venue.criteria]]
+kind = "human"
+id = "novelty_fit"
+label_en = "Novelty fit for the venue"
+label_es = "Ajuste de novedad para la revista"

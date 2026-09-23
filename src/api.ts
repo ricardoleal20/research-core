@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, VenueTemplate, TierTwoReport, JournalFitResult, SubmissionView, SubmissionMission, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -1000,6 +1000,35 @@ const browserApi = {
     if (await servedByCore) return httpJson<NotificationItem[]>("/api/notifications");
     return mockApi.listNotifications();
   },
+  // The journal-targeting reads (Story 6.11, FR-19.1/19.2): the venue
+  // templates and the tier-2 report serve from the same-origin read-only
+  // API over the shared core; the mock keeps vite dev working.
+  listVenues: async (): Promise<VenueTemplate[]> => {
+    if (await servedByCore) return httpJson<VenueTemplate[]>("/api/venues");
+    return mockApi.listVenues();
+  },
+  getJournalReadiness: async (missionId: string | null, venueId: string): Promise<TierTwoReport> => {
+    if (await servedByCore) {
+      const query = missionId ? `?mission=${encodeURIComponent(missionId)}` : "";
+      return httpJson<TierTwoReport>(
+        `/api/venues/${encodeURIComponent(venueId)}/readiness${query}`,
+      );
+    }
+    return mockApi.getJournalReadiness(missionId, venueId);
+  },
+  // The submission checklist reads (Story 6.13, FR-19.4 — read-only):
+  // the list and one checklist's full view serve from the same-origin
+  // API; checking/pre-checking/completing stay on the command path.
+  listSubmissions: async (): Promise<SubmissionMission[]> => {
+    if (await servedByCore) return httpJson<SubmissionMission[]>("/api/submissions");
+    return mockApi.listSubmissions();
+  },
+  getSubmission: async (missionId: string): Promise<SubmissionView> => {
+    if (await servedByCore) {
+      return httpJson<SubmissionView>(`/api/submissions/${encodeURIComponent(missionId)}`);
+    }
+    return mockApi.getSubmission(missionId);
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -1196,6 +1225,37 @@ export const api = mockActive ? browserApi : {
   // mission's board, null asks the whole workspace
   getReadinessReport: (missionId: string | null) =>
     invoke<ReadinessReport>("get_readiness_report", { missionId }),
+  // Journal targeting (Story 6.11, FR-19.1/19.2): the bundled venue
+  // templates (fully local data, NFR-1) and the tier-2 journal-ready
+  // report of one venue — a pure derived fold, asking again re-folds
+  listVenues: () => invoke<VenueTemplate[]>("list_venues", {}),
+  getJournalReadiness: (missionId: string | null, venueId: string) =>
+    invoke<TierTwoReport>("get_journal_readiness", { missionId, venueId }),
+  // The Journal Fit Finder (Story 6.12, FR-19.3): an LLM task through the
+  // provider layer — the ranked shortlist is advisory and evented, and
+  // the choice lands as a reviewable proposal (never auto-applied).
+  runJournalFit: (missionId: string | null) =>
+    invoke<JournalFitResult>("run_journal_fit", { missionId }),
+  // Submission checklist (Story 6.13, FR-19.4): choosing a venue spawns a
+  // submission mission; the human checks items directly, the agent
+  // pre-check proposes passing machine items (quarantine — nothing
+  // checks itself silently), and the mission completes when all items
+  // are checked (AD-12).
+  createSubmissionMission: (missionId: string | null, venueId: string) =>
+    invoke<SubmissionView>("create_submission_mission", { missionId, venueId }),
+  listSubmissions: () => invoke<SubmissionMission[]>("list_submissions", {}),
+  getSubmission: (missionId: string) =>
+    invoke<SubmissionView>("get_submission", { missionId }),
+  checkSubmissionItem: (missionId: string, itemId: string, note: string | null) =>
+    invoke<SubmissionView>("check_submission_item", { missionId, itemId, note }),
+  uncheckSubmissionItem: (missionId: string, itemId: string) =>
+    invoke<SubmissionView>("uncheck_submission_item", { missionId, itemId }),
+  precheckSubmissionItems: (missionId: string) =>
+    invoke<Proposal[]>("precheck_submission_items", { missionId }),
+  completeSubmissionMission: (missionId: string) =>
+    invoke<SubmissionView>("complete_submission_mission", { missionId }),
+  stopSubmissionMission: (missionId: string, reason: string) =>
+    invoke<SubmissionView>("stop_submission_mission", { missionId, reason }),
   // agent steps (Story 2.1): one role step through the provider layer —
   // spend recorded role-tagged, result returned to the caller
   runAgentStep: (missionId: string, role: string, task: string) =>

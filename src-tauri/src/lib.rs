@@ -10,6 +10,8 @@ mod evidence_commands;
 mod export_commands;
 mod hypotheses_commands;
 mod jobs_commands;
+mod journal_commands;
+mod journal_fit_commands;
 mod library_commands;
 mod mcp;
 mod manuscript_commands;
@@ -21,6 +23,7 @@ mod readiness_commands;
 mod trust_commands;
 mod verifier_commands;
 mod support_commands;
+mod submissions_commands;
 mod nightshift;
 mod runtime;
 mod search_commands;
@@ -251,6 +254,17 @@ pub fn run() {
             search_commands::run_search,
             search_commands::get_search_disclosure,
             readiness_commands::get_readiness_report,
+            journal_commands::list_venues,
+            journal_commands::get_journal_readiness,
+            journal_fit_commands::run_journal_fit,
+            submissions_commands::create_submission_mission,
+            submissions_commands::list_submissions,
+            submissions_commands::get_submission,
+            submissions_commands::check_submission_item,
+            submissions_commands::uncheck_submission_item,
+            submissions_commands::precheck_submission_items,
+            submissions_commands::complete_submission_mission,
+            submissions_commands::stop_submission_mission,
             // dashboard (Story 5.10, FR-18): the home panel's one
             // read-only aggregated fold — a composition over the read
             // models above, never a write.
