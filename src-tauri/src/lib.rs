@@ -20,6 +20,7 @@ mod proposals_commands;
 mod readiness_commands;
 mod trust_commands;
 mod verifier_commands;
+mod support_commands;
 mod nightshift;
 mod runtime;
 mod search_commands;
@@ -232,6 +233,7 @@ pub fn run() {
             evidence_commands::pin_claim_to_numerical,
             evidence_commands::list_evidence,
             verifier_commands::run_pin_verification,
+            support_commands::run_pin_support_checks,
             export_commands::export_workspace,
             export_commands::inspect_export,
             proposals_commands::list_proposals,

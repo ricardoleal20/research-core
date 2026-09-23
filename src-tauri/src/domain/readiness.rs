@@ -72,8 +72,12 @@ use crate::domain::hypotheses::{
     RelationKind,
 };
 use crate::domain::manuscript::{self, ManuscriptFlag, ManuscriptFlagKind, ManuscriptScan};
+use crate::domain::nightshift::RUN_STARTED;
 use crate::domain::proposals::{ProposalStatus, ProposalsProjection};
 use crate::domain::search::search_disclosure;
+use crate::domain::support::{
+    SupportStatus, SUPPORT_SWEEP_STEP, SUPPORT_SWEEP_THRESHOLD,
+};
 use crate::eventstore::{EventError, StoredEvent};
 
 /// The gate's verdict (FR-13.1): `ready` renders "preprint-ready"; anything
@@ -105,6 +109,19 @@ pub enum ReadinessItemKind {
     /// INFO: a pinned claim whose latest machine verification failed —
     /// never a blocker (see the module doc).
     PinVerificationFailed,
+    /// INFO (Story 6.10, FR-23.3): a pinned claim whose SUPPORT check
+    /// returned `unsupported` — pinned but not held up by what it cites.
+    /// Never a blocker: the pin exists, the claim is anchored; the verdict
+    /// is already visible on the pin (honesty, not amnesia).
+    PinUnsupported,
+    /// INFO (Story 6.10, FR-23.3): a support verdict of `partially` — the
+    /// claim asserts more than its citing source supports.
+    PinPartiallySupported,
+    /// INFO (Story 6.10, FR-23.3): support still unverified after N sweeps —
+    /// a pinned claim the sweeps never judged (no different model
+    /// available, unreadable replies, refusals), visible as to-verify,
+    /// never silently assumed fresh.
+    SupportUnchecked,
     /// INFO: pending quarantine proposals — not board state (AD-3), so not a
     /// blocker; surfaced so a non-empty queue is never a surprise.
     MergeQueuePending,
@@ -234,6 +251,31 @@ impl ReadinessItem {
     fn verification_failed(claim: &Claim, hypothesis_seq: Option<i64>) -> Self {
         Self {
             kind: ReadinessItemKind::PinVerificationFailed,
+            claim_id: Some(claim.id),
+            claim_seq: Some(claim.seq),
+            hypothesis_id: Some(claim.hypothesis_id),
+            hypothesis_seq,
+            hypothesis_status: None,
+            search_seq: None,
+            mission_id: None,
+            claim_ties: Vec::new(),
+            relation_ties: Vec::new(),
+            pending_count: 0,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
+        }
+    }
+
+    /// The support-info constructor (Story 6.10): one pinned claim, one
+    /// support-derived kind — every item references its CLAIMS-{n} chip.
+    fn support_info(
+        kind: ReadinessItemKind,
+        claim: &Claim,
+        hypothesis_seq: Option<i64>,
+    ) -> Self {
+        Self {
+            kind,
             claim_id: Some(claim.id),
             claim_seq: Some(claim.seq),
             hypothesis_id: Some(claim.hypothesis_id),
@@ -388,6 +430,25 @@ fn relation_ties(relations: &[RelationChip]) -> Vec<ReadinessRelationTie> {
         .collect()
 }
 
+/// How many support sweeps ran for the mission AFTER `since_seq` — the
+/// chances a pin that landed at `since_seq` had to be judged (Story 6.10).
+/// A sweep is a `run.started` with the `support-sweep` step referencing the
+/// mission; only sweeps AFTER the pin count (the pin could not have been
+/// judged by a sweep that ran before it existed).
+fn support_sweeps_since(events: &[StoredEvent], mission_id: Uuid, since_seq: i64) -> usize {
+    let mid = mission_id.to_string();
+    events
+        .iter()
+        .filter(|e| {
+            e.seq > since_seq
+                && e.kind == RUN_STARTED
+                && e.payload.get("step").and_then(|s| s.as_str()) == Some(SUPPORT_SWEEP_STEP)
+                && (e.causes.contains(&mission_id)
+                    || e.payload.get("mission_id").and_then(|m| m.as_str()) == Some(mid.as_str()))
+        })
+        .count()
+}
+
 /// Is this hypothesis status resolved for the preprint tier? Supported and
 /// refuted are answers; proposed, testing, and revised are still open
 /// questions (revised is mid-rework by construction — revised→testing is its
@@ -517,7 +578,8 @@ pub fn readiness_report_with_manuscript(
         }
     }
 
-    // --- Infos: verified-failed pins + merge queue (never blockers) ---
+    // --- Infos: verified-failed pins, support status, merge queue (never
+    // blockers) ---
     let mut infos: Vec<ReadinessItem> = claims_in_scope
         .iter()
         .filter(|c| {
@@ -529,6 +591,47 @@ pub fn readiness_report_with_manuscript(
         })
         .map(|c| ReadinessItem::verification_failed(c, hyp_seq.get(&c.hypothesis_id).copied()))
         .collect();
+    // Support status (Story 6.10, FR-23.3): the gate CONSUMES the third
+    // signal — `unsupported` and `partially` render as info rows (the pin
+    // stays pinned; the verdict is a fact to see, not a gate to smuggle in
+    // through the back door), and support still unverified after
+    // SUPPORT_SWEEP_THRESHOLD sweeps since the pin landed surfaces as
+    // "unchecked" — never silently assumed fresh.
+    for c in claims_in_scope.iter().filter(|c| c.pinned) {
+        let Some(pin) = c.pin.as_ref() else {
+            continue;
+        };
+        let hyp_s = hyp_seq.get(&c.hypothesis_id).copied();
+        match pin.support.as_ref().map(|s| s.status) {
+            Some(SupportStatus::Unsupported) => infos.push(ReadinessItem::support_info(
+                ReadinessItemKind::PinUnsupported,
+                c,
+                hyp_s,
+            )),
+            Some(SupportStatus::Partially) => infos.push(ReadinessItem::support_info(
+                ReadinessItemKind::PinPartiallySupported,
+                c,
+                hyp_s,
+            )),
+            None | Some(SupportStatus::Stale) => {
+                // Unverified support after N sweeps — an info, never a
+                // blocker (the pin exists; the check simply never landed).
+                let mission = hyp_mission.get(&c.hypothesis_id).copied();
+                if mission.is_some_and(|m| {
+                    support_sweeps_since(&live, m, pin.seq) >= SUPPORT_SWEEP_THRESHOLD
+                }) {
+                    infos.push(ReadinessItem::support_info(
+                        ReadinessItemKind::SupportUnchecked,
+                        c,
+                        hyp_s,
+                    ));
+                }
+            }
+            // supported / unverifiable: the check landed — a fact on the
+            // pin, not a gate concern at tier 1.
+            Some(SupportStatus::Supported | SupportStatus::Unverifiable) => {}
+        }
+    }
     let pending_proposals: Vec<_> = proposals
         .iter()
         .filter(|p| {
@@ -1242,6 +1345,224 @@ mod tests {
             // the trail stays honest: pinned 1/1, verified 0 (the failed
             // check is not a verified pin, and the counts say so)
             assert_eq!((report.trail[0].total, report.trail[0].clean, report.trail[0].verified), (1, 1, 0));
+        });
+    }
+
+    /// THE HONEST COMBINATION (Story 6.10, FR-23.2/23.3), end to end: a pin
+    /// with machine-VERIFIED existence, HIGH agent-assessed confidence, and
+    /// a support verdict of UNSUPPORTED — pinned, verified to exist, trusted
+    /// by its assessing model, and still not held up by what it cites. The
+    /// gate renders ALL THREE SIGNALS as themselves: the claim stays pinned
+    /// (no blocker for the pin), the support verdict is an INFO row
+    /// referencing its CLAIMS-n chip, and the board reports READY with the
+    /// info visible — honesty, not amnesia. A `partially` verdict is its own
+    /// info; a `supported` or `unverifiable` verdict raises nothing.
+    #[test]
+    fn verified_existence_high_confidence_and_unsupported_support_render_as_themselves() {
+        with_store(|store| {
+            let mission = seed_mission(store);
+            let h = seed_hypothesis(store, mission, "X holds under load.");
+            // The honest combination, on one claim.
+            let claim = seed_claim(store, h, "X holds at 32k.");
+            let pin = seed_pin(store, &claim, h, "X holds at 32k, stated.");
+            store
+                .append(
+                    NewEvent::evidence_verified(
+                        claim.id,
+                        h,
+                        pin.seq,
+                        VerificationOutcome::Verified,
+                        DETAIL_EXCERPT_MATCHED,
+                        "ref-any",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(
+                    NewEvent::pin_support_checked(
+                        claim.id,
+                        h,
+                        pin.seq,
+                        crate::domain::support::SupportVerdict::Unsupported,
+                        0.8,
+                        "claude-sonnet-4-5",
+                        "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            // A second claim: partially supported — its own info row.
+            let partial = seed_claim(store, h, "X holds at 64k.");
+            let pin_p = seed_pin(store, &partial, h, "X holds at 64k, stated.");
+            store
+                .append(
+                    NewEvent::pin_support_checked(
+                        partial.id,
+                        h,
+                        pin_p.seq,
+                        crate::domain::support::SupportVerdict::Partially,
+                        0.7,
+                        "claude-sonnet-4-5",
+                        "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            // A third: judged SUPPORTED — raises nothing.
+            let fine = seed_claim(store, h, "X holds at 128k.");
+            let pin_f = seed_pin(store, &fine, h, "X holds at 128k, stated.");
+            store
+                .append(
+                    NewEvent::pin_support_checked(
+                        fine.id,
+                        h,
+                        pin_f.seq,
+                        crate::domain::support::SupportVerdict::Supported,
+                        0.9,
+                        "claude-sonnet-4-5",
+                        "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            // The hypothesis resolves so nothing else blocks.
+            for (from, to, basis) in [
+                (HypothesisStatus::Proposed, HypothesisStatus::Testing, "Trial ran."),
+                (HypothesisStatus::Testing, HypothesisStatus::Supported, "Held."),
+            ] {
+                store
+                    .append(
+                        NewEvent::hypothesis_status_changed(from, to, basis)
+                            .unwrap()
+                            .with_causes(vec![h]),
+                    )
+                    .unwrap();
+            }
+
+            let report = readiness_report(&store.events_all().unwrap(), Some(mission)).unwrap();
+            // Never blockers: the pins stay, the board is READY — with the
+            // support verdicts as visible infos.
+            assert!(report.blockers.is_empty(), "support verdicts never block");
+            assert_eq!(report.verdict, ReadinessVerdict::Ready);
+            let unsupported: Vec<&ReadinessItem> = report
+                .infos
+                .iter()
+                .filter(|i| i.kind == ReadinessItemKind::PinUnsupported)
+                .collect();
+            assert_eq!(unsupported.len(), 1);
+            assert_eq!(unsupported[0].claim_id, Some(claim.id));
+            assert_eq!(unsupported[0].claim_seq, Some(claim.seq), "the CLAIMS-n chip");
+            let partial_infos: Vec<&ReadinessItem> = report
+                .infos
+                .iter()
+                .filter(|i| i.kind == ReadinessItemKind::PinPartiallySupported)
+                .collect();
+            assert_eq!(partial_infos.len(), 1);
+            assert_eq!(partial_infos[0].claim_id, Some(partial.id));
+            // The supported verdict raised nothing — three claims pinned,
+            // two support infos, no third.
+            assert_eq!(
+                report
+                    .infos
+                    .iter()
+                    .filter(|i| matches!(
+                        i.kind,
+                        ReadinessItemKind::PinUnsupported
+                            | ReadinessItemKind::PinPartiallySupported
+                            | ReadinessItemKind::SupportUnchecked
+                    ))
+                    .count(),
+                2
+            );
+        });
+    }
+
+    /// Support still UNVERIFIED after N sweeps surfaces as an info row —
+    /// never before the threshold, and only counting sweeps AFTER the pin
+    /// landed (a sweep that ran before the pin existed was not its chance).
+    #[test]
+    fn unchecked_support_surfaces_after_n_sweeps_never_before() {
+        with_store(|store| {
+            let mission = seed_mission(store);
+            let h = seed_hypothesis(store, mission, "X holds under load.");
+            let claim = seed_claim(store, h, "X holds at 32k.");
+            let pin = seed_pin(store, &claim, h, "X holds at 32k, stated.");
+            let _ = pin;
+            // Two sweeps since the pin: below the threshold — no info.
+            for i in 0..2 {
+                store
+                    .append(
+                        NewEvent::run_started(
+                            &format!("sweep-{i}"),
+                            mission,
+                            "daily-03:00",
+                            crate::domain::support::SUPPORT_SWEEP_STEP,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let report = readiness_report(&store.events_all().unwrap(), Some(mission)).unwrap();
+            assert!(
+                !report
+                    .infos
+                    .iter()
+                    .any(|i| i.kind == ReadinessItemKind::SupportUnchecked),
+                "two sweeps is below the threshold — still to-verify, not an info"
+            );
+            // The third sweep crosses it — the info row lands.
+            store
+                .append(
+                    NewEvent::run_started(
+                        "sweep-3",
+                        mission,
+                        "daily-03:00",
+                        crate::domain::support::SUPPORT_SWEEP_STEP,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let report = readiness_report(&store.events_all().unwrap(), Some(mission)).unwrap();
+            let [unchecked] = report
+                .infos
+                .iter()
+                .filter(|i| i.kind == ReadinessItemKind::SupportUnchecked)
+                .cloned()
+                .collect::<Vec<_>>()
+                .try_into()
+                .ok()
+                .expect("exactly one unchecked-support info after N sweeps");
+            assert_eq!(unchecked.claim_id, Some(claim.id));
+            assert_eq!(unchecked.claim_seq, Some(claim.seq));
+            assert!(
+                !report.blockers.iter().any(|b| b.claim_id == Some(claim.id)),
+                "an unchecked support check never blocks — the pin exists"
+            );
+            // A scan run (a different step) is not a sweep: it never counts.
+            let report = {
+                store
+                    .append(
+                        NewEvent::run_started(
+                            "scan-9",
+                            mission,
+                            "daily-03:00",
+                            crate::domain::nightshift::SCAN_STEP,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                readiness_report(&store.events_all().unwrap(), Some(mission)).unwrap()
+            };
+            assert_eq!(
+                report
+                    .infos
+                    .iter()
+                    .filter(|i| i.kind == ReadinessItemKind::SupportUnchecked)
+                    .count(),
+                1,
+                "a literature scan is not a support sweep"
+            );
         });
     }
 

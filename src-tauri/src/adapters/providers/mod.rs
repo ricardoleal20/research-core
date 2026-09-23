@@ -209,7 +209,7 @@ impl ProviderError {
     }
 }
 
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// The one interface every provider speaks (AD-9). Real HTTP adapters, the
 /// local-CLI adapter, and the simulated fallback all implement it; callers
@@ -786,6 +786,26 @@ pub(crate) fn fake_remote_layer(
         name: name.into(),
         model: model.into(),
         client: Box::new(FakeRemote { content, usage }),
+    }
+}
+
+/// A remote-shaped layer around an arbitrary test client (Story 6.9 test
+/// seam): the support engine's tests answer PER REQUEST (a judge that reads
+/// the claim out of the prompt), which the fixed-content `FakeRemote`
+/// cannot — this constructor hands the layer a caller-built client.
+#[cfg(test)]
+pub(crate) fn remote_layer_with_client(
+    db: &Db,
+    name: &str,
+    model: &str,
+    client: Box<dyn ProviderClient>,
+) -> ProviderLayer {
+    ProviderLayer {
+        db: db.clone(),
+        kind: Kind::Remote,
+        name: name.into(),
+        model: model.into(),
+        client,
     }
 }
 

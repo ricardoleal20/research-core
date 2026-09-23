@@ -17,6 +17,7 @@
 
 use crate::db::Db;
 use crate::domain::digest::{render_digest, MorningDigest};
+use crate::domain::evidence::EvidenceProjection;
 use crate::domain::hypotheses::{HypothesisStatus, HypothesesProjection};
 use crate::domain::missions::{
     Mission, MissionStatus, MissionsProjection, Schedule, ROLE_DRAFTER,
@@ -24,6 +25,7 @@ use crate::domain::missions::{
 use crate::domain::nightshift::{
     evaluate_terminals, RUN_FAILED, RUN_FINISHED, RUN_STARTED, SCAN_STEP,
 };
+use crate::domain::support::{SUPPORT_SWEEP_STEP, SupportStatus};
 use crate::domain::telemetry::{
     record_probe, PROBED_CONNECTIONS, RUN_HEARTBEAT, SILENTLY_DEAD_REASON,
 };
@@ -85,6 +87,10 @@ pub struct RunRecord {
 pub struct NightShift {
     db: Db,
     runtime: AgentRuntime,
+    /// The adapter resolver the support sweep's judge dispatches through
+    /// (Story 6.10) — the same seam shape as the runtime's, injectable so
+    /// the sweep's tests never touch the network.
+    resolver: crate::runtime::RoleResolver,
     /// The connection health prober (FR-9.1, Story 2.6) — injectable so the
     /// tick's telemetry tests never touch the network.
     prober: Prober,
@@ -94,7 +100,8 @@ impl NightShift {
     pub fn new(db: Db) -> Self {
         Self {
             db: db.clone(),
-            runtime: AgentRuntime::new(db),
+            runtime: AgentRuntime::new(db.clone()),
+            resolver: crate::adapters::providers::ProviderLayer::for_role,
             prober: default_prober(),
         }
     }
@@ -115,7 +122,12 @@ impl NightShift {
         resolver: crate::runtime::RoleResolver,
         prober: Prober,
     ) -> Self {
-        Self { db: db.clone(), runtime: AgentRuntime::with_resolver(db, resolver), prober }
+        Self {
+            db: db.clone(),
+            runtime: AgentRuntime::with_resolver(db.clone(), resolver),
+            resolver,
+            prober,
+        }
     }
 
     /// One scheduled tick at `now` (local time): probe the research
@@ -147,6 +159,9 @@ impl NightShift {
             }
             records.push(self.run_scan(mission).await);
         }
+        // The support sweep (Story 6.10, FR-23.3): after the scans, one
+        // de-duped pass over every active mission's never-judged pins.
+        self.sweep_support_checks().await?;
         self.evaluate().await?;
         Ok(records)
     }
@@ -167,6 +182,9 @@ impl NightShift {
             }
             records.push(self.run_scan(mission).await);
         }
+        // The manual trigger re-verifies too (Story 6.10: re-verification
+        // is explicit — manual or scheduled).
+        self.sweep_support_checks().await?;
         self.evaluate().await?;
         Ok(records)
     }
@@ -430,8 +448,100 @@ impl NightShift {
         record
     }
 
+    /// The support sweep (Story 6.10, FR-23.3): for every ACTIVE mission
+    /// with pins never judged for their current pin_seq, one `support-sweep`
+    /// run — de-duped (a judged pin is never re-asked by a later sweep;
+    /// re-verification is explicit), batched per mission, dispatched
+    /// autonomously through the provider layer with the trust dispatch (the
+    /// dial gates it; every call spend-evented, AD-10). A mission with
+    /// nothing to judge costs no run and no spend. The run's one-line,
+    /// code-form verdict lands in the morning digest with its receipts link
+    /// (FR-4.4 discipline); a store failure is an honest `run.failed`.
+    async fn sweep_support_checks(&self) -> Result<(), NightShiftError> {
+        let missions = self.fold_missions().await?;
+        for mission in &missions {
+            if mission.status != MissionStatus::Active {
+                continue; // terminal missions sleep (AD-12)
+            }
+            // De-dup gate: only missions with at least one UNCHECKED pin
+            // (no support event for the current pin — None, or stale from a
+            // re-pin) open a sweep run.
+            let has_unchecked = {
+                let conn = self.db.0.lock().await;
+                let events = EventStore::new(&conn).events_all()?;
+                let hyps = HypothesesProjection::fold(&events)?;
+                let mission_hyps: HashSet<Uuid> =
+                    hyps.iter().filter(|h| h.mission_id == mission.id).map(|h| h.id).collect();
+                EvidenceProjection::fold(&events)?.iter().any(|c| {
+                    mission_hyps.contains(&c.hypothesis_id)
+                        && c.pin.as_ref().is_some_and(|pin| {
+                            pin.support
+                                .as_ref()
+                                .is_none_or(|s| s.status == SupportStatus::Stale)
+                        })
+                })
+            };
+            if !has_unchecked {
+                continue;
+            }
+            let run_id = format!("nightshift-support-{}", Uuid::new_v4().simple());
+            {
+                let conn = self.db.0.lock().await;
+                let store = EventStore::new(&conn);
+                let opened = NewEvent::run_started(
+                    &run_id,
+                    mission.id,
+                    &mission.schedule,
+                    SUPPORT_SWEEP_STEP,
+                );
+                if let Ok(started) = opened {
+                    if let Ok(appended) = store.append(started) {
+                        if let Ok(beat) = NewEvent::run_heartbeat(
+                            &run_id,
+                            mission.id,
+                            appended.seq,
+                            appended.ts,
+                        ) {
+                            let _ = store.append(beat);
+                        }
+                    }
+                }
+            }
+            let swept = crate::support_commands::run_support_checks_inner(
+                &self.db,
+                &crate::support_commands::SupportScope::Mission(mission.id),
+                true,   // de-dup: only pins never judged for their current pin_seq
+                self.resolver,
+                true,   // autonomous — the dial gates it (AD-15d)
+            )
+            .await;
+            let conn = self.db.0.lock().await;
+            let store = EventStore::new(&conn);
+            match swept {
+                Ok(summary) => {
+                    let verdict = summary.verdict_line();
+                    if let Ok(finished) =
+                        NewEvent::run_finished(&run_id, mission.id, &verdict, 0)
+                    {
+                        let _ = store.append(finished);
+                    }
+                }
+                Err(e) => {
+                    // A store-level failure is an honest run.failed — the
+                    // digest still renders the row (FR-4.3).
+                    if let Ok(failed) =
+                        NewEvent::run_failed(&run_id, mission.id, &format!("store_error: {e}"), Utc::now())
+                    {
+                        let _ = store.append(failed);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Emit the scan's output as a proposal through the Story 2.2 seam
-    /// (FR-4.2: AD-3 — the board never mutates unattended). The first
+    /// (FR-4.2: AD-3 — the board never mutates unattended). The first    /// (FR-4.2: AD-3 — the board never mutates unattended). The first
     /// hypothesis with a legal next transition gets one proposal; nothing to
     /// transition means zero proposals (an honest empty night). Best-effort:
     /// a refused proposal (e.g. quarantine rejected it) is not a run failure.
@@ -834,7 +944,11 @@ mod tests {
         let off = create_mission(&db, "off", 500).await;
         let later = create_mission(&db, "daily-23:30", 500).await;
         let shift = fake_shift(&db);
-        let records = shift.tick(now_local()).await.unwrap();
+        // A FIXED clock — 03:30, before the 23:30 schedule — so the test is
+        // deterministic at any hour it runs at (a real-clock tick at 23:31+
+        // would see daily-23:30 due: a time-of-day flake, now closed).
+        let now = Local.with_ymd_and_hms(2026, 9, 19, 3, 30, 0).unwrap();
+        let records = shift.tick(now).await.unwrap();
         assert!(records.is_empty(), "off missions never run");
         assert!(events_of(&db, RUN_STARTED).await.is_empty());
         let _ = (off.id, later.id);
@@ -851,7 +965,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let records = shift.tick(now_local()).await.unwrap();
+        let records = shift.tick(now).await.unwrap();
         assert!(records.is_empty(), "terminal missions sleep (AD-12)");
     }
 
@@ -1044,6 +1158,181 @@ mod tests {
         assert!(records.iter().all(|r| r.finished));
         assert_eq!(events_of(&db, RUN_STARTED).await.len(), 2);
         let _ = (a.id, b.id);
+    }
+
+    // ---- the support sweep (Story 6.10, FR-23.3) ----
+
+    /// A resolver whose every answer is a parseable support judgment — the
+    /// same layer serves the scan step (its one-line verdict is the reply's
+    /// first line, harmless here) and the sweep's judge.
+    fn support_answer_resolver(
+        db: &Db,
+        _conn: &Connection,
+        role: &crate::domain::missions::RoleConfig,
+    ) -> Result<ProviderLayer, ProviderError> {
+        Ok(fake_remote_layer(
+            db,
+            &role.provider,
+            &role.model,
+            "supported\nconfidence: 0.9",
+            Usage { input_tokens: 150, output_tokens: 12 },
+        ))
+    }
+
+    fn support_shift(db: &Db) -> NightShift {
+        NightShift::with_resolver_and_prober(db.clone(), support_answer_resolver, ok_prober())
+    }
+
+    /// Seed one mission + hypothesis + PINNED claim; returns the claim event
+    /// and the mission id.
+    async fn seed_pinned_claim(db: &Db) -> (StoredEvent, Uuid) {
+        let mission = create_mission(db, "daily-00:00", 500).await;
+        let hyp = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap()
+        };
+        let claim = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(NewEvent::claim_registered("X holds at 32k.", hyp.id, None).unwrap())
+                .unwrap()
+        };
+        {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn)
+                .append(
+                    NewEvent::evidence_pinned_citation(
+                        claim.id,
+                        hyp.id,
+                        "ref-1",
+                        "X holds at 32k, stated.",
+                        0.82,
+                        "GLM-5.3",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        (claim, mission.id)
+    }
+
+    /// The tick sweeps support checks over never-judged pins: one
+    /// `support-sweep` run per mission with unchecked pins, the run closed
+    /// with the code-form rollup verdict, one `pin.support_checked` event
+    /// attributed to its judging model — and the de-dup holds: a second
+    /// tick the same night never re-asks a judged pin.
+    #[tokio::test]
+    async fn the_tick_sweeps_support_checks_and_never_re_asks_a_judged_pin() {
+        let db = test_db();
+        let (claim, _mission) = seed_pinned_claim(&db).await;
+        let shift = support_shift(&db);
+        let _ = shift.tick(now_local()).await.unwrap();
+
+        // The sweep run opened and closed with the rollup verdict.
+        let sweep_starts: Vec<StoredEvent> = events_of(&db, RUN_STARTED)
+            .await
+            .into_iter()
+            .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+            .collect();
+        assert_eq!(sweep_starts.len(), 1, "one support-sweep run");
+        assert_eq!(
+            sweep_starts[0].actor,
+            Actor::System { component: crate::eventstore::SystemComponent::Scheduler }
+        );
+        let sweep_finish = events_of(&db, RUN_FINISHED)
+            .await
+            .into_iter()
+            .find(|e| e.payload["run_id"] == sweep_starts[0].payload["run_id"])
+            .expect("the sweep run closed");
+        assert_eq!(sweep_finish.payload["verdict"], json!("support: 1 checked · 1 supported"));
+
+        // The judgment landed: actor system/support, attributed to its
+        // judging model (the simulated candidate — differs from GLM-5.3).
+        let checks = events_of(&db, crate::domain::support::PIN_SUPPORT_CHECKED).await;
+        assert_eq!(checks.len(), 1);
+        assert_eq!(
+            checks[0].actor,
+            Actor::System { component: crate::eventstore::SystemComponent::Support }
+        );
+        assert_eq!(checks[0].payload["verdict"], json!("supported"));
+        assert_eq!(checks[0].payload["judging_model"], json!("simulated"));
+        assert!(checks[0].causes.contains(&claim.id));
+
+        // The de-dup (Story 6.10): a second tick never re-asks a judged
+        // pin — no new sweep run, no new judgment, no new spend.
+        let _ = shift.tick(now_local()).await.unwrap();
+        assert_eq!(
+            events_of(&db, crate::domain::support::PIN_SUPPORT_CHECKED).await.len(),
+            1,
+            "a judged pin is never re-asked by a later sweep"
+        );
+        assert_eq!(
+            events_of(&db, RUN_STARTED)
+                .await
+                .into_iter()
+                .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+                .count(),
+            1,
+            "no second sweep run for a fully judged mission"
+        );
+
+        // The digest carries the sweep's row with its receipts link
+        // (FR-4.4 discipline).
+        let digest = morning_digest(&db).await.unwrap();
+        let row = digest
+            .rows
+            .iter()
+            .find(|r| r.support_checks > 0)
+            .expect("the sweep's digest row");
+        assert_eq!(row.support_checks, 1);
+        assert_eq!(row.support_unsupported, 0);
+        assert!(row.verdict_line().contains("1 support checked"));
+    }
+
+    /// A mission with NO pins never opens a sweep run — nothing to judge
+    /// costs no run and no spend; a terminal mission's pins sleep too.
+    #[tokio::test]
+    async fn missions_without_unchecked_pins_never_open_a_sweep_run() {
+        let db = test_db();
+        // no pins at all
+        create_mission(&db, "off", 500).await;
+        let shift = support_shift(&db);
+        shift.tick(now_local()).await.unwrap();
+        assert!(
+            events_of(&db, RUN_STARTED)
+                .await
+                .into_iter()
+                .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+                .count() == 0,
+            "no pins — no sweep run"
+        );
+
+        // a judged pin on a TERMINAL mission sleeps: the sweep skips it
+        let db2 = test_db();
+        let (_claim, mission2) = seed_pinned_claim(&db2).await;
+        {
+            let conn = db2.0.lock().await;
+            EventStore::new(&conn)
+                .append(
+                    NewEvent::new(MISSION_STOPPED, Actor::User, json!({ "reason": "user stopped" }))
+                        .unwrap()
+                        .with_causes(vec![mission2]),
+                )
+                .unwrap();
+        }
+        let shift2 = support_shift(&db2);
+        shift2.tick(now_local()).await.unwrap();
+        assert!(
+            events_of(&db2, RUN_STARTED)
+                .await
+                .into_iter()
+                .filter(|e| e.payload["step"] == json!(SUPPORT_SWEEP_STEP))
+                .count() == 0,
+            "a terminal mission's pins sleep (AD-12)"
+        );
+        assert!(events_of(&db2, crate::domain::support::PIN_SUPPORT_CHECKED).await.is_empty());
     }
 
     #[test]

@@ -323,6 +323,51 @@ export interface PinVerification {
   ts: string;
 }
 
+// The support check (Story 6.9, FR-23.1/23.2) — the THIRD signal on a pin:
+// an entailment-style faithfulness judgment by an LLM (actor system/support)
+// through the provider layer, attributed to its judging model. Never
+// conflated with confidence (the assessing model's own judgment) or
+// verification (existence by code): three signals, three chips. The judging
+// model always DIFFERS from the pin's assessing model (NFR-3 extended —
+// never the same model grading its own pin).
+export type SupportVerdict = "supported" | "partially" | "unsupported" | "unverifiable";
+
+// The read model's display vocabulary: the event's verdict, plus `stale`
+// (fold-derived — the result predates the current pin, re-checkable).
+export type SupportStatus = SupportVerdict | "stale";
+
+export interface PinSupportCheck {
+  status: SupportStatus;
+  confidence: number; // the judge's confidence in its verdict, 0.0–1.0
+  judgingModel: string; // rendered mono with the result — attribution
+  ts: string; // visibly dated — never silently assumed fresh
+}
+
+// One pin's check attempt from a support run (Story 6.9): the landed
+// verdict, or the honest code-form skip reason (no_different_model |
+// unparsed | provider_error | runtime_killed | autonomy_watch |
+// cost_ceiling_reached) — never a fake verdict.
+export interface SupportCheckRecord {
+  claimSeq: number; // the CLAIMS-n chip
+  verdict: SupportVerdict | null;
+  confidence: number | null;
+  judgingModel: string | null;
+  skip: string | null;
+}
+
+// One support run's summary (Story 6.9): the rollup the digest's one-line
+// verdict renders from, the per-pin records (specifics, never aggregates
+// alone), and the re-folded claims of the scope.
+export interface SupportRunSummary {
+  checked: number;
+  supported: number;
+  partially: number;
+  unsupported: number;
+  unverifiable: number;
+  records: SupportCheckRecord[];
+  claims: Claim[];
+}
+
 export interface EvidencePin {
   seq: number; // the evidence.pinned event's seq (latest per claim wins)
   ts: string;
@@ -338,6 +383,7 @@ export interface EvidencePin {
   refLabel: string | null; // author-year from the library (citation pins only)
   refRemoved?: boolean | null; // FR-15.6: the pinned ref was removed — "source removed" flag
   verification: PinVerification | null; // latest machine verification; null = unverified
+  support?: PinSupportCheck | null; // latest support check (6.9); null/absent = unchecked
 }
 
 export interface Claim {
@@ -454,6 +500,10 @@ export interface DigestRow {
   jobsFinished: number;
   jobsFailed: number;
   jobVerdict: DigestJobVerdict | null; // the latest completed job's verdict
+  // Support checks the night swept (Story 6.10, FR-23.3): the one-line
+  // verdict names both counts — the unsupported count never buried.
+  supportChecks: number;
+  supportUnsupported: number;
 }
 
 // One remote job completion's verdict (Story 3.4): which target, which job,
@@ -960,6 +1010,11 @@ export type ReadinessItemKind =
   | "load_bearing_refuted" // things rest on it; refuted
   | "unreckoned_null_result" // null search; its mission still unresolved
   | "pin_verification_failed" // INFO: pinned, but the machine check failed
+  // INFO (Story 6.10, FR-23.3): the gate consumes the THIRD signal —
+  // support verdicts, never blockers (the pin stays; honesty, not amnesia).
+  | "pin_unsupported" // support says the citing source does not hold the claim up
+  | "pin_partially_supported" // support says the claim asserts more than its source
+  | "support_unchecked" // unverified support after N sweeps — visibly to-verify
   | "merge_queue_pending" // INFO: quarantine is not board state (AD-3)
   // manuscript scope (Story 6.8, FR-20.5): the paper cannot quietly outrun
   // the evidence — each flag references the hypothesis card AND the
