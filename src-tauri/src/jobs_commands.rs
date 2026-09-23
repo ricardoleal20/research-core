@@ -894,8 +894,7 @@ pub async fn list_registered_adapters() -> Result<Vec<RegisteredAdapterView>, St
 }
 
 pub(crate) fn first_party_adapters() -> Vec<RegisteredAdapterView> {
-    const BUILTIN: [&str; 3] = ["local", "scheduler", "ssh"];
-    BUILTIN
+    crate::adapters::targets::FIRST_PARTY_KINDS
         .iter()
         .map(|kind| RegisteredAdapterView {
             kind: kind.to_string(),
@@ -944,6 +943,10 @@ pub async fn probe_compute_target(
             .map(|detail| TargetProbeView { status: "ok".into(), detail })
             .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
         "scheduler" => crate::adapters::targets::Scheduler::new()
+            .probe(&info)
+            .map(|detail| TargetProbeView { status: "ok".into(), detail })
+            .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
+        "kubernetes" => crate::adapters::targets::Kubernetes::new()
             .probe(&info)
             .map(|detail| TargetProbeView { status: "ok".into(), detail })
             .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
@@ -1175,13 +1178,14 @@ mod tests {
     #[tokio::test]
     async fn targets_declare_list_and_refuse_unknown_kinds() {
         let db = test_db();
-        // v1 registers `local` and `ssh`; anything else is a typed error.
-        let err = declare_compute_target_inner(&db, "cluster", "kubernetes", None, &BTreeMap::new())
+        // the registry registers the first-party kinds; anything else is
+        // a typed error.
+        let err = declare_compute_target_inner(&db, "cluster", "mainframe", None, &BTreeMap::new())
             .await
             .unwrap_err();
         assert!(err.starts_with("unknown_kind:"), "unexpected: {err}");
-        assert!(err.contains("local"), "the error names the v1 kinds: {err}");
-        assert!(err.contains("ssh"), "the error names the v1 kinds: {err}");
+        assert!(err.contains("local"), "the error names the kinds: {err}");
+        assert!(err.contains("kubernetes"), "the error names the kinds: {err}");
         // an ssh target requires its host; a local target carries none
         let err = declare_compute_target_inner(&db, "cluster", "ssh", None, &BTreeMap::new())
             .await
@@ -1259,6 +1263,96 @@ mod tests {
             config.insert(key.to_string(), path.to_string_lossy().into_owned());
         }
         config
+    }
+
+    // ---- kubernetes targets: the context gate + lifecycle + spend (Story 6.3) ----
+
+    /// The fake-kubectl harness (kubectlPrefix points the adapter at a
+    /// stand-in; the state file is what `get job` answers).
+    fn fake_kubectl(state: &str) -> BTreeMap<String, String> {
+        let dir = std::env::temp_dir().join(format!("rc-cmd-kube-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("state");
+        std::fs::write(&state_path, state).unwrap();
+        let bin = dir.join("kubectl");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *\" get \"*) cat {} ;;\n  *\" logs \"*) printf 'container out\\n' ;;\n  *) exit 0 ;;\nesac\n",
+                crate::adapters::targets::shell_quote(state_path.to_str().unwrap())
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let config = BTreeMap::from([
+            ("context".to_string(), "lab-gpu".to_string()),
+            ("namespace".to_string(), "research".to_string()),
+            ("image".to_string(), "ghcr.io/lab/trainer:latest".to_string()),
+            ("kubectlPrefix".to_string(), bin.to_string_lossy().into_owned()),
+        ]);
+        config
+    }
+
+    #[tokio::test]
+    async fn a_kubernetes_target_gates_its_context_and_records_its_spend() {
+        let db = test_db();
+        let mission = create_mission(&db).await;
+        let config =
+            fake_kubectl(r#"{"status": {"conditions": [{"type": "Complete", "status": "True"}]}}"#);
+        declare_compute_target_inner(&db, "k8s-lab", "kubernetes", None, &config)
+            .await
+            .unwrap();
+        // the declared target lists its kind, config, and context gate
+        {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            let targets = list_targets_inner(&events).unwrap();
+            let k8s = targets.iter().find(|t| t.name == "k8s-lab").unwrap();
+            assert_eq!(k8s.kind, "kubernetes");
+            assert_eq!(k8s.config.get("context").map(String::as_str), Some("lab-gpu"));
+            assert_eq!(k8s.allowlisted, Some(false), "the context is not on the allowlist yet");
+        }
+        // the context is not on the allowlist — the submit is refused
+        // with the typed error, before any connection
+        let err = submit_job_initiated(
+            &db,
+            mission,
+            "k8s-lab",
+            spec("python3", &["train.py"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("context_not_allowed:"), "unexpected: {err}");
+        // allowlisting the context lets the job through
+        set_host_allowlist_inner(&db, vec!["lab-gpu".into()])
+            .await
+            .unwrap();
+        let job = submit_job_initiated(
+            &db,
+            mission,
+            "k8s-lab",
+            spec("python3", &["train.py"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap();
+        assert_eq!(job.target, "k8s-lab");
+        let jobs = poll_until_finished(&db, mission, job.id).await;
+        assert_eq!(jobs[0].phase, JobPhase::Finished);
+        assert_eq!(jobs[0].exit_code, Some(0));
+        // usage attributed to the kubernetes target like any other (AD-10)
+        let all = events(&db).await;
+        assert!(
+            all.iter().any(|e| {
+                e.kind == TARGET_SPEND_RECORDED && e.payload["target"] == serde_json::json!("k8s-lab")
+            }),
+            "the kubernetes job's spend landed"
+        );
     }
 
     // ---- scheduler targets: the whole lifecycle + spend (Story 6.2) ----

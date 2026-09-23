@@ -16,9 +16,11 @@
 // too (it ENCODES the validated argv — see ssh.rs for why that is not a
 // freeform path).
 
+pub mod kubernetes;
 pub mod scheduler;
 pub mod ssh;
 
+pub use kubernetes::Kubernetes;
 pub use scheduler::Scheduler;
 pub use ssh::Ssh;
 
@@ -35,6 +37,11 @@ use crate::domain::jobs::{JobResources, JobSpec, SpecError};
 /// community adapters to. The registry refuses registrations against any
 /// other version (Story 6.5).
 pub const ADAPTER_CONTRACT_VERSION: &str = "1";
+
+/// The kinds that ship with ResearchCore (the registry's first-party
+/// registrations, in registration order). Community adapters register
+/// alongside these through the validated seam (Story 6.5).
+pub const FIRST_PARTY_KINDS: &[&str] = &["local", "ssh", "scheduler", "kubernetes", "chopflow"];
 
 /// The target adapter's id for one submitted job — opaque to the core,
 /// addressed by monitor and fetch. For `Local` it is the in-memory key of
@@ -184,14 +191,16 @@ pub struct TargetRegistry {
 }
 
 impl TargetRegistry {
-    /// The first-party registry: `local` (argv-direct), `ssh` (allowlisted
-    /// remote hosts, Story 3.3), and `scheduler` (SLURM/PBS-style
-    /// clusters, Story 6.2) registered.
+    /// The first-party registry: `local` (argv-direct), `ssh`
+    /// (allowlisted remote hosts, Story 3.3), `scheduler` (SLURM/PBS-
+    /// style clusters, Story 6.2), and `kubernetes` (Job targets on an
+    /// allowlisted context, Story 6.3) registered.
     pub fn v1() -> Self {
         let mut registry = Self::empty();
         registry.register(Arc::new(Local));
         registry.register(Arc::new(Ssh::new()));
         registry.register(Arc::new(Scheduler::new()));
+        registry.register(Arc::new(Kubernetes::new()));
         registry
     }
 
@@ -499,7 +508,7 @@ mod tests {
     #[test]
     fn the_registry_resolves_by_kind_with_a_typed_unknown() {
         let registry = TargetRegistry::v1();
-        assert_eq!(registry.kinds(), vec!["local", "scheduler", "ssh"]);
+        assert_eq!(registry.kinds(), vec!["kubernetes", "local", "scheduler", "ssh"]);
         for kind in registry.kinds() {
             assert_eq!(registry.adapter(kind).unwrap().kind(), kind);
         }
