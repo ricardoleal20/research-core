@@ -448,19 +448,33 @@ pub(crate) async fn submit_job_initiated(
                 known_names(&declared).join(" | ")
             )));
         };
+        // The kill switch (AD-15e) gates EVERY dispatch — user-initiated
+        // submits included (review R-11): "the runtime refuses all
+        // dispatch while killed". Only the DIAL below exempts user submits,
+        // per AD-15d ("the dial governs agent dispatches").
+        let config = crate::domain::trust::trust_config(&events);
+        if config.runtime_killed {
+            return Err(EventError::Invalid(
+                "killed: the runtime is killed — every dispatch is refused until runtime.resumed (AD-15e)"
+                    .into(),
+            ));
+        }
+        // The mission-status gate (review R-11): jobs run FOR a mission —
+        // a stopped or completed mission is not a target for new work,
+        // and its folded spend would land on a terminal record.
+        if mission.status != crate::domain::missions::MissionStatus::Active {
+            return Err(EventError::Invalid(format!(
+                "mission_not_active: mission {} is `{:?}` — jobs are refused for non-active missions (only Active missions dispatch)",
+                mission.id,
+                mission.status
+            )));
+        }
         // Per-target autonomy (FR-5.3, AD-15d): an agent-initiated submit
         // needs act-with-receipts on this target — the most restrictive of
         // the global, mission, and target dials. Auto-enqueue can be
         // allowed on a cluster and refused on a laptop; a USER submit
         // always proceeds (the dial governs agent dispatches only).
         if initiator == Initiator::Agent {
-            let config = crate::domain::trust::trust_config(&events);
-            if config.runtime_killed {
-                return Err(EventError::Invalid(
-                    "killed: the runtime is killed — every dispatch is refused until runtime.resumed (AD-15e)"
-                        .into(),
-                ));
-            }
             let dial = crate::domain::trust::effective_autonomy(
                 &config,
                 Some((mission.id, mission.autonomy)),
@@ -1325,6 +1339,73 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("killed:"), "unexpected: {err}");
+        // review R-11: the kill switch (AD-15e) gates USER submits too —
+        // only the DIAL exempts user submits, never the kill switch
+        let err = submit_job_initiated(
+            &db,
+            mission,
+            "laptop",
+            spec("echo", &["still-killed"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("killed:"),
+            "a user submit while killed must be refused (AD-15e): unexpected: {err}"
+        );
+    }
+
+    // ---- review R-11: jobs refuse for non-active missions ----
+
+    #[tokio::test]
+    async fn a_stopped_mission_refuses_new_jobs() {
+        let db = test_db();
+        let mission = {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            let m = store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does Y hold?".into(),
+                        stop_condition: "Stop after 3 rounds.".into(),
+                        success_criterion: "A rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 500,
+                        roles: vec![],
+                        schedule: "off".into(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            // the mission reaches a terminal state (its evaluator path
+            // appends mission.stopped/completed, cause-linked)
+            store
+                .append(
+                    NewEvent::new(
+                        crate::domain::missions::MISSION_STOPPED,
+                        crate::eventstore::Actor::User,
+                        serde_json::json!({ "reason": "test terminal" }),
+                    )
+                    .unwrap()
+                    .with_causes(vec![m.id]),
+                )
+                .unwrap();
+            m.id
+        };
+        let err = submit_job_initiated(
+            &db,
+            mission,
+            "local",
+            spec("echo", &["ok"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("mission_not_active:"),
+            "jobs are refused for non-active missions: unexpected: {err}"
+        );
     }
 
     // ---- per-target ceilings start being computable (AD-10) ----
