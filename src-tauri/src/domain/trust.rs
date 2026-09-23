@@ -543,10 +543,33 @@ pub fn spend_ledger(events: &[StoredEvent]) -> SpendLedger {
     ledger
 }
 
+/// How long a reservation stays held without a settle before it folds as
+/// released (review R-06): aligned with the run reaper's silently-dead
+/// threshold — a reservation whose run can no longer be alive must stop
+/// consuming ceiling headroom. A late `spend.recorded` still lands in the
+/// LEDGER (recorded spend supersedes the estimate), so expiring a
+/// reservation never loses real accounting.
+pub const RESERVATION_TTL_MINUTES: i64 = crate::domain::telemetry::DEAD_RUN_THRESHOLD_MINUTES;
+
 /// Pure fold of in-flight reservations (AD-10): reserved minus settled, by
 /// scope. A reservation settles when its run id sees a `spend.released`.
+/// Rollback-aware through the shared fold cursor (review R-06): a
+/// `spend.reserved` a rollback orphaned never counts — post-rollback
+/// dispatches do not inherit phantom reservations. A reservation older
+/// than `RESERVATION_TTL_MINUTES` with no settle folds as released — a
+/// crashed process between reserve and settle must not permanently eat
+/// ceiling headroom (and wrongfully refuse dispatches) forever.
 pub fn in_flight(events: &[StoredEvent]) -> InFlight {
-    let mut reserved: HashMap<String, (u64, Option<Uuid>, Option<String>)> = HashMap::new();
+    in_flight_at(events, chrono::Utc::now())
+}
+
+/// The pure, time-parameterized fold `in_flight` reads (tests control the
+/// clock; production passes now).
+pub fn in_flight_at(events: &[StoredEvent], now: chrono::DateTime<chrono::Utc>) -> InFlight {
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    let events = &cursor.live_owned(events);
+    let mut reserved: HashMap<String, (u64, Option<Uuid>, Option<String>, chrono::DateTime<chrono::Utc>)> =
+        HashMap::new();
     let mut settled: std::collections::HashSet<String> = std::collections::HashSet::new();
     for event in events {
         match event.kind.as_str() {
@@ -565,7 +588,7 @@ pub fn in_flight(events: &[StoredEvent]) -> InFlight {
                         .get("target")
                         .and_then(serde_json::Value::as_str)
                         .map(String::from);
-                    reserved.insert(run_id.to_string(), (amount, mission_id, target));
+                    reserved.insert(run_id.to_string(), (amount, mission_id, target, event.ts));
                     settled.remove(run_id);
                 }
             }
@@ -577,9 +600,14 @@ pub fn in_flight(events: &[StoredEvent]) -> InFlight {
             _ => {}
         }
     }
+    let ttl = chrono::Duration::minutes(RESERVATION_TTL_MINUTES);
     let mut flight = InFlight::default();
-    for (run_id, (amount, mission_id, target)) in reserved {
+    for (run_id, (amount, mission_id, target, ts)) in reserved {
         if settled.contains(&run_id) {
+            continue;
+        }
+        // expired: folds as released — headroom returns
+        if now.signed_duration_since(ts) > ttl {
             continue;
         }
         flight.global_cents += amount;
@@ -1038,6 +1066,111 @@ mod tests {
             .unwrap())
             .unwrap();
         assert_eq!(in_flight(&store.events_all().unwrap()).global_cents, 61);
+    }
+
+    /// A reservation a rollback orphaned never counts (review R-06): the
+    /// raw-events fold used to keep phantom reservations on the books
+    /// after a checkpoint rollback, permanently eating ceiling headroom.
+    #[test]
+    fn an_orphaned_reservation_does_not_survive_a_rollback() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let mission = Uuid::new_v4();
+        // a reservation, then a checkpoint, then a rollback that orphans it
+        store
+            .append(NewEvent::spend_reserved(SpendReservedPayload {
+                run_id: "run-a".into(),
+                target: "openai".into(),
+                amount_cents: 51,
+                mission_id: Some(mission),
+            })
+            .unwrap())
+            .unwrap();
+        let checkpoint = store
+            .append(NewEvent::checkpoint_created("pre-reserve", 0).unwrap())
+            .unwrap();
+        store
+            .append(
+                NewEvent::checkpoint_rolled_back(checkpoint.id, "pre-reserve", 0, 1).unwrap(),
+            )
+            .unwrap();
+        // the reservation is orphaned — nothing is in flight
+        let events = store.events_all().unwrap();
+        assert!(crate::domain::checkpoints::FoldCursor::over(&events)
+            .orphaned(&events)
+            .any(|e| e.kind == SPEND_RESERVED));
+        let flight = in_flight(&events);
+        assert_eq!(
+            (flight.global_cents, flight.mission_cents.len(), flight.target_cents.len()),
+            (0, 0, 0),
+            "an orphaned reservation never counts against headroom"
+        );
+        // and a fresh post-rollback reservation counts alone
+        store
+            .append(NewEvent::spend_reserved(SpendReservedPayload {
+                run_id: "run-b".into(),
+                target: "openai".into(),
+                amount_cents: 10,
+                mission_id: Some(mission),
+            })
+            .unwrap())
+            .unwrap();
+        let flight = in_flight(&store.events_all().unwrap());
+        assert_eq!(flight.global_cents, 10, "only the post-rollback reservation counts");
+    }
+
+    /// A crashed reservation expires (review R-06): a process that died
+    /// between `spend.reserved` and its settle must not hold headroom
+    /// forever — past the TTL the reservation folds as released.
+    #[test]
+    fn a_crashed_reservation_expires() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let mission = Uuid::new_v4();
+        store
+            .append(NewEvent::spend_reserved(SpendReservedPayload {
+                run_id: "run-a".into(),
+                target: "openai".into(),
+                amount_cents: 51,
+                mission_id: Some(mission),
+            })
+            .unwrap())
+            .unwrap();
+        let events = store.events_all().unwrap();
+        let reserved_at = events[0].ts;
+        // fresh: still held
+        assert_eq!(in_flight_at(&events, reserved_at).global_cents, 51);
+        // one minute before the TTL: still held
+        assert_eq!(
+            in_flight_at(&events, reserved_at + chrono::Duration::minutes(RESERVATION_TTL_MINUTES - 1))
+                .global_cents,
+            51
+        );
+        // past the TTL: released — the headroom returns
+        assert_eq!(
+            in_flight_at(&events, reserved_at + chrono::Duration::minutes(RESERVATION_TTL_MINUTES + 1))
+                .global_cents,
+            0,
+            "an expired reservation folds as released"
+        );
+        // and a late spend.recorded still lands in the LEDGER (real spend
+        // supersedes the estimate — expiring never loses accounting)
+        store
+            .append(NewEvent::spend_recorded(crate::domain::spend::SpendRecordedPayload {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                input_tokens: 1000,
+                output_tokens: 500,
+                cost_cents: 40,
+                mission_id: Some(mission),
+                role: None,
+                run_id: Some("run-a".into()),
+                note: None,
+            })
+            .unwrap())
+            .unwrap();
+        let ledger = spend_ledger(&store.events_all().unwrap());
+        assert_eq!(ledger.global_cents, 40);
     }
 
     // ---- the ceiling check (FR-5.3) ----

@@ -714,6 +714,49 @@ mod tests {
         assert!(reserve(&db, &plan("run-d", "openai", Some(mission.id), 50)).await.is_ok());
     }
 
+    /// Review R-06: a rollback then a dispatch must not inherit the
+    /// orphaned reservation. Before the cursor fix, `in_flight` folded raw
+    /// events — a rolled-back `spend.reserved` still consumed headroom and
+    /// refused later dispatches forever.
+    #[tokio::test]
+    async fn a_rollback_then_dispatch_does_not_inherit_the_orphaned_reservation() {
+        let db = test_db();
+        configure_ceiling(&db, "global", None, 100).await.unwrap();
+        // run-a reserves 60¢ of the 100¢ ceiling
+        assert!(reserve(&db, &plan("run-a", "openai", None, 60)).await.is_ok());
+        // a checkpoint + rollback that orphans the reservation
+        {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            let events = store.events_all().unwrap();
+            let reserved_seq = events
+                .iter()
+                .find(|e| e.kind == crate::domain::trust::SPEND_RESERVED)
+                .unwrap()
+                .seq;
+            let checkpoint = store
+                .append(NewEvent::checkpoint_created("pre-reserve", reserved_seq).unwrap())
+                .unwrap();
+            store
+                .append(
+                    NewEvent::checkpoint_rolled_back(
+                        checkpoint.id,
+                        "pre-reserve",
+                        reserved_seq - 1,
+                        1,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        // the phantom is gone: a fresh 60¢ dispatch fits the 100¢ ceiling
+        // (with the raw-events fold it was refused — 60 phantom + 60 new)
+        assert!(
+            reserve(&db, &plan("run-b", "openai", None, 60)).await.is_ok(),
+            "a post-rollback dispatch must not inherit the orphaned reservation"
+        );
+    }
+
     // ---- the status read model ----
 
     #[tokio::test]
