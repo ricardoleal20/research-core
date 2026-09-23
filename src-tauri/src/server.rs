@@ -37,13 +37,25 @@ use uuid::Uuid;
 /// the v0.2.0 bridge work, never as a quiet default.
 pub const DEFAULT_PORT: u16 = 4761;
 
+/// The port the server shell listens on (RC_PORT override, else the
+/// default) — the manuscript compile view builds the served-PDF url from
+/// it (the same URL the desktop webview's PDF pane loads).
+pub fn port() -> u16 {
+    std::env::var("RC_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
 #[derive(Clone)]
 struct ServerState {
     /// The shared core handle — same instance, same connection, same writer.
     db: Db,
+    /// The app data dir (serves the stored compiled PDFs).
+    data_dir: std::path::PathBuf,
 }
 
-pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
+pub fn router(db: Db, dist_dir: std::path::PathBuf, data_dir: std::path::PathBuf) -> Router {
     Router::new()
         .route("/api/missions", get(list_missions))
         .route("/api/dashboard", get(dashboard))
@@ -80,9 +92,117 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/ai-config", get(ai_config))
         .route("/api/host-allowlist", get(host_allowlist))
         .route("/api/refs", get(library_refs))
-        .with_state(ServerState { db })
+        // The manuscript reads (Story 6.6, FR-20.2 — read-only per AD-14):
+        // the registration + file scan, one file's content, and the last
+        // compiled PDF. Registering, editing, and compiling are mutations —
+        // they stay on the Tauri command path (desktop-only).
+        .route("/api/manuscript/{mission_id}", get(manuscript_view))
+        .route("/api/manuscripts", get(manuscripts_all))
+        .route(
+            "/api/manuscript/{mission_id}/file",
+            get(manuscript_file),
+        )
+        .route("/api/manuscript/{mission_id}/pdf", get(manuscript_pdf))
+        // The quarantined agent diffs of one mission (Story 6.7, FR-20.3 —
+        // read-only per AD-14): proposing, merging, and rejecting stay on
+        // the Tauri command path.
+        .route(
+            "/api/manuscript/{mission_id}/diffs",
+            get(manuscript_diffs),
+        )
+        .with_state(ServerState { db, data_dir })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
+}
+
+/// Every registered manuscript (Story 6.6 — read-only per AD-14): the
+/// registration list, folded from the log.
+async fn manuscripts_all(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<crate::domain::manuscript::Manuscript>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    crate::domain::manuscript::ManuscriptsProjection::fold(&events)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// The manuscript read of one mission (Story 6.6 — read-only per AD-14):
+/// the registration, the scanned file list, the detected toolchain, and
+/// the last compile. An unregistered mission is an honest 404 — the served
+/// view renders no manuscript vocabulary until one exists (FR-8.2).
+async fn manuscript_view(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<crate::manuscript_commands::ManuscriptView>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    match crate::manuscript_commands::get_manuscript_inner(&c, &state.data_dir, mission_id)
+        .map_err(|_| internal())?
+    {
+        Some(view) => Ok(Json(view)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// One manuscript file's content (Story 6.6 — read-only per AD-14; saving
+/// stays on the Tauri command path).
+async fn manuscript_file(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<crate::manuscript_commands::ManuscriptFileView>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let Some(path) = params.get("path") else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    let c = state.db.0.lock().await;
+    crate::manuscript_commands::read_manuscript_file_inner(&c, mission_id, path)
+        .map(Json)
+        .map_err(|_| StatusCode::NOT_FOUND)
+}
+
+/// The quarantined agent diffs of one mission (Story 6.7, FR-20.3 —
+/// read-only per AD-14): the quarantined-diff read model with the derived
+/// pending basis-staleness, decided ones included (history is honest).
+async fn manuscript_diffs(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<Vec<crate::domain::manuscript::DiffProposal>>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    match crate::manuscript_commands::list_manuscript_diffs_inner(&c, mission_id) {
+        Ok(diffs) => Ok(Json(diffs)),
+        // an unregistered mission is an honest 404, never an empty list
+        Err(e) if e.starts_with("not_found") => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(internal()),
+    }
+}
+
+/// The last compiled PDF of a mission (Story 6.6): the stored PDF from the
+/// last successful compile, served with the inline disposition so the
+/// side-by-side pane (an <object> to this URL) renders it. No compiled
+/// PDF yet is an honest 404 — never a fake render (NFR-9).
+async fn manuscript_pdf(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let pdf = crate::manuscript_commands::pdf_path(&state.data_dir, mission_id);
+    let bytes = std::fs::read(&pdf).map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(axum::response::Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "application/pdf")
+        .header(axum::http::header::CONTENT_DISPOSITION, "inline")
+        .body(axum::body::Body::from(bytes))
+        .map_err(|_| internal())?)
 }
 
 async fn list_missions(State(state): State<ServerState>) -> Result<Json<Vec<Mission>>, StatusCode> {
@@ -403,12 +523,9 @@ fn dist_dir() -> std::path::PathBuf {
 /// (`tauri::async_runtime` — plain `tokio::spawn` panics here: the setup
 /// closure runs before a reactor exists). Failure to bind is logged, never
 /// fatal — the desktop app does not depend on the browser view to function.
-pub fn spawn(db: Db) {
+pub fn spawn(db: Db, data_dir: std::path::PathBuf) {
     tauri::async_runtime::spawn(async move {
-        let port: u16 = std::env::var("RC_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(DEFAULT_PORT);
+        let port: u16 = port();
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let dir = dist_dir();
         let serving_ui = dir.join("index.html").is_file();
@@ -423,7 +540,7 @@ pub fn spawn(db: Db) {
             "[server] http://localhost:{port} — read-only API over the shared core{}",
             if serving_ui { " + UI" } else { " (UI build not found — API only)" }
         );
-        if let Err(e) = axum::serve(listener, router(db, dir)).await {
+        if let Err(e) = axum::serve(listener, router(db, dir, data_dir)).await {
             eprintln!("[server] stopped: {e}");
         }
     });
@@ -446,7 +563,11 @@ mod tests {
     }
 
     fn app(db: Db) -> Router {
-        router(db, std::path::PathBuf::from("/nonexistent-dist"))
+        router(
+            db,
+            std::path::PathBuf::from("/nonexistent-dist"),
+            std::env::temp_dir(),
+        )
     }
 
     async fn body_json<T: serde::de::DeserializeOwned>(body: Body) -> T {
@@ -1449,5 +1570,143 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// The manuscript routes (Stories 6.6/6.7, FR-20 — read-only per
+    /// AD-14): the registration + scan read, one file's content, the
+    /// quarantined diffs — all folded/scanned over the shared core.
+    /// Registering, editing, compiling, proposing, and merging are
+    /// mutations: they stay on the Tauri command path (POST is not
+    /// routed). An unregistered mission is an honest 404.
+    #[tokio::test]
+    async fn get_api_manuscript_reads_are_read_only() {
+        let db = test_db();
+        let dir = std::env::temp_dir().join(format!(
+            "rc-srv-ms-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("main.tex"),
+            "\\documentclass{article}\nThe gain holds \\hyp{H-1}.\n",
+        )
+        .unwrap();
+        let mission_id = {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Suggest,
+                    spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
+                    roles: vec![],
+                })
+                .unwrap())
+                .unwrap();
+            store
+                .append(
+                    NewEvent::manuscript_registered(
+                        mission.id,
+                        &dir.display().to_string(),
+                        "main.tex",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            // one quarantined agent diff, through the typed seam
+            crate::domain::manuscript::propose_diff(
+                &store,
+                "run-7",
+                mission.id,
+                &dir,
+                "main.tex",
+                &[crate::domain::manuscript::ManuscriptDiffHunk {
+                    before: "The gain holds".into(),
+                    after: "The gain robustly holds".into(),
+                }],
+                "tighten",
+            )
+            .unwrap();
+            mission.id
+        };
+        // the manuscript read: registration + scan
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/manuscript/{mission_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let view: crate::manuscript_commands::ManuscriptView =
+            body_json(res.into_body()).await;
+        assert_eq!(view.manuscript.main_file, "main.tex");
+        assert_eq!(view.files.len(), 1);
+        assert_eq!(view.files[0].hyp_markers, 1);
+        // the quarantined diffs read: pending, derived staleness false
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/manuscript/{mission_id}/diffs"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let diffs: Vec<crate::domain::manuscript::DiffProposal> =
+            body_json(res.into_body()).await;
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].status, crate::domain::manuscript::DiffStatus::Pending);
+        assert!(!diffs[0].basis_stale);
+        // one file's content (a read the served view shares)
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!(
+                    "/api/manuscript/{mission_id}/file?path=main.tex"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let file: crate::manuscript_commands::ManuscriptFileView =
+            body_json(res.into_body()).await;
+        assert!(file.content.contains("The gain holds"));
+        // an unregistered mission is an honest 404, never a fake read
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/manuscript/{}", uuid::Uuid::new_v4()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // no compiled PDF yet — an honest 404, never a fake render (NFR-9)
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!("/api/manuscript/{mission_id}/pdf"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // single writer (AD-14): mutations are not routed — POST is 405
+        let res = app(db)
+            .oneshot(
+                Request::post(format!("/api/manuscript/{mission_id}/diffs"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

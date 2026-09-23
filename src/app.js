@@ -84,6 +84,9 @@ const app = {
     disclosure: {}, // missionId -> SearchDisclosure (the Divulgación fold)
     checkpoints: null, // CheckpointsView (the restore-point control)
     rollbackOutcome: null, // the last rollback's orphaned outcome
+    manuscripts: {}, // missionId -> ManuscriptView | null (Story 6.6: null = unregistered)
+    msDiffs: {}, // missionId -> ManuscriptDiffProposal[] (Story 6.7: quarantined agent diffs)
+    manuscriptsList: [], // every registered manuscript (the Ajustes read)
     digest: null,
     trust: null,
     targets: [],
@@ -361,6 +364,38 @@ async function loadBoard(missionId) {
     app.data.disclosure[missionId] = await api.getSearchDisclosure(missionId);
     renderMainOnly();
   } catch (e) { console.error(e); }
+  // The manuscript surface (Story 6.6): loads beside the board — renders
+  // only when one is registered (progressive disclosure).
+  loadManuscript(missionId);
+}
+
+// The manuscript read of one mission (Stories 6.6–6.7): the registration +
+// scan + toolchain + last compile, and the quarantined agent diffs.
+async function loadManuscript(missionId) {
+  try {
+    const [view, diffs] = await Promise.all([
+      api.getManuscript(missionId),
+      api.listManuscriptDiffs(missionId).catch(() => []),
+    ]);
+    app.data.manuscripts[missionId] = view;
+    app.data.msDiffs[missionId] = diffs || [];
+  } catch (e) {
+    console.error(e);
+    app.data.manuscripts[missionId] = null;
+    app.data.msDiffs[missionId] = [];
+  }
+  renderMainOnly();
+}
+
+// Every registered manuscript (the Ajustes registration surface's read).
+async function loadManuscriptsList() {
+  try {
+    app.data.manuscriptsList = await api.listManuscripts();
+  } catch (e) {
+    console.error(e);
+    app.data.manuscriptsList = [];
+  }
+  renderMainOnly();
 }
 
 async function loadDigest() {
@@ -424,7 +459,13 @@ function loadViewData(view) {
   if (view === "refs") loadRefs();
   if (view === "assistant") loadAssistant();
   if (view === "digest") loadDigest();
-  if (view === "settings") { loadTrust(); loadTargets(); loadAiConfig(); }
+  if (view === "settings") {
+    loadTrust(); loadTargets(); loadAiConfig();
+    // The manuscript registration tab (Story 6.6): the registered list +
+    // the missions to register one to.
+    loadManuscriptsList();
+    if (!app.data.missionsLoaded) loadMissions();
+  }
 }
 
 // ========== COMMAND PALETTE ==========
@@ -642,11 +683,13 @@ window.RC = RC_BUS;
 Object.assign(ctx, {
   app, render, renderMainOnly, navigate,
   loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
+  loadManuscript, loadManuscriptsList,
 });
 
 export { app, render, renderMainOnly, navigate };
 export {
   loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
+  loadManuscript, loadManuscriptsList,
 };
 
 // ========== BOOT ==========

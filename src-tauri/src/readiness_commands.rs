@@ -15,7 +15,8 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::db::Db;
-use crate::domain::readiness::{readiness_report, ReadinessReport};
+use crate::domain::manuscript::{build_scan, ManuscriptsProjection};
+use crate::domain::readiness::{readiness_report_with_manuscript, ReadinessReport};
 use crate::eventstore::EventStore;
 
 fn err(e: impl ToString) -> String {
@@ -47,13 +48,24 @@ pub async fn get_readiness_report(
 }
 
 /// Plain inner (testable without Tauri state; the server route serves the
-/// same read over the shared core): fold the report.
+/// same read over the shared core): fold the report. The manuscript scope
+/// (Story 6.8, FR-20.5): every registered manuscript in scope is scanned
+/// from disk here — the ONLY place the gate touches the filesystem — and
+/// the pure fold consumes the scan (same log + same files, same report,
+/// FR-13.2). No manuscript registered, no manuscript scope (progressive
+/// disclosure).
 pub(crate) fn readiness_report_inner(
     conn: &Connection,
     mission: Option<Uuid>,
 ) -> Result<ReadinessReport, String> {
     let events = EventStore::new(conn).events_all().map_err(err)?;
-    readiness_report(&events, mission).map_err(err)
+    let scans: Vec<crate::domain::manuscript::ManuscriptScan> = ManuscriptsProjection::fold(&events)
+        .map_err(err)?
+        .iter()
+        .filter(|m| mission.is_none_or(|id| m.mission_id == id))
+        .map(build_scan)
+        .collect();
+    readiness_report_with_manuscript(&events, mission, &scans).map_err(err)
 }
 
 #[cfg(test)]

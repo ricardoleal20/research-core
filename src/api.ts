@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -32,6 +32,14 @@ export type CreateMissionInput = {
 const servedByCore: Promise<boolean> = fetch("/api/missions")
   .then((r) => r.ok)
   .catch(() => false);
+
+// Sync live-binding flag: true once the probe resolves and this page is
+// served by the core's read-only server — the manuscript editor renders
+// read-only from it (desktop-only edits, AD-14).
+export let servedByCoreFlag = false;
+servedByCore.then((v) => {
+  servedByCoreFlag = v;
+});
 
 async function httpJson<T>(path: string): Promise<T> {
   const r = await fetch(path);
@@ -689,6 +697,111 @@ const browserApi = {
     }
     return mockApi.rollbackToCheckpoint(_checkpointId);
   },
+  // The manuscript (Stories 6.6–6.8, FR-20): reads go to the same-origin
+  // read-only API over the shared core (the registration + scan, one
+  // file's content, the served PDF url rides the compile read, the
+  // quarantined agent diffs); every mutation — registering, editing,
+  // compiling, proposing, merging, rejecting — is DESKTOP-ONLY (AD-14):
+  // the served browser view renders the manuscript read-only and refuses
+  // them with the standard bilingual message.
+  getManuscript: async (missionId: string): Promise<ManuscriptView | null> => {
+    if (await servedByCore) {
+      const r = await fetch(`/api/manuscript/${missionId}`);
+      if (r.status === 404) return null; // not registered — honest null
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return (await r.json()) as ManuscriptView;
+    }
+    return mockApi.getManuscript(missionId);
+  },
+  listManuscripts: async (): Promise<Manuscript[]> => {
+    if (await servedByCore) return httpJson<Manuscript[]>("/api/manuscripts");
+    return mockApi.listManuscripts();
+  },
+  readManuscriptFile: async (missionId: string, path: string): Promise<ManuscriptFileView> => {
+    if (await servedByCore) {
+      return httpJson<ManuscriptFileView>(
+        `/api/manuscript/${missionId}/file?path=${encodeURIComponent(path)}`,
+      );
+    }
+    return mockApi.readManuscriptFile(missionId, path);
+  },
+  listManuscriptDiffs: async (missionId: string): Promise<ManuscriptDiffProposal[]> => {
+    if (await servedByCore) {
+      return httpJson<ManuscriptDiffProposal[]>(`/api/manuscript/${missionId}/diffs`);
+    }
+    return mockApi.listManuscriptDiffs(missionId);
+  },
+  registerManuscript: async (
+    _missionId: string,
+    _dir: string,
+    _mainFile: string,
+  ): Promise<Manuscript> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the manuscript from the desktop app / " +
+          "Vista de solo lectura — gestiona el manuscrito desde la app de escritorio",
+      );
+    }
+    return mockApi.registerManuscript(_missionId, _dir, _mainFile);
+  },
+  writeManuscriptFile: async (
+    _missionId: string,
+    _path: string,
+    _content: string,
+  ): Promise<ManuscriptFileView> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — edit the manuscript from the desktop app / " +
+          "Vista de solo lectura — edita el manuscrito desde la app de escritorio",
+      );
+    }
+    return mockApi.writeManuscriptFile(_missionId, _path, _content);
+  },
+  compileManuscript: async (_missionId: string): Promise<CompileView> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — compile from the desktop app / " +
+          "Vista de solo lectura — compila desde la app de escritorio",
+      );
+    }
+    return mockApi.compileManuscript(_missionId);
+  },
+  proposeManuscriptDiff: async (
+    _missionId: string,
+    _file: string,
+    _hunks: ManuscriptDiffHunk[],
+    _note: string,
+    _runId: string,
+  ): Promise<ManuscriptDiffProposal> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — review agent diffs from the desktop app / " +
+          "Vista de solo lectura — revisa los diffs del agente desde la app de escritorio",
+      );
+    }
+    return mockApi.proposeManuscriptDiff(_missionId, _file, _hunks, _note, _runId);
+  },
+  approveManuscriptDiff: async (
+    _proposalId: string,
+    _force: boolean,
+  ): Promise<ManuscriptDiffProposal> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — review agent diffs from the desktop app / " +
+          "Vista de solo lectura — revisa los diffs del agente desde la app de escritorio",
+      );
+    }
+    return mockApi.approveManuscriptDiff(_proposalId, _force);
+  },
+  rejectManuscriptDiff: async (_proposalId: string): Promise<ManuscriptDiffProposal> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — review agent diffs from the desktop app / " +
+          "Vista de solo lectura — revisa los diffs del agente desde la app de escritorio",
+      );
+    }
+    return mockApi.rejectManuscriptDiff(_proposalId);
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -1035,4 +1148,41 @@ export const api = mockActive ? browserApi : {
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),
+
+  // manuscript (Stories 6.6–6.8, FR-20): the .tex repo IS the manuscript —
+  // registration references the dir on disk (never copies it); reads scan
+  // the user's files; writes edit them in place; compile runs the detected
+  // toolchain honestly (tex_not_found is a state, never a fake render);
+  // agent edits land as quarantined diffs merged only by the human
+  getManuscript: (missionId: string) =>
+    invoke<ManuscriptView | null>("get_manuscript", { missionId }),
+  listManuscripts: () => invoke<Manuscript[]>("list_manuscripts"),
+  registerManuscript: (missionId: string, dir: string, mainFile: string) =>
+    invoke<Manuscript>("register_manuscript", { missionId, dir, mainFile }),
+  readManuscriptFile: (missionId: string, path: string) =>
+    invoke<ManuscriptFileView>("read_manuscript_file", { missionId, path }),
+  writeManuscriptFile: (missionId: string, path: string, content: string) =>
+    invoke<ManuscriptFileView>("write_manuscript_file", { missionId, path, content }),
+  compileManuscript: (missionId: string) =>
+    invoke<CompileView>("compile_manuscript", { missionId }),
+  listManuscriptDiffs: (missionId: string) =>
+    invoke<ManuscriptDiffProposal[]>("list_manuscript_diffs", { missionId }),
+  proposeManuscriptDiff: (
+    missionId: string,
+    file: string,
+    hunks: ManuscriptDiffHunk[],
+    note: string,
+    runId: string,
+  ) =>
+    invoke<ManuscriptDiffProposal>("propose_manuscript_diff", {
+      missionId,
+      file,
+      hunks,
+      note,
+      runId,
+    }),
+  approveManuscriptDiff: (proposalId: string, force: boolean) =>
+    invoke<ManuscriptDiffProposal>("approve_manuscript_diff", { proposalId, force }),
+  rejectManuscriptDiff: (proposalId: string) =>
+    invoke<ManuscriptDiffProposal>("reject_manuscript_diff", { proposalId }),
 };

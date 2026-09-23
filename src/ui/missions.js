@@ -6,7 +6,7 @@
 // evidence-pin, quarantine-diff, spend-meter, digest-item,
 // readiness-blocking-item.
 import { t } from "../i18n";
-import { api } from "../api";
+import { api, servedByCoreFlag } from "../api";
 import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
 import { RC, ctx } from "./rc";
 
@@ -237,6 +237,178 @@ export function renderBoard(app) {
           ${renderDisclosure(app, missionId)}
           ${renderMissionMeta(mission)}
         </div>
+      </div>
+      ${renderManuscriptSection(app, mission)}
+    </div>`;
+}
+
+// ========== MANUSCRIPT (Stories 6.6–6.8, FR-20) ==========
+// The .tex repo IS the manuscript: this section renders ONLY when the
+// mission has one registered (progressive disclosure, FR-1.4/FR-8.2 —
+// registration lives in Ajustes). Source editing beside the compiled PDF,
+// compiled on demand; toolchain detection is honest (tex_not_found is a
+// state with an install hint, never a fake render); agent edits land as
+// quarantined diffs (Story 6.7) merged only by the human.
+
+function renderManuscriptSection(app, mission) {
+  const view = app.data.manuscripts ? app.data.manuscripts[mission.id] : null;
+  if (!view) return ""; // not registered (or still loading) — no surface
+  const st = app.state.ms && app.state.ms.missionId === mission.id ? app.state.ms : null;
+  const last = view.lastCompile;
+  const compiling = st && st.compiling;
+  const tool = view.toolchain;
+  return `
+    <div class="pt-2 space-y-4">
+      <div class="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 class="heading-2">${t("ms.title")}</h2>
+          <p class="text-xs text-muted mt-0.5">${t("ms.sub")}</p>
+          <p class="font-mono text-[11px] text-muted mt-1 truncate max-w-xl" title="${esc(view.manuscript.dir)}">${esc(view.manuscript.dir)} · ${esc(view.manuscript.mainFile)}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          ${tool
+            ? `<span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 font-mono">${esc(tool.name)}${tool.configured ? " · " + esc(t("ms.toolchain")) : ""}</span>`
+            : `<span class="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 ring-1 ring-inset ring-rose-600/20">${t("ms.texNotFound")}</span>`}
+          ${btn({ label: compiling ? t("ms.compiling") : t("ms.compile"), variant: "default", size: "sm", iconName: "bolt", onClick: `RC.msCompile('${esc(mission.id)}')`, disabled: compiling })}
+        </div>
+      </div>
+      ${!tool ? `
+      <div class="rounded-xl border border-rose-200 bg-rose-50 p-4">
+        <p class="text-sm font-medium text-rose-700">${t("ms.texNotFound")}</p>
+        <p class="text-xs text-rose-600 mt-1">${t("ms.installHint")}</p>
+      </div>` : ""}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="space-y-4">
+          ${renderMsFileList(app, mission.id, view, st)}
+          ${renderMsEditor(app, mission.id, st)}
+        </div>
+        <div class="space-y-4">
+          ${renderMsPdfPane(last)}
+          ${renderMsLog(last)}
+        </div>
+      </div>
+      ${renderMsDiffs(app, mission.id)}
+    </div>`;
+}
+
+function renderMsFileList(app, missionId, view, st) {
+  const active = st ? st.file : view.manuscript.mainFile;
+  return card(`
+    <div class="p-4 space-y-2">
+      <p class="caption text-muted">${t("ms.files")}</p>
+      <div class="divide-y divide-border rounded-lg border border-border overflow-hidden">
+        ${view.files.length ? view.files.map((f) => `
+          <button onclick="RC.msOpenFile('${esc(missionId)}','${esc(f.path)}')" class="w-full flex items-center justify-between gap-3 px-3 py-2 text-left transition ${active === f.path ? "bg-primary/5" : "bg-white hover:bg-gray-50"}">
+            <span class="font-mono text-xs truncate ${active === f.path ? "text-primary font-medium" : "text-foreground"}">${esc(f.path)}${f.path === view.manuscript.mainFile ? ` <span class="text-muted">· ${t("ms.main")}</span>` : ""}</span>
+            <span class="shrink-0 font-mono text-[10px] text-muted tabular">${f.words} ${t("ms.words")} · ${f.hypMarkers + f.claimMarkers} ${t("ms.markers")}</span>
+          </button>
+        `).join("") : `<p class="px-3 py-4 text-sm text-muted text-center">—</p>`}
+      </div>
+    </div>`);
+}
+
+function renderMsEditor(app, missionId, st) {
+  if (!st) return "";
+  const ro = servedByCoreFlag();
+  const dirty = st.draft !== st.content;
+  return card(`
+    <div class="p-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <p class="caption text-muted">${t("ms.editor")} — <span class="font-mono">${esc(st.file)}</span></p>
+        ${dirty ? `<span class="text-[10px] font-medium text-amber-600">${t("ms.dirty")}</span>` : st.saved ? `<span class="text-[10px] font-medium text-emerald-600">${t("ms.saved")}</span>` : ""}
+      </div>
+      ${ro ? `<p class="text-[11px] text-muted">${t("ms.editorRo")}</p>` : ""}
+      <textarea id="ms-editor" rows="16" ${ro ? "readonly" : ""} oninput="RC.msDraft(this.value)" class="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/30">${esc(st.draft)}</textarea>
+      ${!ro ? `<div class="flex justify-end">${btn({ label: st.saving ? t("ms.saving") : t("ms.save"), variant: "secondary", size: "sm", onClick: `RC.msSave('${esc(missionId)}')`, disabled: st.saving || !dirty })}</div>` : ""}
+    </div>`);
+}
+
+function renderMsPdfPane(last) {
+  const inner = last && last.outcome === "ok" && last.pdfUrl
+    ? `<object data="${esc(last.pdfUrl)}" type="application/pdf" class="w-full h-[520px] rounded-lg border border-border bg-gray-50">
+        <p class="p-4 text-sm text-muted">${t("ms.pdf")}: <a class="text-primary hover:underline" href="${esc(last.pdfUrl)}" target="_blank" rel="noreferrer">${esc(last.pdfUrl)}</a></p>
+      </object>`
+    : `<div class="h-[520px] flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-gray-50/50 p-6 text-center">
+        <p class="text-sm text-muted">${t("ms.pdfEmpty")}</p>
+      </div>`;
+  return card(`
+    <div class="p-4 space-y-2">
+      <div class="flex items-center justify-between">
+        <p class="caption text-muted">${t("ms.pdf")}</p>
+        ${last ? (last.outcome === "ok" ? badge(t("ms.compileOk"), "success") : last.outcome === "error" ? badge(t("ms.compileError"), "destructive") : badge(t("ms.texNotFound"), "destructive")) : ""}
+      </div>
+      ${inner}
+    </div>`);
+}
+
+function renderMsLog(last) {
+  if (!last) return "";
+  const errorish = last.outcome !== "ok";
+  return card(`
+    <div class="p-4 space-y-2">
+      <div class="flex items-center justify-between">
+        <p class="caption text-muted">${t("ms.log")}</p>
+        <span class="font-mono text-[10px] text-muted tabular">e-${last.seq}</span>
+      </div>
+      <pre class="rounded-lg ${errorish ? "bg-rose-50 border border-rose-200" : "bg-gray-50 border border-border"} p-3 text-[11px] font-mono whitespace-pre-wrap break-words leading-relaxed">${esc(last.logTail)}</pre>
+      ${last.outcome === "tex_not_found" ? `<p class="text-xs text-rose-600">${t("ms.installHint")}</p>` : ""}
+    </div>`);
+}
+
+function renderMsDiffs(app, missionId) {
+  const diffs = (app.data.msDiffs && app.data.msDiffs[missionId]) || [];
+  const pending = diffs.filter((d) => d.status === "pending");
+  const decided = diffs.filter((d) => d.status !== "pending");
+  return card(`
+    <div class="p-5 space-y-4">
+      <div>
+        <h3 class="heading-3">${t("ms.diffs.title")}</h3>
+        <p class="text-xs text-muted mt-0.5">${t("ms.diffs.sub")}</p>
+      </div>
+      ${pending.length ? pending.map((d) => renderMsDiffCard(d)).join("") : `<p class="text-sm text-muted py-2 text-center">${t("ms.diffs.empty")}</p>`}
+      ${decided.length ? `
+      <div class="pt-3 border-t border-border">
+        <div class="flex items-center justify-between mb-1.5">
+          <p class="caption text-muted">${t("ms.diffs.history")}</p>
+          ${decided.some((d) => d.status === "merged") ? btn({ label: t("ms.diffs.compileCheck"), variant: "outline", size: "sm", iconName: "bolt", onClick: `RC.msCompile('${esc(missionId)}')` }) : ""}
+        </div>
+        <div class="space-y-1">
+          ${decided.slice(-6).reverse().map((d) => `
+            <div class="flex items-center justify-between gap-2 text-xs">
+              <span class="font-mono text-[10px] text-muted tabular">pr-${d.seq}</span>
+              <span class="font-mono text-[10px] text-muted truncate flex-1">${esc(d.file)}</span>
+              ${badge(t(d.status === "merged" ? "ms.diffs.merged" : "ms.diffs.rejected"), d.status === "merged" ? "success" : "muted")}
+            </div>
+          `).join("")}
+        </div>
+      </div>` : ""}
+    </div>`);
+}
+
+function renderMsDiffCard(d) {
+  return `
+    <div class="rounded-xl border ${d.basisStale ? "border-amber-300 ring-1 ring-amber-300/40" : "border-border"} bg-white p-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <span class="inline-flex items-center gap-1.5 font-mono text-[10px] text-amber-700 tabular">${icon("history", "w-3.5 h-3.5")} pr-${d.seq} · ${t("ms.diffs.pending")}</span>
+        <span class="font-mono text-[10px] text-muted truncate">${esc(d.file)} · ${d.hunks.length} ${t("ms.diffs.hunks")}</span>
+      </div>
+      ${d.hunks.map((h, i) => `
+        <div class="rounded-lg border border-border overflow-hidden">
+          <pre class="bg-rose-50 px-3 py-2 text-[11px] font-mono whitespace-pre-wrap break-words leading-relaxed text-rose-800">- ${esc(h.before)}</pre>
+          <pre class="bg-emerald-50 px-3 py-2 text-[11px] font-mono whitespace-pre-wrap break-words leading-relaxed text-emerald-800">+ ${esc(h.after)}</pre>
+        </div>
+      `).join("")}
+      ${d.note ? `<p class="text-xs text-muted leading-relaxed">${esc(d.note)}</p>` : ""}
+      ${d.basisStale ? `
+        <div class="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2 flex items-center gap-2">
+          ${icon("danger", "w-4 h-4 text-amber-700 shrink-0")}
+          <p class="text-xs font-medium text-amber-700">${t("ms.diffs.basisStale")}</p>
+        </div>` : ""}
+      <div class="flex items-center gap-2 pt-1">
+        ${btn({ label: t("ms.diffs.reject"), variant: "secondary", size: "sm", onClick: `RC.msDiffReject('${esc(d.id)}')` })}
+        ${d.basisStale
+          ? btn({ label: t("ms.diffs.force"), variant: "destructive", size: "sm", onClick: `RC.msDiffApprove('${esc(d.id)}', true)` })
+          : btn({ label: t("ms.diffs.approve"), variant: "default", size: "sm", onClick: `RC.msDiffApprove('${esc(d.id)}', false)` })}
       </div>
     </div>`;
 }
@@ -603,6 +775,7 @@ function trailLabel(row) {
   if (row.kind === "claims_pinned") return t("rd.t.claims", { clean: row.clean, total: row.total }) + (row.verified ? ` · ${row.verified} ✓` : "");
   if (row.kind === "hypotheses_resolved") return t("rd.t.hyps", { clean: row.clean, total: row.total });
   if (row.kind === "nulls_disclosed") return t("rd.t.nulls", { clean: row.clean, total: row.total });
+  if (row.kind === "manuscript_consistency") return t("rd.t.manuscript", { clean: row.clean, total: row.total });
   return t("rd.t.queue.empty");
 }
 
@@ -610,6 +783,7 @@ function renderReadinessItem(b, blocking) {
   const objChip = (label, cls = "muted") => `<span class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-muted">${esc(label)}</span>`;
   let title = "";
   let chips = "";
+  const msLoc = b.manuscriptFile ? objChip(b.manuscriptFile + ":" + b.manuscriptLine) : "";
   if (b.kind === "unpinned_claim") {
     title = t("rd.b.unpinned");
     chips = objChip("CLAIMS-" + b.claimSeq) + objChip("H-" + b.hypothesisSeq);
@@ -628,6 +802,20 @@ function renderReadinessItem(b, blocking) {
     chips = objChip("CLAIMS-" + b.claimSeq);
   } else if (b.kind === "merge_queue_pending") {
     title = t("rd.i.mergeQueue", { count: b.pendingCount });
+  } else if (b.kind === "manuscript_hypothesis_unresolved" || b.kind === "manuscript_hypothesis_refuted") {
+    // Story 6.8 (FR-20.4/20.5): the flag references the hypothesis card
+    // AND the manuscript location (file:line + the raw marker)
+    title = t(b.kind === "manuscript_hypothesis_unresolved" ? "rd.b.msHypUnresolved" : "rd.b.msHypRefuted");
+    chips = objChip("H-" + b.hypothesisSeq) + objChip(t("hyp.status." + b.hypothesisStatus)) + objChip(b.marker) + msLoc;
+  } else if (b.kind === "manuscript_claim_unpinned") {
+    title = t("rd.b.msClaimUnpinned");
+    chips = objChip("CLAIMS-" + b.claimSeq) + objChip("H-" + b.hypothesisSeq) + objChip(b.marker) + msLoc;
+  } else if (b.kind === "manuscript_claim_unlinked") {
+    title = t("rd.b.msClaimUnlinked");
+    chips = objChip(b.marker) + msLoc;
+  } else if (b.kind === "manuscript_unreadable") {
+    title = t("rd.i.manuscriptUnreadable");
+    chips = objChip(b.manuscriptFile || "");
   }
   return `
     <div class="flex items-start gap-2.5 ${blocking ? "" : "opacity-80"}">
@@ -965,6 +1153,75 @@ Object.assign(RC, {
     try {
       await api.rejectProposal(proposalId);
       await reloadBoard(ctx.app);
+    } catch (e) {
+      alert(t("quarantine.actionError") + (e?.message || e));
+    }
+  },
+  // ---- Manuscript (Stories 6.6–6.7, FR-20) ----
+  // Open one .tex source in the editor (the repo IS the manuscript — the
+  // read serves the user's file; the save writes it in place).
+  async msOpenFile(missionId, file) {
+    const app = ctx.app;
+    try {
+      const view = await api.readManuscriptFile(missionId, file);
+      app.state.ms = { missionId, file, content: view.content, draft: view.content, saving: false, savingFlag: false, compiling: false, saved: false };
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert((e?.message || e));
+    }
+  },
+  // The draft updates WITHOUT a rerender — the cursor survives typing.
+  msDraft(value) {
+    const ms = ctx.app.state.ms;
+    if (ms) ms.draft = value;
+  },
+  async msSave(missionId) {
+    const app = ctx.app;
+    const ms = app.state.ms;
+    if (!ms || ms.saving) return;
+    ms.saving = true;
+    ctx.renderMainOnly();
+    try {
+      await api.writeManuscriptFile(missionId, ms.file, ms.draft);
+      ms.content = ms.draft;
+      ms.saved = true;
+      await ctx.loadManuscript(missionId); // the scan's word counts refresh
+    } catch (e) {
+      alert((e?.message || e));
+    }
+    ms.saving = false;
+    ctx.renderMainOnly();
+  },
+  async msCompile(missionId) {
+    const app = ctx.app;
+    if (app.state.ms) app.state.ms.compiling = true;
+    ctx.renderMainOnly();
+    try {
+      await api.compileManuscript(missionId);
+      await ctx.loadManuscript(missionId);
+    } catch (e) {
+      alert((e?.message || e));
+    }
+    if (app.state.ms) app.state.ms.compiling = false;
+    ctx.renderMainOnly();
+  },
+  // Story 6.7 (FR-20.3): merge/reject an agent's quarantined LaTeX diff —
+  // the merge applies the hunks to the user's file (a file backup + a log
+  // checkpoint land first); the post-merge compile check is one click.
+  async msDiffApprove(proposalId, force) {
+    const app = ctx.app;
+    try {
+      await api.approveManuscriptDiff(proposalId, force);
+      if (app.state.boardMissionId) await ctx.loadManuscript(app.state.boardMissionId);
+    } catch (e) {
+      alert(t("quarantine.actionError") + (e?.message || e));
+    }
+  },
+  async msDiffReject(proposalId) {
+    const app = ctx.app;
+    try {
+      await api.rejectManuscriptDiff(proposalId);
+      if (app.state.boardMissionId) await ctx.loadManuscript(app.state.boardMissionId);
     } catch (e) {
       alert(t("quarantine.actionError") + (e?.message || e));
     }

@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -220,6 +220,54 @@ const missions: Mission[] = [];
 let missionSeq = 0;
 // In-memory run lists per mission id (empty until events would reference them).
 const missionRuns: Record<string, MissionRun[]> = {};
+
+// The mock manuscript workspace (Stories 6.6–6.8, FR-20): in-memory .tex
+// files per mission id — the repo IS the manuscript, mirrored honestly.
+// Registration is a real mock mutation (progressive disclosure stands: no
+// manuscript vocabulary until one is registered); the compile state is
+// DETERMINISTIC for vite dev (the mock never runs LaTeX — the honest
+// simulated note rides the log tail, never a fake PDF); agent diffs
+// quarantine exactly like the core's (before/after hunks, basis digest,
+// basis_stale refusal, merge applies, reject changes nothing).
+const mockManuscripts: Manuscript[] = [];
+let mockManuscriptSeq = 0;
+const mockTexFiles: Record<string, { path: string; content: string }[]> = {};
+const mockManuscriptCompiles: Record<string, CompileView> = {};
+let mockCompileSeq = 0;
+const mockDiffs: ManuscriptDiffProposal[] = [];
+let mockDiffSeq = 0;
+
+// A deterministic content digest for the mock's basis checks (the core
+// computes sha-256; the mock only needs stability).
+function mockDigest(content: string): string {
+  let h1 = 0x12345678;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < content.length; i++) {
+    h1 = (h1 ^ content.charCodeAt(i)) * 0x85ebca6b;
+    h2 = (h2 + content.charCodeAt(i) * (i + 1)) * 0xc2b2ae35;
+    h1 = h1 >>> 0;
+    h2 = h2 >>> 0;
+  }
+  return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).repeat(2);
+}
+
+function mockManuscriptOf(missionId: string): Manuscript | undefined {
+  return mockManuscripts.find((m) => m.missionId === missionId);
+}
+
+function mockSeedTexFiles(mainFile: string): { path: string; content: string }[] {
+  return [
+    {
+      path: mainFile,
+      content:
+        "\\documentclass{article}\n\\title{Results}\n\\begin{document}\n" +
+        "The adaptive scheme holds on stiff systems \\hyp{H-1}.\n" +
+        "A secondary claim \\claim{CLAIMS-2} follows.\n" +
+        "% rc-mock-anchor\n\\end{document}\n",
+    },
+  ];
+}
+
 
 // In-memory compute targets + jobs (Story 3.2, FR-11.1/11.2/11.4): the
 // mock the dev browser's mission card renders. Mirrors the typed core —
@@ -1064,9 +1112,123 @@ const seededReadinessClaims: Claim[] = [
     sourceMessageId: null, pinned: true, pin: verifiedPin(61, "cl42-seed", "h33-seed", "ref-sparse", "Memory grows linearly, not quadratically, with context length.") },
 ];
 
+// The mock manuscript-consistency scan (Story 6.8, FR-20.4): mirrors the
+// core's deterministic, non-LLM marker resolution — `\hyp{…}` / `\claim{…}`
+// resolved against the mock board, flags carrying the manuscript location.
+interface MockMsFlag {
+  kind: "manuscript_hypothesis_unresolved" | "manuscript_hypothesis_refuted" |
+    "manuscript_claim_unpinned" | "manuscript_claim_unlinked";
+  marker: string;
+  file: string;
+  line: number;
+  hypothesisId: string | null;
+  hypothesisSeq: number | null;
+  hypothesisStatus: HypothesisStatus | null;
+  claimId: string | null;
+  claimSeq: number | null;
+}
+
+function mockMsFlagOf(missionId: string): { flags: MockMsFlag[]; total: number } {
+  const flags: MockMsFlag[] = [];
+  let total = 0;
+  const ms = mockManuscriptOf(missionId);
+  if (!ms) return { flags, total };
+  const allHyps = [...seededReadinessHypotheses, ...hypotheses].filter(
+    (h) => h.missionId === missionId,
+  );
+  const allClaims = [...seededReadinessClaims, ...claims].filter(
+    (c) => allHyps.some((h) => h.id === c.hypothesisId),
+  );
+  const resolveHyp = (ref: string) => {
+    const byId = allHyps.find((h) => h.id === ref);
+    if (byId) return byId;
+    const n = /^H-(\d+)$/.exec(ref);
+    return allHyps.find((h) => h.seq === (n ? Number(n[1]) : Number(ref)));
+  };
+  const resolveClaim = (ref: string) => {
+    const byId = allClaims.find((c) => c.id === ref);
+    if (byId) return byId;
+    const n = /^CLAIMS-(\d+)$/.exec(ref);
+    return allClaims.find((c) => c.seq === (n ? Number(n[1]) : Number(ref)));
+  };
+  for (const f of mockTexFiles[missionId] ?? []) {
+    f.content.split("\n").forEach((line, i) => {
+      const lineNo = i + 1;
+      for (const m of line.matchAll(/\\hyp\{([^}]+)\}/g)) {
+        total += 1;
+        const ref = m[1];
+        const h = resolveHyp(ref);
+        if (!h) {
+          flags.push({
+            kind: "manuscript_claim_unlinked", marker: `\\hyp{${ref}}`,
+            file: f.path, line: lineNo, hypothesisId: null, hypothesisSeq: null,
+            hypothesisStatus: null, claimId: null, claimSeq: null,
+          });
+        } else if (h.status === "proposed" || h.status === "testing" || h.status === "revised") {
+          if (h.status !== "revised") {
+            flags.push({
+              kind: "manuscript_hypothesis_unresolved", marker: `\\hyp{${ref}}`,
+              file: f.path, line: lineNo, hypothesisId: h.id, hypothesisSeq: h.seq,
+              hypothesisStatus: h.status, claimId: null, claimSeq: null,
+            });
+          }
+        } else if (h.status === "refuted") {
+          flags.push({
+            kind: "manuscript_hypothesis_refuted", marker: `\\hyp{${ref}}`,
+            file: f.path, line: lineNo, hypothesisId: h.id, hypothesisSeq: h.seq,
+            hypothesisStatus: h.status, claimId: null, claimSeq: null,
+          });
+        }
+      }
+      for (const m of line.matchAll(/\\claim\{([^}]+)\}/g)) {
+        total += 1;
+        const ref = m[1];
+        const c = resolveClaim(ref);
+        if (!c) {
+          flags.push({
+            kind: "manuscript_claim_unlinked", marker: `\\claim{${ref}}`,
+            file: f.path, line: lineNo, hypothesisId: null, hypothesisSeq: null,
+            hypothesisStatus: null, claimId: null, claimSeq: null,
+          });
+        } else {
+          if (!c.pinned) {
+            flags.push({
+              kind: "manuscript_claim_unpinned", marker: `\\claim{${ref}}`,
+              file: f.path, line: lineNo, hypothesisId: c.hypothesisId,
+              hypothesisSeq: null, hypothesisStatus: null, claimId: c.id, claimSeq: c.seq,
+            });
+          }
+          const h = allHyps.find((x) => x.id === c.hypothesisId);
+          if (h && (h.status === "proposed" || h.status === "testing")) {
+            flags.push({
+              kind: "manuscript_hypothesis_unresolved", marker: `\\claim{${ref}}`,
+              file: f.path, line: lineNo, hypothesisId: h.id, hypothesisSeq: h.seq,
+              hypothesisStatus: h.status, claimId: c.id, claimSeq: c.seq,
+            });
+          }
+        }
+      }
+    });
+  }
+  return { flags, total };
+}
+
+// Convert one mock manuscript flag into the gate's ReadinessItem shape.
+function mockMsItem(missionId: string, flag: MockMsFlag): ReadinessItem {
+  return {
+    kind: flag.kind as ReadinessItemKind,
+    claimId: flag.claimId, claimSeq: flag.claimSeq,
+    hypothesisId: flag.hypothesisId, hypothesisSeq: flag.hypothesisSeq,
+    hypothesisStatus: flag.hypothesisStatus, searchSeq: null, missionId,
+    claimTies: [], relationTies: [], pendingCount: 0,
+    manuscriptFile: flag.file, manuscriptLine: flag.line, marker: flag.marker,
+  };
+}
+
 /** The mock readiness fold (mirrors the core's pure derivation): blockers
  *  each referencing their specific board object, verified-failed pins and
- *  merge-queue pending as info rows (never blockers), the four-row trail. */
+ *  merge-queue pending as info rows (never blockers), the four-row trail —
+ *  plus the manuscript scope (Story 6.8) when manuscripts are registered. */
 function mockReadinessReport(missionId: string | null): ReadinessReport {
   const hyps = [...seededReadinessHypotheses, ...hypotheses];
   const allClaims = [...seededReadinessClaims, ...claims];
@@ -1155,6 +1317,23 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
     });
   }
 
+  // 4. The manuscript scope (Story 6.8, FR-20.5): the deterministic
+  //    marker scan lands as blockers referencing the board AND the
+  //    manuscript location — mirrored exactly like the core's fold.
+  const msScans = mockManuscripts.filter((ms) => !missionId || ms.missionId === missionId);
+  let msMarkersTotal = 0;
+  const msFlaggedLocs = new Set<string>();
+  for (const ms of msScans) {
+    // an unreadable dir is info — the check could not run (mirror of the
+    // core's ManuscriptUnreadable info row)
+    const { flags, total } = mockMsFlagOf(ms.missionId);
+    msMarkersTotal += total;
+    for (const flag of flags) {
+      msFlaggedLocs.add(flag.file + ":" + flag.line);
+      blockers.push(mockMsItem(ms.missionId, flag));
+    }
+  }
+
   // the trail: what was checked, the counts, the objects
   const pinnedClaims = inScopeClaims.filter((c) => c.pinned);
   const resolvedHyps = inScopeHyps.filter((h) => h.status === "supported" || h.status === "refuted");
@@ -1183,6 +1362,29 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
         : decided.slice(0, 1).map((p) => `pr-${p.seq}`),
     },
   ];
+  // Story 6.8: the manuscript trail row — N/N markers linked clean — only
+  // when a manuscript is registered (progressive disclosure, mirrored).
+  if (msScans.length > 0) {
+    const cleanRefs: string[] = [];
+    for (const ms of msScans) {
+      const { flags, total } = mockMsFlagOf(ms.missionId);
+      void total;
+      const flagged = new Set(flags.map((f) => f.file + ":" + f.line));
+      for (const f of mockTexFiles[ms.missionId] ?? []) {
+        f.content.split("\n").forEach((line, i) => {
+          for (const m of line.matchAll(/\\hyp\{([^}]+)\}|\\claim\{([^}]+)\}/g)) {
+            void m;
+            if (!flagged.has(f.path + ":" + (i + 1))) cleanRefs.push(f.path + ":" + (i + 1));
+          }
+        });
+      }
+    }
+    trail.push({
+      kind: "manuscript_consistency", total: msMarkersTotal,
+      clean: msMarkersTotal - msFlaggedLocs.size,
+      verified: 0, pending: 0, refs: Array.from(new Set(cleanRefs)),
+    });
+  }
 
   return {
     scope: missionId,
@@ -2102,6 +2304,216 @@ export const mockApi = {
     return mission;
   },
   listMissions: async () => { await delay(); return [...missions]; },
+  // The manuscript (Stories 6.6–6.8, FR-20) — mirrors the typed core:
+  // registration references a dir (mock: in-memory files), reads scan
+  // words + markers, the compile state is deterministic + honestly
+  // simulated, edits write in place, agent diffs quarantine.
+  registerManuscript: async (
+    missionId: string,
+    dir: string,
+    mainFile: string,
+  ): Promise<Manuscript> => {
+    await delay();
+    if (!missions.some((m) => m.id === missionId)) {
+      throw new Error(`not_found: mission \`${missionId}\` does not exist`);
+    }
+    if (!dir.trim()) {
+      throw new Error("invalid_dir: the manuscript directory must not be empty");
+    }
+    if (!/\.tex$/i.test(mainFile.trim()) || mainFile.includes("..") || mainFile.startsWith("/")) {
+      throw new Error(
+        `invalid_main_file: \`${mainFile}\` — a relative .tex path inside the manuscript directory`,
+      );
+    }
+    mockManuscriptSeq += 1;
+    const ms: Manuscript = {
+      missionId,
+      seq: mockManuscriptSeq,
+      ts: nowISO(),
+      dir: dir.trim(),
+      mainFile: mainFile.trim(),
+    };
+    const existing = mockManuscriptOf(missionId);
+    if (existing) {
+      mockManuscripts.splice(mockManuscripts.indexOf(existing), 1, ms);
+    } else {
+      mockManuscripts.push(ms);
+    }
+    if (!mockTexFiles[missionId]) {
+      mockTexFiles[missionId] = mockSeedTexFiles(ms.mainFile);
+    }
+    return { ...ms };
+  },
+  listManuscripts: async (): Promise<Manuscript[]> => {
+    await delay();
+    return mockManuscripts.map((m) => ({ ...m }));
+  },
+  getManuscript: async (missionId: string): Promise<ManuscriptView | null> => {
+    await delay();
+    const ms = mockManuscriptOf(missionId);
+    if (!ms) return null;
+    const files = (mockTexFiles[missionId] ?? []).map((f) => {
+      const words = f.content.split(/\s+/).filter(Boolean).length;
+      const hypMarkers = (f.content.match(/\\hyp\{/g) ?? []).length;
+      const claimMarkers = (f.content.match(/\\claim\{/g) ?? []).length;
+      return {
+        path: f.path,
+        words,
+        hypMarkers,
+        claimMarkers,
+        bytes: f.content.length,
+      };
+    });
+    return {
+      manuscript: { ...ms },
+      files,
+      toolchain: { name: "tectonic", path: "(simulado — vite dev)", configured: false },
+      lastCompile: mockManuscriptCompiles[missionId]
+        ? { ...mockManuscriptCompiles[missionId] }
+        : null,
+    };
+  },
+  readManuscriptFile: async (missionId: string, path: string): Promise<ManuscriptFileView> => {
+    await delay();
+    const file = (mockTexFiles[missionId] ?? []).find((f) => f.path === path.trim());
+    if (!file) {
+      throw new Error(`file_missing: \`${path}\` — the manuscript file is not on disk`);
+    }
+    return { path: file.path, content: file.content };
+  },
+  writeManuscriptFile: async (
+    missionId: string,
+    path: string,
+    content: string,
+  ): Promise<ManuscriptFileView> => {
+    await delay();
+    const file = (mockTexFiles[missionId] ?? []).find((f) => f.path === path.trim());
+    if (!file) {
+      throw new Error(`file_missing: \`${path}\` — the manuscript file is not on disk`);
+    }
+    file.content = content;
+    return { path: file.path, content: file.content };
+  },
+  // The deterministic compile state for vite dev (FR-20.2, NFR-9): the
+  // mock NEVER runs LaTeX and never fakes a PDF — the honest simulated
+  // note rides the log tail, and pdfUrl stays null.
+  compileManuscript: async (missionId: string): Promise<CompileView> => {
+    await delay(400);
+    const ms = mockManuscriptOf(missionId);
+    if (!ms) throw new Error(`not_found: no manuscript registered for mission \`${missionId}\``);
+    mockCompileSeq += 1;
+    const compile: CompileView = {
+      seq: mockCompileSeq,
+      ts: nowISO(),
+      outcome: "ok",
+      tool: "tectonic",
+      logTail:
+        `Running \`tectonic ${ms.mainFile}\`… (simulado — vite dev no ejecuta LaTeX; ` +
+        "registra el manuscrito en la app de escritorio para compilar de verdad)",
+      pdfUrl: null,
+    };
+    mockManuscriptCompiles[missionId] = compile;
+    return { ...compile };
+  },
+  listManuscriptDiffs: async (missionId: string): Promise<ManuscriptDiffProposal[]> => {
+    await delay();
+    return mockDiffs
+      .filter((d) => d.missionId === missionId)
+      .map((d) => ({ ...d, hunks: d.hunks.map((h) => ({ ...h })) }))
+      .map((d) => {
+        const file = (mockTexFiles[missionId] ?? []).find((f) => f.path === d.file);
+        return {
+          ...d,
+          basisStale: d.status === "pending" && file !== undefined
+            ? mockDigest(file.content) !== d.basisDigest
+            : d.basisStale,
+        };
+      });
+  },
+  proposeManuscriptDiff: async (
+    missionId: string,
+    file: string,
+    hunks: ManuscriptDiffHunk[],
+    note: string,
+    runId: string,
+  ): Promise<ManuscriptDiffProposal> => {
+    await delay();
+    if (!mockManuscriptOf(missionId)) {
+      throw new Error(`not_found: no manuscript registered for mission \`${missionId}\``);
+    }
+    const target = (mockTexFiles[missionId] ?? []).find((f) => f.path === file.trim());
+    if (!target) throw new Error(`file_missing: \`${file}\``);
+    if (!hunks.length || hunks.some((h) => !h.before.trim())) {
+      throw new Error("invalid_hunks: a diff carries at least one non-empty before/after hunk");
+    }
+    mockDiffSeq += 1;
+    const diff: ManuscriptDiffProposal = {
+      id: "msdiff-" + mockDiffSeq + "-" + Date.now(),
+      seq: mockDiffSeq,
+      ts: nowISO(),
+      runId,
+      missionId,
+      file: file.trim(),
+      hunks: hunks.map((h) => ({ ...h })),
+      basisDigest: mockDigest(target.content),
+      basisSeq: 1000 + mockDiffSeq, // a stable mock log seq for the basis
+      basisStale: false,
+      status: "pending",
+      decided: null,
+      backupPath: null,
+      note,
+    };
+    mockDiffs.push(diff);
+    return { ...diff, hunks: diff.hunks.map((h) => ({ ...h })) };
+  },
+  approveManuscriptDiff: async (
+    proposalId: string,
+    force: boolean,
+  ): Promise<ManuscriptDiffProposal> => {
+    await delay();
+    const d = mockDiffs.find((x) => x.id === proposalId);
+    if (!d) throw new Error(`not_found: no diff proposal with id \`${proposalId}\``);
+    if (d.status !== "pending") {
+      throw new Error(`not_pending: diff proposal \`${proposalId}\` is \`${d.status}\`, not pending`);
+    }
+    const file = (mockTexFiles[d.missionId] ?? []).find((f) => f.path === d.file);
+    if (!file) throw new Error(`file_missing: \`${d.file}\``);
+    const current = mockDigest(file.content);
+    if (current !== d.basisDigest && !force) {
+      throw new Error(
+        `basis_stale: diff proposal \`${proposalId}\` was derived from digest ${d.basisDigest} ` +
+          `but \`${d.file}\` has advanced to ${current} — force-approve (force: true) to merge past it`,
+      );
+    }
+    let content = file.content;
+    for (const h of d.hunks) {
+      const count = content.split(h.before).length - 1;
+      if (count !== 1) {
+        throw new Error(
+          `hunk_mismatch: diff proposal \`${proposalId}\` carries a hunk whose \`before\` text is ` +
+            `not present exactly once in the current file — the patch cannot apply cleanly`,
+        );
+      }
+      content = content.replace(h.before, h.after);
+    }
+    file.content = content;
+    d.status = "merged";
+    d.basisStale = current !== d.basisDigest;
+    d.backupPath = `(simulado) ${d.file}.bak`;
+    d.decided = { seq: mockDiffSeq + 100, ts: nowISO(), actor: "user" };
+    return { ...d, hunks: d.hunks.map((h) => ({ ...h })) };
+  },
+  rejectManuscriptDiff: async (proposalId: string): Promise<ManuscriptDiffProposal> => {
+    await delay();
+    const d = mockDiffs.find((x) => x.id === proposalId);
+    if (!d) throw new Error(`not_found: no diff proposal with id \`${proposalId}\``);
+    if (d.status !== "pending") {
+      throw new Error(`not_pending: diff proposal \`${proposalId}\` is \`${d.status}\`, not pending`);
+    }
+    d.status = "rejected";
+    d.decided = { seq: mockDiffSeq + 100, ts: nowISO(), actor: "user" };
+    return { ...d, hunks: d.hunks.map((h) => ({ ...h })) };
+  },
   // The dashboard's one aggregated read (Story 5.10, FR-18.1): the same
   // composition the core folds — every widget over the mock's own reads,
   // read-only by construction (derives from the live mock state + the
@@ -2228,6 +2640,37 @@ export const mockApi = {
           task.trim(),
           `${config.provider}:${config.name}`,
         );
+      }
+      // Story 6.7 (FR-20.3): with a registered manuscript the drafter also
+      // proposes a LaTeX edit — a quarantined diff with the FR-20.4 marker
+      // convention, never a direct write.
+      const ms = mockManuscriptOf(missionId);
+      if (ms) {
+        const anchor = "% rc-mock-anchor";
+        mockDiffSeq += 1;
+        mockDiffs.push({
+          id: "msdiff-" + mockDiffSeq + "-" + Date.now(),
+          seq: mockDiffSeq,
+          ts: nowISO(),
+          runId: `${config.provider}:${config.name}`,
+          missionId,
+          file: ms.mainFile,
+          hunks: [
+            {
+              before: anchor,
+              after: `The gain is robust across seeds \\hyp{H-1}.\n${anchor}`,
+            },
+          ],
+          basisDigest: mockDigest(
+            (mockTexFiles[missionId] ?? []).find((f) => f.path === ms.mainFile)?.content ?? "",
+          ),
+          basisSeq: 1000 + mockDiffSeq,
+          basisStale: false,
+          status: "pending",
+          decided: null,
+          backupPath: null,
+          note: task.trim(),
+        });
       }
     }
     return {
