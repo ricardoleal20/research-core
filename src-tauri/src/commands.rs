@@ -26,20 +26,28 @@ pub async fn get_active_project(db: State<'_, Db>) -> Result<Option<Value>, Stri
 #[tauri::command]
 pub async fn set_active_project(db: State<'_, Db>, id: String) -> Result<(), String> {
     let c = db.0.lock().await;
-    c.execute("UPDATE projects SET is_active=0", []).map_err(err)?;
-    c.execute("UPDATE projects SET is_active=1, updated_at=?2 WHERE id=?1", params![id, now()]).map_err(err)?;
+    // One transaction (review R-24): _set_active=0_ then the new active —
+    // a crash between the two used to leave ZERO active projects.
+    let tx = c.unchecked_transaction().map_err(err)?;
+    tx.execute("UPDATE projects SET is_active=0", []).map_err(err)?;
+    tx.execute("UPDATE projects SET is_active=1, updated_at=?2 WHERE id=?1", params![id, now()]).map_err(err)?;
+    tx.commit().map_err(err)?;
     Ok(())
 }
 #[tauri::command]
 pub async fn create_project(db: State<'_, Db>, name: String, folder: String, kind: String, tags: String, color: String) -> Result<Value, String> {
     let id = uid();
     let c = db.0.lock().await;
-    c.execute("UPDATE projects SET is_active=0", []).map_err(err)?;
-    c.execute(
+    // One transaction (review R-24): the deactivation + the insert — a
+    // crash between them used to leave zero active projects.
+    let tx = c.unchecked_transaction().map_err(err)?;
+    tx.execute("UPDATE projects SET is_active=0", []).map_err(err)?;
+    tx.execute(
         "INSERT INTO projects(id,name,folder,kind,tags,color,chapter_index,chapter_count,created_at,updated_at,is_active)
          VALUES(?1,?2,?3,?4,?5,?6,1,1,?7,?8,1)",
         params![id, name, folder, kind, tags, color, now(), now()],
     ).map_err(err)?;
+    tx.commit().map_err(err)?;
     db::query_one(&c, "SELECT * FROM projects WHERE id=?1", &[&id]).map(|o| o.unwrap_or(Value::Null)).map_err(err)
 }
 #[tauri::command]
@@ -98,30 +106,6 @@ pub async fn get_ref(db: State<'_, Db>, id: String) -> Result<Value, String> {
     let mut out = r.unwrap_or(Value::Null);
     if let Value::Object(ref mut m) = out { m.insert("usages".into(), Value::Array(usages)); }
     Ok(out)
-}
-#[tauri::command]
-pub async fn create_ref(db: State<'_, Db>, project_id: String, title: String, authors: String, year: i64, venue: String, doi: String, url: String, tags: String) -> Result<Value, String> {
-    let id = uid();
-    let c = db.0.lock().await;
-    c.execute(
-        "INSERT INTO refs(id,project_id,title,authors,year,venue,doi,url,tags,status,used,citation_count,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'unread',0,0,?10)",
-        params![id, project_id, title, authors, year, venue, doi, url, tags, now()],
-    ).map_err(err)?;
-    db::query_one(&c, "SELECT * FROM refs WHERE id=?1", &[&id]).map(|o| o.unwrap_or(Value::Null)).map_err(err)
-}
-#[tauri::command]
-pub async fn update_ref(db: State<'_, Db>, id: String, title: String, authors: String, year: i64, venue: String, doi: String, url: String, tags: String, status: String) -> Result<(), String> {
-    let c = db.0.lock().await;
-    c.execute("UPDATE refs SET title=?2,authors=?3,year=?4,venue=?5,doi=?6,url=?7,tags=?8,status=?9 WHERE id=?1",
-        params![id, title, authors, year, venue, doi, url, tags, status]).map_err(err)?;
-    Ok(())
-}
-#[tauri::command]
-pub async fn delete_ref(db: State<'_, Db>, id: String) -> Result<(), String> {
-    let c = db.0.lock().await;
-    c.execute("DELETE FROM refs WHERE id=?1", params![id]).map_err(err)?;
-    Ok(())
 }
 #[tauri::command]
 pub async fn search_refs(db: State<'_, Db>, project_id: String, q: String) -> Result<Vec<Value>, String> {

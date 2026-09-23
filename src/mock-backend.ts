@@ -804,7 +804,7 @@ const seededSearches: SearchDisclosureRow[] = [
   {
     seq: 151, startedAt: "2026-09-19T02:31:19Z",
     query: "retrieval-augmented generation hallucination",
-    database: "arxiv", filters: { from_year: 2020 }, order: "relevance", firstPage: true,
+    database: "corpus-sim", filters: { from_year: 2020 }, order: "relevance", firstPage: true,
     resultCount: 3, nullResult: false, missionId: "m21-seed", runId: "nightshift-21",
   },
   {
@@ -818,13 +818,13 @@ const seededSearches: SearchDisclosureRow[] = [
   {
     seq: 113, startedAt: "2026-09-19T02:04:12Z",
     query: "Does sparse attention hold at long context?",
-    database: "arxiv", filters: {}, order: null, firstPage: true,
+    database: "corpus-sim", filters: {}, order: null, firstPage: true,
     resultCount: 2, nullResult: false, missionId: "m22-seed", runId: "nightshift-22",
   },
   {
     seq: 122, startedAt: "2026-09-19T01:31:09Z",
     query: "Is linear complexity competitive with quadratic attention?",
-    database: "arxiv", filters: { from_year: 2019 }, order: "date-desc", firstPage: true,
+    database: "corpus-sim", filters: { from_year: 2019 }, order: "date-desc", firstPage: true,
     resultCount: 1, nullResult: false, missionId: "m24-seed", runId: "nightshift-24",
   },
   {
@@ -1407,9 +1407,6 @@ export const mockApi = {
     return refs;
   },
   getRef: async () => { throw new Error("not in mock"); },
-  createRef: async (r: any) => r as Ref,
-  updateRef: async () => {},
-  deleteRef: async () => {},
 
   // ---- Evented references CRUD (FR-15, Epic 5) — the mock mirrors the
   // core's domain/library: adds append ref.added semantics (dedup by
@@ -2458,7 +2455,7 @@ export const mockApi = {
         seq: searchSeq,
         startedAt: nowISO(),
         query: mission.question,
-        database: "arxiv",
+        database: "corpus-sim",
         filters: {},
         order: null,
         firstPage: true,
