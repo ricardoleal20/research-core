@@ -35,14 +35,16 @@ const settings: Record<string, string> = {
   cache_pdfs: "true",
 };
 
-// The AI provider configuration state (Stories 5.7–5.9, FR-17): the mock
-// starts HONESTLY unconfigured — the assistant refuses sends until a real
-// provider is configured in Ajustes → IA (NFR-11: the mock no longer
-// answers the assistant with canned text out of the box).
+// The AI provider configuration state (Stories 5.7–5.9 + 6.1, FR-17/FR-24):
+// the mock starts HONESTLY unconfigured — the assistant refuses sends until
+// a real provider is configured in Ajustes → IA (NFR-11: the mock no longer
+// answers the assistant with canned text out of the box). The local
+// provider's base URL rides here too (Story 6.1): settings, not keychain —
+// a local URL is not a secret.
 const aiConfig: {
   mode: string; provider: string; baseUrl: string; model: string;
-  hasKey: boolean; cli: string; cliModel: string;
-} = { mode: "", provider: "", baseUrl: "", model: "", hasKey: false, cli: "claude", cliModel: "" };
+  hasKey: boolean; cli: string; cliModel: string; localBaseUrl: string;
+} = { mode: "", provider: "", baseUrl: "", model: "", hasKey: false, cli: "claude", cliModel: "", localBaseUrl: "http://localhost:11434" };
 
 // The curated per-provider model lists (Story 5.9, FR-17.4) — the mock
 // mirrors the core's `curated_models` exactly. Custom base URLs: free
@@ -58,6 +60,39 @@ const CURATED_MODELS: Record<string, string[]> = {
 // present (the seeded dev machine has them); anything else is absent.
 const MOCK_CLI_PRESENT = new Set(["codex", "claude"]);
 
+// The mock's local-provider simulation (Story 6.1, FR-24.1): the seeded dev
+// machine runs Ollama on localhost:11434 with three models pulled; the
+// detection/list contract mirrors the core's — a localhost endpoint is
+// reachable and lists its installed models, and anything else is the honest
+// zero-egress refusal (the local adapter speaks only to localhost,
+// FR-24.3/NFR-14).
+const MOCK_LOCAL_MODELS = ["llama3.1:8b", "qwen2.5:14b", "mistral-nemo"];
+
+function mockLocalIsLocalhost(baseUrl: string): boolean {
+  try {
+    const u = new URL(baseUrl.trim() || "http://localhost:11434");
+    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function mockLocalStatus(baseUrl: string) {
+  const base = baseUrl.trim() || "http://localhost:11434";
+  if (!mockLocalIsLocalhost(base)) {
+    return {
+      baseUrl: base,
+      reachable: false,
+      models: [] as string[],
+      error:
+        `local_not_localhost: \`${base}\` is not a localhost endpoint — the local provider ` +
+        `speaks only to localhost (zero egress, FR-24.3/NFR-14) / \`${base}\` no es un endpoint ` +
+        `local — el proveedor local solo habla con localhost (cero salida de datos)`,
+    };
+  }
+  return { baseUrl: base, reachable: true, models: [...MOCK_LOCAL_MODELS], error: null };
+}
+
 function mockAiConfig() {
   const cliAvailable: Record<string, { path: string } | null> = {};
   for (const name of ["codex", "claude", "opencode"]) {
@@ -66,21 +101,29 @@ function mockAiConfig() {
       : null;
   }
   const mode = aiConfig.mode;
+  const local = mockLocalStatus(aiConfig.localBaseUrl);
+  // a REACHABLE local endpoint is a configured real provider (Story 6.1,
+  // FR-24.2); a stopped runtime is the honest unconfigured state (NFR-14)
+  const localConfigured = mode === "local" || aiConfig.provider === "local";
   const configured =
     mode === "cli"
       ? !!cliAvailable[aiConfig.cli]
-      : mode !== "simulate" &&
-        aiConfig.hasKey &&
-        (!!aiConfig.baseUrl || CURATED_MODELS[aiConfig.provider] !== undefined);
+      : localConfigured && mode !== "simulate"
+        ? local.reachable
+        : mode !== "simulate" &&
+          aiConfig.hasKey &&
+          (!!aiConfig.baseUrl || CURATED_MODELS[aiConfig.provider] !== undefined);
   const models =
     mode === "cli"
       ? ["default"]
-      : CURATED_MODELS[aiConfig.provider] ?? [];
+      : localConfigured
+        ? local.models
+        : CURATED_MODELS[aiConfig.provider] ?? [];
   return {
     mode, provider: aiConfig.provider, baseUrl: aiConfig.baseUrl,
     model: aiConfig.model, hasKey: aiConfig.hasKey,
     cli: aiConfig.cli, cliModel: aiConfig.cliModel,
-    cliAvailable, models, configured,
+    cliAvailable, local, models, configured,
   };
 }
 
@@ -1867,6 +1910,36 @@ export const mockApi = {
     aiConfig.mode = "cli";
     aiConfig.cli = name;
     return mockAiConfig();
+  },
+  // Switch onto the local provider (Story 6.1, FR-24.1): settings only — no
+  // key, no keychain. A non-localhost URL is refused eagerly (zero egress);
+  // an empty model defaults to the first one the endpoint lists.
+  useLocalProvider: async (baseUrl: string, model: string) => {
+    await delay();
+    const base = baseUrl.trim() || "http://localhost:11434";
+    if (!mockLocalIsLocalhost(base)) {
+      throw new Error(
+        `local_not_localhost: \`${base}\` is not a localhost endpoint — the local provider ` +
+        `speaks only to localhost (zero egress, FR-24.3/NFR-14) / \`${base}\` no es un endpoint ` +
+        `local — el proveedor local solo habla con localhost (cero salida de datos)`,
+      );
+    }
+    aiConfig.mode = "local";
+    aiConfig.provider = "local";
+    aiConfig.localBaseUrl = base;
+    aiConfig.model = model.trim() || MOCK_LOCAL_MODELS[0];
+    return mockAiConfig();
+  },
+  // The local endpoint's test/refresh run (Story 6.1): the honest
+  // detection/list contract — reachable + the installed models, or the
+  // honest refusal reason.
+  testLocalProvider: async (baseUrl: string) => {
+    await delay(400);
+    const status = mockLocalStatus(baseUrl);
+    if (!status.reachable) {
+      return { ok: false, models: [] as string[], error: status.error };
+    }
+    return { ok: true, models: status.models, error: null };
   },
   testProviderConnection: async () => {
     await delay(400);

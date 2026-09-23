@@ -867,6 +867,17 @@ function renderSettingsAi(app) {
   });
   const test = app.state.aiTest;
   const isCli = ai.mode === "cli";
+  // The local provider row's state (Story 6.1, FR-24.1): the base URL draft
+  // (settings-stored — a local URL is not a secret, no keychain), the
+  // honest detection chip, and the model chips from the live list.
+  const local = ai.local || { baseUrl: "http://localhost:11434", reachable: false, models: [], error: null };
+  const localDraft = app.state.localDraft || (app.state.localDraft = {
+    baseUrl: local.baseUrl || "http://localhost:11434",
+    model: ai.mode === "local" ? ai.model || "" : "",
+  });
+  const localTest = app.state.localTest;
+  const isLocalActive = ai.mode === "local";
+  const localModelChips = (localTest && localTest.ok ? localTest.models : local.models) || [];
   const providerOptions = ["openai", "anthropic", "google", "openrouter", "custom"].map((p) => ({
     value: p,
     label: t(`prov.${p}`),
@@ -912,6 +923,29 @@ function renderSettingsAi(app) {
           ${test ? (test.ok
             ? `<p class="text-xs font-medium text-emerald-600">${t("prov.testOk")} — ${test.models.length} models</p>`
             : `<p class="text-xs font-medium text-rose-600">${t("prov.testFail")}: ${esc(test.error || "")}</p>`) : ""}
+        </div>
+      </div>
+
+      <div>
+        <p class="text-sm font-medium mb-1">${t("prov.localSection")}</p>
+        <p class="text-xs text-muted mb-2">${t("prov.localDesc")}</p>
+        <div class="space-y-3 rounded-xl border border-border p-4 ${isLocalActive ? "ring-1 ring-primary/30" : ""}">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-medium font-mono">local</span>
+            ${local.reachable ? badge(t("prov.localReachable"), "success") : badge(t("prov.localUnreachable"), "destructive")}
+            ${isLocalActive ? badge(t("prov.active"), "primary") : ""}
+            ${local.reachable ? `<span class="text-xs text-muted">${t("prov.localModels", { n: local.models.length })}</span>` : ""}
+          </div>
+          ${local.error ? `<p class="text-xs text-rose-600 break-words">${esc(local.error)}</p>` : ""}
+          <div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input value="${esc(localDraft.baseUrl)}" oninput="RC.localDraftField('baseUrl', this.value)" placeholder="http://localhost:11434" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+          ${localModelChips.length ? `<div><p class="text-xs text-muted mb-1.5">${t("prov.localPickModel")}</p><div class="flex flex-wrap gap-1.5">${localModelChips.map((m) => `<button type="button" onclick="RC.pickLocalModel('${esc(m)}')" class="rounded-full border px-3 py-1 text-xs font-mono transition ${localDraft.model === m ? "border-primary/40 bg-primary/5 text-primary" : "border-border bg-card text-muted hover:border-primary/40 hover:text-primary"}">${esc(m)}</button>`).join("")}</div></div>` : ""}
+          <div class="flex flex-wrap items-center gap-2">
+            ${btn({ label: t("prov.localUse"), onClick: "RC.useLocalProvider()" })}
+            ${btn({ label: localTest && localTest.testing ? t("prov.testing") : t("prov.test"), variant: "secondary", onClick: "RC.testLocalProvider()" })}
+          </div>
+          ${localTest && !localTest.testing ? (localTest.ok
+            ? `<p class="text-xs font-medium text-emerald-600">${t("prov.testOk")} — ${t("prov.localModels", { n: localTest.models.length })}</p>`
+            : `<p class="text-xs font-medium text-rose-600">${t("prov.testFail")}: ${esc(localTest.error || "")}</p>`) : ""}
         </div>
       </div>
 
@@ -1469,6 +1503,50 @@ Object.assign(RC, {
     } catch (e) {
       alert(e?.message || e);
     }
+  },
+  // The local provider row's draft state (Story 6.1): the base URL +
+  // chosen model kept in app.state so re-renders do not wipe them.
+  localDraftField(field, value) {
+    const app = ctx.app;
+    const draft = app.state.localDraft || (app.state.localDraft = { baseUrl: "http://localhost:11434", model: "" });
+    draft[field] = value;
+  },
+  pickLocalModel(model) {
+    const app = ctx.app;
+    const draft = app.state.localDraft || (app.state.localDraft = { baseUrl: "http://localhost:11434", model: "" });
+    draft.model = draft.model === model ? "" : model;
+    ctx.renderMainOnly();
+  },
+  // Switch onto the local provider (Story 6.1, FR-24.1): settings only —
+  // the base URL is not a secret, no key at all. The core guards
+  // localhost-only (zero egress, FR-24.3); an unreachable endpoint renders
+  // the honest unconfigured state, never a simulated fallback (NFR-14).
+  async useLocalProvider() {
+    const app = ctx.app;
+    const draft = app.state.localDraft || {};
+    try {
+      app.data.aiConfig = await api.useLocalProvider(draft.baseUrl || "", draft.model || "");
+      app.state.aiTest = null;
+      app.state.localTest = null;
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert(e?.message || e);
+    }
+  },
+  // The local endpoint's test/refresh run (Story 6.1): GET /api/tags
+  // through the provider layer — a success doubles as the live model list
+  // for the row's chips and every picker.
+  async testLocalProvider() {
+    const app = ctx.app;
+    const draft = app.state.localDraft || {};
+    app.state.localTest = { testing: true };
+    ctx.renderMainOnly();
+    try {
+      app.state.localTest = await api.testLocalProvider(draft.baseUrl || "");
+    } catch (e) {
+      app.state.localTest = { ok: false, models: [], error: e?.message || String(e) };
+    }
+    ctx.renderMainOnly();
   },
   // The composer's attach button (Story 5.5): the desktop opens the native
   // picker; the browser opens the hidden file input (the mock classifies

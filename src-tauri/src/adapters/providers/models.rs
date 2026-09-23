@@ -92,6 +92,39 @@ pub struct ConnectionTest {
     pub error: Option<String>,
 }
 
+/// Test the LOCAL provider's endpoint (Story 6.1, FR-24.1): `GET /api/tags`
+/// through the local adapter's own HTTP surface (AD-9 — no bespoke fetch
+/// anywhere else). No API key is required; a non-localhost URL is the typed
+/// zero-egress refusal (FR-24.3) and a stopped runtime is the honest
+/// unreachable reason (NFR-14) — never a dead spawn, never an invented list.
+pub async fn test_local_connection(base_url: &str) -> ConnectionTest {
+    let adapter = match super::ollama::Ollama::new(base_url) {
+        Ok(a) => a,
+        Err(e) => {
+            return ConnectionTest { ok: false, models: Vec::new(), error: Some(e.to_string()) }
+        }
+    };
+    match adapter.tags().await {
+        Ok(models) => {
+            if models.is_empty() {
+                ConnectionTest {
+                    ok: false,
+                    models,
+                    error: Some(
+                        "the local endpoint answered but lists no models — pull one first \
+                         (e.g. `ollama pull llama3.1`) / el endpoint local respondió sin \
+                         modelos — descarga uno primero (p. ej. `ollama pull llama3.1`)"
+                            .into(),
+                    ),
+                }
+            } else {
+                ConnectionTest { ok: true, models, error: None }
+            }
+        }
+        Err(e) => ConnectionTest { ok: false, models: Vec::new(), error: Some(e.to_string()) },
+    }
+}
+
 /// Test the configured API provider: GET its models endpoint with the
 /// keychain-stored key. Never invents a result — a provider that answers
 /// anything other than a parseable 200 is honestly reported.
@@ -173,6 +206,7 @@ mod tests {
             model: String::new(),
             cli: String::new(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         }
     }
 
@@ -229,5 +263,49 @@ mod tests {
         let t = test_connection(&s).await;
         assert!(!t.ok);
         assert!(t.error.unwrap().contains("no API key"));
+    }
+
+    /// Story 6.1 (FR-24.1/NFR-14): the local connection test speaks
+    /// `GET /api/tags` through the adapter — a reachable endpoint lists its
+    /// installed models, a stopped runtime reports the honest
+    /// `local_unreachable:` reason, and a non-localhost URL is the typed
+    /// zero-egress refusal.
+    #[tokio::test]
+    async fn the_local_connection_test_is_honest_both_ways() {
+        // a one-shot fake Ollama listing two models
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/api/tags",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({
+                    "models": [{ "name": "llama3.1:8b" }, { "name": "qwen2.5:14b" }]
+                }))
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let t = test_local_connection(&format!("http://{addr}")).await;
+        assert!(t.ok);
+        assert_eq!(t.models, vec!["llama3.1:8b", "qwen2.5:14b"]);
+        assert!(t.error.is_none());
+
+        // a stopped runtime (nothing listens) is honestly unreachable
+        let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gone_addr = gone.local_addr().unwrap();
+        drop(gone);
+        let t = test_local_connection(&format!("http://{gone_addr}")).await;
+        assert!(!t.ok);
+        assert!(t.models.is_empty());
+        assert!(
+            t.error.unwrap().contains("local_unreachable:"),
+            "the honest reason, never a dead spawn"
+        );
+
+        // a non-localhost URL never even constructs (zero egress, FR-24.3)
+        let t = test_local_connection("http://10.0.0.5:11434").await;
+        assert!(!t.ok);
+        assert!(t.error.unwrap().contains("local_not_localhost:"));
     }
 }

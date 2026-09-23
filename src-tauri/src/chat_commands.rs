@@ -1024,6 +1024,107 @@ mod tests {
         assert!(err.starts_with("no_provider_configured:"), "got: {err}");
     }
 
+    /// Story 6.1 (FR-24.2): the ASSISTANT send path resolves against a
+    /// configured LOCAL provider — no fake layer: a one-shot local "Ollama"
+    /// answers `/api/chat`, the reply is attributed `local · <model>`, and
+    /// the call appends its honest 0¢ `spend.recorded` with `note: "local"`
+    /// (FR-24.3/NFR-14 — never an invented price). A stopped runtime is the
+    /// typed `local_unreachable:` refusal, never a panic and never a silent
+    /// simulated fallback (the real-only rule holds).
+    #[tokio::test]
+    async fn the_assistant_send_path_resolves_a_configured_local_provider() {
+        // a one-shot fake Ollama on the shared test runtime
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let seen = captured.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/api/chat",
+            axum::routing::post(move |body: String| {
+                let seen = seen.clone();
+                async move {
+                    *seen.lock().unwrap() = Some(body);
+                    axum::Json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "respuesta del modelo local" },
+                        "prompt_eval_count": 210,
+                        "eval_count": 64
+                    }))
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let db = test_db();
+        let paths = test_paths();
+        let pid = project_id(&db).await;
+        {
+            let c = conn(&db).await;
+            db::set_setting(&c, "llm_mode", "local").unwrap();
+            db::set_setting(&c, "provider", "local").unwrap();
+            db::set_setting(&c, "local_base_url", &format!("http://{addr}")).unwrap();
+            db::set_setting(&c, "model", "llama3.1:8b").unwrap();
+        }
+        // the assistant resolution itself: a configured local provider IS a
+        // real provider (FR-17.1 as amended by FR-24.2) — never simulated
+        {
+            let c = conn(&db).await;
+            let layer = agent::resolve_assistant_layer(&db, &c, None).unwrap();
+            assert_eq!(layer.kind(), crate::adapters::providers::Kind::Local);
+        }
+        let chat = {
+            let c = conn(&db).await;
+            create_chat_inner(&c, &pid, "asistente", "Local", None, None, Some("qwen2.5:14b".into()))
+                .unwrap()
+        };
+        let out = send_message_inner(&db, &paths, &chat_id(&chat), "hola")
+            .await
+            .unwrap();
+        assert_eq!(out["agent_content"], json!("respuesta del modelo local"));
+        assert_eq!(out["provider"], json!("local"));
+        assert_eq!(out["model"], json!("qwen2.5:14b"), "the chat's chosen model rides the call");
+        // the native /api/chat shape reached the local runtime
+        let body = captured.lock().unwrap().clone().expect("the local runtime saw the request");
+        assert!(body.contains("\"qwen2.5:14b\""), "the chosen model rides the local call: {body}");
+        assert!(!body.contains("llama3.1:8b"), "the picker's model overrides the configured default");
+        // the honest 0¢ spend event (AD-10/NFR-14): real tokens, zero cost,
+        // note "local"
+        {
+            let c = conn(&db).await;
+            let events = EventStore::new(&c).events_all().unwrap();
+            let spend: Vec<_> = events
+                .iter()
+                .filter(|e| e.kind == crate::domain::spend::SPEND_RECORDED)
+                .collect();
+            assert_eq!(spend.len(), 1, "exactly one spend.recorded for the local call");
+            let p = &spend[0].payload;
+            assert_eq!(p["provider"], json!("local"));
+            assert_eq!(p["model"], json!("qwen2.5:14b"));
+            assert_eq!(p["cost_cents"], json!(0), "never an invented price (NFR-14)");
+            assert_eq!(p["note"], json!("local"));
+            assert_eq!(p["input_tokens"], json!(210));
+            assert_eq!(p["output_tokens"], json!(64));
+        }
+
+        // a stopped runtime (nothing listens) is the typed refusal — never a
+        // panic, never a simulated stand-in
+        let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gone_addr = gone.local_addr().unwrap();
+        drop(gone);
+        {
+            let c = conn(&db).await;
+            db::set_setting(&c, "local_base_url", &format!("http://{gone_addr}")).unwrap();
+        }
+        let err = send_message_inner(&db, &paths, &chat_id(&chat), "hola de nuevo")
+            .await
+            .expect_err("a stopped local runtime must refuse, not fabricate");
+        assert!(
+            err.starts_with("local_unreachable:"),
+            "the typed honest refusal, got: {err}"
+        );
+    }
+
     /// Story 5.9 (FR-17.4): the per-conversation model choice persists
     /// (row + `chat.model_set` event), the folded event wins over the row,
     /// and the chosen model rides the provider call — overriding the

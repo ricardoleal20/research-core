@@ -185,6 +185,8 @@ pub fn run() {
             commands::get_ai_config,
             commands::configure_ai_provider,
             commands::use_cli_bridge,
+            commands::use_local_provider,
+            commands::test_local_provider,
             commands::test_provider_connection,
             commands::list_provider_models,
             missions_commands::create_mission,

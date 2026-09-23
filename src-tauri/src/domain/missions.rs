@@ -638,6 +638,50 @@ mod tests {
         assert!(err.to_string().contains("same_model_critic:"), "unexpected: {err}");
     }
 
+    /// Story 6.1 (FR-24.2): the critic ≠ drafter rule (NFR-3) is enforced
+    /// across MIXED local/remote configurations exactly as remote/remote —
+    /// a local critic against a remote drafter is a different algorithm
+    /// (accepted); the same local pair grading itself is rejected.
+    #[test]
+    fn the_different_model_critic_rule_holds_across_mixed_local_remote_configs() {
+        // remote drafter + local critic => different pair, accepted
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("openai", "gpt-4o"),
+            RoleConfig::critic("local", "llama3.1:8b"),
+        ];
+        assert!(
+            NewEvent::mission_created(p).is_ok(),
+            "a local critic against a remote drafter is a different algorithm"
+        );
+        // local drafter + remote critic => accepted
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("local", "llama3.1:8b"),
+            RoleConfig::critic("anthropic", "claude-sonnet-4-5"),
+        ];
+        assert!(NewEvent::mission_created(p).is_ok());
+        // both local, different models => accepted
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("local", "llama3.1:8b"),
+            RoleConfig::critic("local", "qwen2.5:14b"),
+        ];
+        assert!(NewEvent::mission_created(p).is_ok());
+        // both local, the SAME pair => rejected exactly as remote/remote
+        let mut p = payload();
+        p.roles = vec![
+            RoleConfig::drafter("local", "llama3.1:8b"),
+            RoleConfig::critic("local", "llama3.1:8b"),
+        ];
+        let err = NewEvent::mission_created(p)
+            .expect_err("a local critic on the local drafter's pair must be rejected");
+        assert!(
+            err.to_string().contains("same_model_critic:"),
+            "error must carry the typed prefix: {err}"
+        );
+    }
+
     #[test]
     fn constructor_rejects_multi_role_configs_where_any_critic_collides() {
         // Two drafters on different pairs; the critic collides with the

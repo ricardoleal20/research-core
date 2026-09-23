@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Local models as a first-class provider (Story 6.1, FR-24): an Ollama (or
+  equivalent) adapter in the provider registry — native `/api/chat` +
+  `/api/tags`, no API key, base URL in settings (never the keychain), and a
+  hard localhost-only guard (zero egress, unit-tested). A reachable local
+  endpoint is a REAL provider — it satisfies the assistant's real-only rule;
+  a stopped runtime is the honest unconfigured state / typed
+  `local_unreachable:` error, never a simulated fallback. Local calls record
+  honest token counts at $0 (`note: "local"`), local models flow into every
+  model picker (assistant per-conversation, skills, mission roles via
+  `RoleConfig`), and the critic ≠ drafter rule holds across mixed
+  local/remote configurations. Ajustes → IA gains a "Local / Local" row with
+  base URL, live detection, model refresh, and test connection (bilingual
+  EN/ES + pt/fr).
 - Project README for the public release.
 - GitHub community files: `LICENSE` (MIT), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
   `SECURITY.md`, issue templates, and pull-request template.

@@ -15,6 +15,7 @@ pub mod anthropic;
 pub mod cli;
 pub mod google;
 pub mod models;
+pub mod ollama;
 pub mod openai_compatible;
 pub mod pricing;
 pub mod simulated;
@@ -183,6 +184,10 @@ pub enum ProviderError {
     EmptyCompletion { name: String },
     #[error("request to provider `{name}` failed: {source}")]
     Request { name: String, source: reqwest::Error },
+    #[error("local_not_localhost: `{0}` is not a localhost endpoint — the local provider speaks only to localhost (zero egress, FR-24.3/NFR-14) / `{0}` no es un endpoint local — el proveedor local solo habla con localhost (cero salida de datos)")]
+    NotLocalhost(String),
+    #[error("local_unreachable: the local endpoint `{url}` is not reachable — start the local runtime (e.g. `ollama serve`) or fix the base URL in Ajustes → IA / el endpoint local `{url}` no está disponible — inicia el runtime local (p. ej. `ollama serve`) o corrige la URL base en Ajustes → IA")]
+    LocalUnreachable { url: String },
     #[error("cli adapter: {0}")]
     Cli(String),
     #[error("cli_unavailable: the `{0}` CLI was not found on PATH — install it, fix its path in Ajustes → IA, or choose another provider / el CLI `{0}` no está en PATH")]
@@ -199,7 +204,7 @@ pub enum ProviderError {
 
 impl ProviderError {
     /// Truncate a provider error body for the `Api` variant (bounded memory).
-    fn api_body(body: String) -> String {
+    pub(crate) fn api_body(body: String) -> String {
         body.chars().take(300).collect()
     }
 }
@@ -235,6 +240,12 @@ pub enum Kind {
     Simulated,
     /// A local coding CLI (claude/codex/opencode) — usage is unmeasurable.
     Cli,
+    /// A local LLM runtime (Ollama or equivalent) on localhost (Story 6.1,
+    /// FR-24): a REAL provider — it satisfies the assistant's real-only rule
+    /// (FR-17.1 as amended by FR-24.2) — with zero egress (FR-24.3) and an
+    /// honest $0 spend (`note: "local"`, NFR-14). Its token counts are
+    /// metered by the local runtime itself.
+    Local,
 }
 
 /// The configured provider, resolved from settings + the OS keychain. This is
@@ -253,6 +264,10 @@ pub struct ProviderSettings {
     pub model: String,
     pub cli: String,
     pub cli_model: String,
+    /// The local provider's base URL (Story 6.1, FR-24.1): settings, not the
+    /// keychain — a local URL is not a secret. Empty ⇒ the Ollama default
+    /// (`http://localhost:11434`).
+    pub local_base_url: String,
 }
 
 /// Canonical endpoints for the named providers; anything else needs an
@@ -263,7 +278,9 @@ pub fn default_base_url(name: &str) -> Option<&'static str> {
         "anthropic" => Some("https://api.anthropic.com"),
         "google" => Some("https://generativelanguage.googleapis.com"),
         "openrouter" => Some("https://openrouter.ai/api/v1"),
-        "local" => Some("http://localhost:11434/v1"),
+        // The local provider's canonical endpoint is the Ollama default —
+        // the native adapter (Story 6.1) speaks /api/chat + /api/tags there.
+        "local" => Some(ollama::DEFAULT_BASE_URL),
         _ => None,
     }
 }
@@ -315,6 +332,7 @@ impl ProviderSettings {
             model: crate::db::get_setting(conn, "model"),
             cli: crate::db::get_setting(conn, "llm_cli"),
             cli_model: crate::db::get_setting(conn, "llm_cli_model"),
+            local_base_url: crate::db::get_setting(conn, "local_base_url"),
         }
     }
 
@@ -324,7 +342,7 @@ impl ProviderSettings {
     pub fn is_simulated(&self) -> bool {
         match self.mode.trim() {
             "simulate" => true,
-            "cli" | "provider" => false,
+            "cli" | "provider" | "local" => false,
             _ => !ProviderLayer::has_real_provider(self),
         }
     }
@@ -386,9 +404,11 @@ impl ProviderLayer {
         match s.mode.trim() {
             "simulate" => Ok(Self::simulated(db)),
             "cli" => Self::cli(db, &s),
+            "local" => Self::local(db, &s.local_base_url, &s.model),
             "provider" => Self::remote(db, &s),
             // Legacy auto behavior: real provider when key + endpoint exist,
-            // else the simulated fallback.
+            // else the simulated fallback. The local provider needs no key
+            // (FR-24.1) — a configured local name is a real provider.
             _ => {
                 if Self::has_real_provider(&s) {
                     Self::remote(db, &s)
@@ -403,11 +423,16 @@ impl ProviderLayer {
     /// `from_settings`, except the simulated fallback is refused with the
     /// typed `no_provider_configured:` error instead of silently answering.
     /// Every other flow keeps the simulated guarantee of Stories 1.6/2.1 —
-    /// only this constructor never returns `Kind::Simulated`.
+    /// only this constructor never returns `Kind::Simulated`. A configured
+    /// LOCAL provider is a real provider (Story 6.1, FR-24.2 — NFR-11's
+    /// cloud-only reading is amended): it resolves here, and an endpoint
+    /// that is down surfaces at call time as the typed
+    /// `local_unreachable:` error — never a silent simulated fallback.
     pub fn from_settings_real(db: &Db, s: ProviderSettings) -> Result<Self, ProviderError> {
         match s.mode.trim() {
             "simulate" => Err(ProviderError::NoProviderConfigured),
             "cli" => Self::cli(db, &s),
+            "local" => Self::local(db, &s.local_base_url, &s.model),
             "provider" => Self::remote(db, &s),
             _ => {
                 if Self::has_real_provider(&s) {
@@ -426,8 +451,11 @@ impl ProviderLayer {
     }
 
     fn has_real_provider(s: &ProviderSettings) -> bool {
-        !s.api_key.trim().is_empty()
-            && (!s.base_url.trim().is_empty() || default_base_url(&s.name).is_some())
+        // The local provider registers like any cloud provider without a
+        // key (Story 6.1, FR-24.1) — it counts as real in auto mode too.
+        s.name.trim() == "local"
+            || (!s.api_key.trim().is_empty()
+                && (!s.base_url.trim().is_empty() || default_base_url(&s.name).is_some()))
     }
 
     /// Resolve the adapter for one agent role's (provider, model) pair
@@ -462,6 +490,12 @@ impl ProviderLayer {
                 client: Box::new(cli::Cli::new(&settings.cli)),
             });
         }
+        // A local role (Story 6.1, FR-24.2): skills and mission roles run
+        // local models like any cloud pair — no key, the settings-stored
+        // local base URL, the role's own model.
+        if name == "local" {
+            return Self::local(db, &settings.local_base_url, role.model.trim());
+        }
         let key = provider_key(conn, &name);
         if key.trim().is_empty() {
             return Err(ProviderError::MissingCredential(name));
@@ -481,6 +515,7 @@ impl ProviderLayer {
                 model: role.model.trim().to_string(),
                 cli: String::new(),
                 cli_model: String::new(),
+                local_base_url: String::new(),
             },
         )
     }
@@ -510,11 +545,35 @@ impl ProviderLayer {
         })
     }
 
+    /// Resolve the LOCAL provider (Story 6.1, FR-24.1): the Ollama adapter
+    /// on the configured local base URL (settings — never the keychain; a
+    /// local URL is not a secret), no API key, behind the hard localhost
+    /// guard (FR-24.3). A REAL provider kind — the assistant's real-only
+    /// rule (FR-17.1 as amended by FR-24.2) is satisfied. Reachability is
+    /// deliberately NOT probed here (resolution stays fast): an endpoint
+    /// that is down surfaces honestly at call time as the typed
+    /// `local_unreachable:` error — never a simulated stand-in.
+    fn local(db: &Db, base_url: &str, model: &str) -> Result<Self, ProviderError> {
+        let adapter = ollama::Ollama::new(base_url)?;
+        Ok(Self {
+            db: db.clone(),
+            kind: Kind::Local,
+            name: "local".into(),
+            model: model.trim().to_string(),
+            client: Box::new(adapter),
+        })
+    }
+
     /// Resolve a real BYOK provider from the registry (openai, anthropic,
     /// google, openrouter, custom endpoints). Fails with typed errors when
-    /// the credential, endpoint, or provider name is missing.
+    /// the credential, endpoint, or provider name is missing. The local
+    /// provider registers like any cloud provider (FR-24.1) — it dispatches
+    /// to the local adapter before any key is demanded.
     fn remote(db: &Db, s: &ProviderSettings) -> Result<Self, ProviderError> {
         let name = s.name.trim().to_string();
+        if name == "local" {
+            return Self::local(db, &s.local_base_url, &s.model);
+        }
         if s.api_key.trim().is_empty() {
             return Err(ProviderError::MissingCredential(name));
         }
@@ -541,7 +600,7 @@ impl ProviderLayer {
                 name.to_string(),
             )),
             "google" => Ok((Box::new(google::Google::new(&s.api_key)), name.to_string())),
-            "openai" | "openrouter" | "local" => {
+            "openai" | "openrouter" => {
                 let url = if base_url.is_empty() {
                     default_base_url(name).unwrap_or_default().to_string()
                 } else {
@@ -629,7 +688,7 @@ impl ProviderLayer {
         if self.kind == Kind::Cli && req.model.trim().is_empty() {
             req.model = "default".into();
         }
-        if self.kind == Kind::Remote && req.model.trim().is_empty() {
+        if matches!(self.kind, Kind::Remote | Kind::Local) && req.model.trim().is_empty() {
             return Err(ProviderError::MissingModel(self.name.clone()));
         }
         Ok(req)
@@ -639,8 +698,11 @@ impl ProviderLayer {
     /// loudly: a call whose spend cannot be recorded must not silently cost
     /// money. CLI bridge calls (Story 5.8) append their 0¢ event with
     /// `note: "cli"` — no metered cost exists to record, so the receipt
-    /// says so instead of inventing a number (NFR-4 spirit, AD-10). Only
-    /// the simulated fallback appends nothing at all.
+    /// says so instead of inventing a number (NFR-4 spirit, AD-10). Local
+    /// calls (Story 6.1, FR-24.3/NFR-14) append their 0¢ event with
+    /// `note: "local"` — nothing is charged, the receipt says so, and the
+    /// local runtime's honest token counts ride verbatim. Only the
+    /// simulated fallback appends nothing at all.
     async fn record_spend(
         &self,
         req: &ChatRequest,
@@ -649,10 +711,10 @@ impl ProviderLayer {
         if self.kind == Kind::Simulated {
             return Ok(());
         }
-        let (cost_cents, note) = if self.kind == Kind::Cli {
-            (0, Some("cli".to_string()))
-        } else {
-            (pricing::cost_cents(&self.name, &req.model, &resp.usage), None)
+        let (cost_cents, note) = match self.kind {
+            Kind::Cli => (0, Some("cli".to_string())),
+            Kind::Local => (0, Some("local".to_string())),
+            _ => (pricing::cost_cents(&self.name, &req.model, &resp.usage), None),
         };
         let event = crate::eventstore::NewEvent::spend_recorded(SpendRecordedPayload {
             provider: self.name.clone(),
@@ -983,7 +1045,6 @@ mod tests {
             ("anthropic", "anthropic"),
             ("google", "google"),
             ("openrouter", "openrouter"),
-            ("local", "local"),
             ("custom", "custom"),
             ("openai-compatible", "openai-compatible"),
         ] {
@@ -996,12 +1057,168 @@ mod tests {
                 model: "m".into(),
                 cli: String::new(),
                 cli_model: String::new(),
+                local_base_url: String::new(),
             };
             let layer = ProviderLayer::from_settings(&db, settings)
                 .unwrap_or_else(|e| panic!("{name} must resolve: {e}"));
             assert_eq!(layer.kind(), Kind::Remote, "{name}");
             assert_eq!(layer.name(), attribution);
         }
+    }
+
+    /// Story 6.1 (FR-24.1/24.2): the local provider registers like any
+    /// cloud provider — no API key, its own settings-stored base URL, the
+    /// native Ollama adapter — and it is a REAL provider kind on BOTH
+    /// resolution paths (the assistant's real-only rule, FR-17.1 as amended
+    /// by FR-24.2, is satisfied). A non-localhost base URL is the typed
+    /// zero-egress refusal (FR-24.3) — never an OpenAI-compatible escape
+    /// hatch to a remote host.
+    #[test]
+    fn the_local_provider_registers_as_a_real_provider_without_a_key() {
+        let db = test_db();
+        let local = ProviderSettings {
+            mode: "local".into(),
+            name: "local".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: "llama3.1:8b".into(),
+            cli: String::new(),
+            cli_model: String::new(),
+            local_base_url: String::new(),
+        };
+        // the canonical default endpoint when no base URL is stored
+        let layer = ProviderLayer::from_settings(&db, local.clone()).unwrap();
+        assert_eq!(layer.kind(), Kind::Local);
+        assert_eq!(layer.name(), "local");
+        assert_eq!(layer.model(), "llama3.1:8b");
+        // the ASSISTANT resolution accepts it — never simulated (FR-24.2)
+        let layer = ProviderLayer::from_settings_real(&db, local.clone()).unwrap();
+        assert_eq!(layer.kind(), Kind::Local);
+        // provider mode + name "local" dispatches to the local adapter too
+        let layer = ProviderLayer::from_settings(
+            &db,
+            ProviderSettings {
+                mode: "provider".into(),
+                name: "local".into(),
+                base_url: String::new(),
+                api_key: String::new(),
+                model: "qwen2.5:14b".into(),
+                cli: String::new(),
+                cli_model: String::new(),
+                local_base_url: "http://127.0.0.1:11434".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(layer.kind(), Kind::Local);
+        // auto mode + name "local" is a real provider (no key needed)
+        let layer = ProviderLayer::from_settings(
+            &db,
+            ProviderSettings {
+                mode: String::new(),
+                name: "local".into(),
+                base_url: String::new(),
+                api_key: String::new(),
+                model: "llama3.1:8b".into(),
+                cli: String::new(),
+                cli_model: String::new(),
+                local_base_url: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(layer.kind(), Kind::Local);
+        // a non-localhost base URL is the typed refusal, both paths
+        let mut remote = local.clone();
+        remote.mode = "local".into();
+        remote.local_base_url = "http://10.0.0.5:11434".into();
+        for result in [
+            ProviderLayer::from_settings(&db, remote.clone()),
+            ProviderLayer::from_settings_real(&db, remote),
+        ] {
+            assert!(
+                matches!(result, Err(ProviderError::NotLocalhost(ref u)) if u == "http://10.0.0.5:11434"),
+                "a LAN endpoint must be refused (zero egress, FR-24.3)"
+            );
+        }
+    }
+
+    /// Story 6.1 (FR-24.3/NFR-14): a local call appends its 0¢
+    /// `spend.recorded` with `note: "local"` and the runtime's honest token
+    /// counts — a price is never invented where none is charged — and needs
+    /// NO runtime reservation (nothing can overshoot a $0 ceiling).
+    #[tokio::test]
+    async fn local_calls_record_zero_cent_spend_with_the_local_note() {
+        let db = test_db();
+        let layer = ProviderLayer {
+            db: db.clone(),
+            kind: Kind::Local,
+            name: "local".into(),
+            model: "llama3.1:8b".into(),
+            client: Box::new(FakeRemote {
+                content: "respuesta del modelo local",
+                usage: Usage { input_tokens: 320, output_tokens: 140 },
+            }),
+        };
+        // no reservation attached — local calls cost nothing (CLI precedent)
+        let resp = layer
+            .chat(ChatRequest::new(vec![Message::user("hola")]))
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "respuesta del modelo local");
+        let events = spend_events(&db).await;
+        assert_eq!(events.len(), 1, "a local call records its (free) spend");
+        let payload = &events[0].payload;
+        assert_eq!(payload["provider"], "local");
+        assert_eq!(payload["model"], "llama3.1:8b");
+        assert_eq!(payload["cost_cents"], json!(0), "never an invented price (NFR-14)");
+        assert_eq!(payload["note"], json!("local"));
+        assert_eq!(payload["input_tokens"], json!(320), "honest token counts ride verbatim");
+        assert_eq!(payload["output_tokens"], json!(140));
+    }
+
+    /// Story 6.1: a local layer without a model is the typed refusal — the
+    /// picker's list is live from the endpoint, an empty choice never
+    /// dispatches.
+    #[tokio::test]
+    async fn a_local_layer_without_a_model_is_a_typed_error() {
+        let db = test_db();
+        let mut layer = ProviderLayer {
+            db: db.clone(),
+            kind: Kind::Local,
+            name: "local".into(),
+            model: String::new(),
+            client: Box::new(FakeRemote { content: "x", usage: Usage::ZERO }),
+        };
+        let err = layer.chat(ChatRequest::new(vec![Message::user("x")])).await;
+        assert!(
+            matches!(err, Err(ProviderError::MissingModel(ref p)) if p == "local"),
+            "expected MissingModel, got {err:?}"
+        );
+        assert!(spend_events(&db).await.is_empty());
+    }
+
+    /// Story 6.1 (FR-24.2): a role configured on the local provider —
+    /// skills and mission roles — resolves the local adapter with the role's
+    /// own model, no key demanded (mixed local/remote configs are exactly as
+    /// first-class as remote/remote).
+    #[tokio::test]
+    async fn a_local_role_resolves_without_a_key() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().await;
+            crate::db::set_setting(&conn, "local_base_url", "http://127.0.0.1:11434").unwrap();
+        }
+        let layer = {
+            let conn = db.0.lock().await;
+            ProviderLayer::for_role(
+                &db,
+                &conn,
+                &crate::domain::missions::RoleConfig::drafter("local", "llama3.1:8b"),
+            )
+            .unwrap()
+        };
+        assert_eq!(layer.kind(), Kind::Local);
+        assert_eq!(layer.name(), "local");
+        assert_eq!(layer.model(), "llama3.1:8b");
     }
 
     #[test]
@@ -1016,6 +1233,7 @@ mod tests {
                 model: "m".into(),
                 cli: String::new(),
                 cli_model: String::new(),
+                local_base_url: String::new(),
             };
             let layer = ProviderLayer::from_settings(&db, settings)
                 .unwrap_or_else(|e| panic!("{name} must resolve on its canonical endpoint: {e}"));
@@ -1034,6 +1252,7 @@ mod tests {
             model: String::new(),
             cli: String::new(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         };
         // unknown provider name, no base_url
         let mut s = base.clone();
@@ -1076,6 +1295,7 @@ mod tests {
             model: String::new(),
             cli: String::new(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         };
         // auto mode, nothing configured => refused (not simulated)
         assert!(matches!(
@@ -1122,6 +1342,7 @@ mod tests {
             model: String::new(),
             cli: "claude".into(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         };
         if claude_available {
             let layer = ProviderLayer::from_settings_real(&db, s).unwrap();
@@ -1142,6 +1363,7 @@ mod tests {
             model: String::new(),
             cli: "rc-definitely-missing-cli".into(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         };
         assert!(matches!(
             ProviderLayer::from_settings_real(&db, missing.clone()),
@@ -1313,6 +1535,7 @@ mod tests {
             model: "gpt-4o-mini".into(),
             cli: String::new(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         };
         assert_eq!(ProviderLayer::from_settings(&db, settings).unwrap().kind(), Kind::Simulated);
         // and with key + endpoint => remote
@@ -1324,6 +1547,7 @@ mod tests {
             model: "gpt-4o-mini".into(),
             cli: String::new(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         };
         assert_eq!(ProviderLayer::from_settings(&db, settings).unwrap().kind(), Kind::Remote);
     }

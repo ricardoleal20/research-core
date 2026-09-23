@@ -1007,20 +1007,32 @@ export interface DashboardSummary {
   readiness: ReadinessReport; // widget 6 (FR-18.7): workspace-scoped verdict
 }
 
-// The AI provider configuration (Stories 5.7–5.9, FR-17): what Ajustes → IA
-// and the assistant surface render. The key itself NEVER crosses this
-// boundary — only its presence (NFR-10: keychain-only credentials).
+// The AI provider configuration (Stories 5.7–5.9 + 6.1, FR-17/FR-24): what
+// Ajustes → IA and the assistant surface render. The key itself NEVER
+// crosses this boundary — only its presence (NFR-10: keychain-only
+// credentials).
 export interface AiConfig {
-  mode: string; // "" | "simulate" | "cli" | "provider"
-  provider: string; // openai | anthropic | google | openrouter | custom | …
+  mode: string; // "" | "simulate" | "cli" | "provider" | "local"
+  provider: string; // openai | anthropic | google | openrouter | custom | local | …
   baseUrl: string;
   model: string;
   hasKey: boolean;
   cli: string; // the CLI bridge binary ("claude" when unset)
   cliModel: string;
   cliAvailable: Record<string, { path: string } | null>; // honest per-binary detection
-  models: string[]; // the picker's list (curated; [] = free entry; CLI = ["default"])
-  configured: boolean; // a REAL provider is configured — the assistant's gate
+  local: AiLocalStatus; // the local provider's honest detection (Story 6.1)
+  models: string[]; // the picker's list (curated; [] = free entry; CLI = ["default"]; local = live /api/tags)
+  configured: boolean; // a REAL provider is configured — the assistant's gate (a reachable local endpoint counts, FR-24.2)
+}
+
+// The local provider's honest detection status (Story 6.1, FR-24.1/NFR-14):
+// reachable + its installed models, or the honest unreachable reason —
+// never a dead spawn, never an invented list.
+export interface AiLocalStatus {
+  baseUrl: string; // the configured local endpoint (Ollama default when unset)
+  reachable: boolean;
+  models: string[]; // the live /api/tags list — flows into every picker
+  error: string | null;
 }
 
 // One test-connection run (Story 5.7): ok + the live model list (the
