@@ -174,7 +174,7 @@ export interface McpServer {
 // Missions (event-sourced read model, camelCase wire form per Tauri 2)
 export type Autonomy = "watch" | "suggest" | "act_with_receipts";
 
-export type MissionStatus = "active" | "awaiting_review" | "completed" | "stopped" | "failed";
+export type MissionStatus = "draft" | "active" | "awaiting_review" | "completed" | "stopped" | "failed";
 
 // DESIGN.md components.spend-meter: ok under 80% of ceiling, near at 80%+,
 // blocked at/over the hard ceiling (dispatch refused past it, AD-10).
@@ -1171,4 +1171,42 @@ export interface ManuscriptDiffProposal {
   decided: { seq: number; ts: string; actor: string } | null;
   backupPath: string | null; // the pre-merge file backup (merge safety)
   note: string;
+}
+
+// The bridge status read (Story 6.14, FR-21.1): the ONE channel's state —
+// mode (off | tunnel | chopflow), what it listens on / talks to, and the
+// paired-devices count.
+export interface BridgeStatusView {
+  mode: string; // "off" | "tunnel" | "chopflow"
+  active: boolean;
+  describe: string | null;
+  pairedDevices: number;
+}
+
+// A paired device as read from the pairing ledger (Story 6.14): the audit
+// fold of bridge.device_paired / bridge.device_unpaired events.
+export interface PairedDevice {
+  device: string;
+  fingerprint: string; // first 8 hex of the token's sha-256 — recognizable, never authenticating
+  pairedSeq: number;
+  pairedTs: string;
+}
+
+// What pairing hands the owner ONCE (Story 6.14): the raw token is shown
+// one time and never stored anywhere.
+export interface PairingReceipt {
+  device: string;
+  token: string;
+  fingerprint: string;
+}
+
+// A verdict-summary notification (Story 6.16, FR-21.4, NFR-13): summaries
+// in code form only — never research content beyond the summary.
+export interface NotificationItem {
+  kind: string; // "proposal" | "digest"
+  seq: number;
+  ts: string;
+  proposalId: string | null;
+  summary: string;
+  basisStale: boolean;
 }

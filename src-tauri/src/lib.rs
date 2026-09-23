@@ -201,6 +201,11 @@ pub fn run() {
             missions_commands::get_mission_runs,
             missions_commands::get_run_receipt,
             missions_commands::run_agent_step,
+            // quick-capture (Story 6.15, FR-21.3): a captured question lands
+            // as a pending mission card — a draft awaiting its terminators;
+            // completion is the owner's explicit launch.
+            missions_commands::quick_capture,
+            missions_commands::complete_captured_mission,
             jobs_commands::declare_compute_target,
             jobs_commands::list_compute_targets,
             jobs_commands::list_registered_adapters,

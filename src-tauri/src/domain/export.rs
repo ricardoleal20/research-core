@@ -559,6 +559,7 @@ fn is_affected(ctx: &RenderCtx<'_, '_>, id: &str) -> bool {
 
 fn mission_status_label(status: MissionStatus) -> &'static str {
     match status {
+        MissionStatus::Draft => "draft",
         MissionStatus::Active => "active",
         MissionStatus::AwaitingReview => "awaiting_review",
         MissionStatus::Completed => "completed",

@@ -793,6 +793,7 @@ export function renderSettings(app) {
     { id: "interface", label: t("rc.settings.interface") },
     { id: "ai", label: t("rc.settings.ai") },
     { id: "trust", label: t("sec.trust") },
+    { id: "bridge", label: t("bridge.title") },
     { id: "local", label: t("rc.settings.local") },
     { id: "manuscript", label: t("rc.settings.manuscript") },
     { id: "vault", label: t("rc.settings.vault") },
@@ -803,6 +804,7 @@ export function renderSettings(app) {
   else if (activeTab === "ai") content = renderSettingsAi(app);
   else if (activeTab === "manuscript") content = renderSettingsManuscript(app);
   else if (activeTab === "trust") content = renderTrustCenter(app);
+  else if (activeTab === "bridge") content = renderBridgeCenter(app);
   else if (activeTab === "local") content = `
     <div class="space-y-5">
       <label class="flex items-center justify-between rounded-lg border border-border p-4"><span class="text-sm font-medium">${t("local.store")}</span><input type="checkbox" class="switch" checked></label>
@@ -836,6 +838,88 @@ export function renderSettings(app) {
           <button onclick="RC.setSettingsTab('${tab.id}')" class="px-4 py-2 text-sm font-medium rounded-t-lg transition ${activeTab === tab.id ? "text-primary border-b-2 border-primary" : "text-muted hover:text-foreground"}">${tab.label}</button>`).join("")}
       </div>
       ${card(`<div class="p-6">${content}</div>`)}
+    </div>`;
+}
+
+// The bridge tab's data (Story 6.14): the status read + the paired list.
+async function loadBridgeData() {
+  const app = ctx.app;
+  try {
+    app.data.bridge = await api.bridgeStatus();
+  } catch (e) {
+    app.data.bridge = null;
+  }
+  try {
+    app.data.bridgeDevices = await api.listBridgeDevices();
+  } catch (e) {
+    app.data.bridgeDevices = [];
+  }
+  ctx.renderMainOnly();
+}
+
+// The bridge settings surface (Story 6.14, FR-21.1, NFR-13): the ONE
+// channel — off by default, one channel at a time, pairing as a user
+// action with a visible paired-devices list. Data lands in app.data.bridge
+// (status) + app.data.bridgeDevices (the paired list).
+function renderBridgeCenter(app) {
+  const st = app.data.bridge;
+  const devices = app.data.bridgeDevices || [];
+  const s = app.state.bridgeForm || (app.state.bridgeForm = { mode: "tunnel", addr: "", url: "", token: "", pairName: "", receipt: null });
+  return `
+    <div class="space-y-6">
+      <div class="flex items-center justify-between rounded-xl border ${st?.active ? "border-emerald-200 bg-emerald-50" : "border-border bg-white"} p-4">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold">${t("bridge.title")} <span class="text-muted font-normal text-xs">— ${t("bridge.sub")}</span></p>
+          <p class="text-xs ${st?.active ? "text-emerald-700" : "text-muted"} mt-0.5 font-mono truncate">${st?.active ? `${t("bridge.active")} · ${esc(st.describe || st.mode)}` : t("bridge.inactive")}</p>
+        </div>
+        ${st?.active
+          ? btn({ label: t("bridge.disable"), variant: "destructive", size: "sm", onClick: "RC.disableBridge()" })
+          : ""}
+      </div>
+      ${app.data.bridgeError ? `<div class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 font-medium">${esc(app.data.bridgeError)}</div>` : ""}
+      ${!st?.active ? `
+      <div class="space-y-3">
+        <p class="text-sm font-semibold">${t("bridge.mode")}</p>
+        <div class="rounded-xl border border-border p-4 space-y-3">
+          <div class="grid grid-cols-2 gap-1 rounded-lg border border-border bg-gray-50 p-1">
+            ${[["tunnel", t("bridge.mode.tunnel")], ["chopflow", t("bridge.mode.chopflow")]].map(([v, l]) => `
+              <button type="button" onclick="RC.bridgeMode('${v}')" class="rounded-md py-1.5 text-xs font-medium transition ${s.mode === v ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${l}</button>`).join("")}
+          </div>
+          ${s.mode === "tunnel" ? `
+            <div><label class="block text-sm font-medium mb-1.5">${t("bridge.listenAddr")}</label><input id="bridge-addr" value="${esc(s.addr)}" placeholder="0.0.0.0:4762" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+          ` : `
+            <div><label class="block text-sm font-medium mb-1.5">${t("bridge.chopflowUrl")}</label><input id="bridge-url" value="${esc(s.url)}" placeholder="https://chopflow.example" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+            <div><label class="block text-sm font-medium mb-1.5">${t("bridge.chopflowToken")}</label><input id="bridge-token" value="${esc(s.token)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+          `}
+          <div class="flex justify-end pt-1">
+            ${btn({ label: t("bridge.enable"), variant: "default", size: "sm", onClick: "RC.enableBridge()" })}
+          </div>
+        </div>
+      </div>` : ""}
+      <div class="space-y-3">
+        <p class="text-sm font-semibold">${t("bridge.paired")} <span class="font-mono text-xs text-muted font-normal">${devices.length}</span></p>
+        <div class="rounded-xl border border-border divide-y divide-border overflow-hidden">
+          ${devices.map((d) => `
+            <div class="px-4 py-3 flex items-center justify-between gap-4 bg-white">
+              <div class="min-w-0">
+                <p class="text-sm font-medium truncate">${esc(d.device)}</p>
+                <p class="text-[11px] text-muted font-mono mt-0.5">${esc(d.fingerprint)} · ${fmtTs(d.pairedTs)}</p>
+              </div>
+              ${btn({ label: t("bridge.unpair"), variant: "ghost", size: "sm", onClick: `RC.unpairBridgeDevice('${esc(d.device)}')` })}
+            </div>`).join("") || `<p class="px-4 py-6 text-sm text-muted text-center">${t("bridge.none")}</p>`}
+        </div>
+        <div class="flex gap-2">
+          <input id="bridge-pair-name" value="${esc(s.pairName)}" placeholder="${t("bridge.pairNamePh")}" class="flex-1 rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+          ${btn({ label: t("bridge.pair"), variant: "secondary", size: "sm", onClick: "RC.pairBridgeDevice()" })}
+        </div>
+        ${s.receipt ? `
+          <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-2">
+            <p class="text-xs font-semibold text-emerald-700">${t("bridge.tokenOnce")}</p>
+            <p class="font-mono text-xs bg-white rounded-lg border border-emerald-200 px-3 py-2 break-all select-all">${esc(s.receipt.token)}</p>
+            <p class="text-[11px] text-emerald-700">${esc(s.receipt.device)} · ${esc(s.receipt.fingerprint)}</p>
+          </div>` : ""}
+      </div>
+      ${st?.active && st.mode === "tunnel" ? `<p class="text-[11px] text-muted">${t("bridge.companionAt")} <span class="font-mono">${esc((st.describe || "").replace("tunnel ", ""))}/m</span></p>` : ""}
     </div>`;
 }
 
@@ -1903,7 +1987,66 @@ Object.assign(RC, {
   },
   setSettingsTab(tab) {
     ctx.app.state.settingsTab = tab;
+    if (tab === "bridge") loadBridgeData();
     ctx.renderMainOnly();
+  },
+  // ---- The bridge (Story 6.14, FR-21.1): the ONE channel — enable,
+  // disable, and the pairing ledger. One channel at a time; pairing is a
+  // user action minting a one-time token.
+  bridgeMode(v) {
+    const app = ctx.app;
+    const s = app.state.bridgeForm || (app.state.bridgeForm = { mode: "tunnel", addr: "", url: "", token: "", pairName: "", receipt: null });
+    s.mode = v;
+    ctx.renderMainOnly();
+  },
+  async enableBridge() {
+    const app = ctx.app;
+    const s = app.state.bridgeForm || (app.state.bridgeForm = {});
+    if (s.mode === "tunnel") s.addr = document.getElementById("bridge-addr")?.value.trim() || s.addr || "";
+    else {
+      s.url = document.getElementById("bridge-url")?.value.trim() || s.url || "";
+      s.token = document.getElementById("bridge-token")?.value.trim() || s.token || "";
+    }
+    app.data.bridgeError = null;
+    try {
+      app.data.bridge = await api.enableBridge(s.mode, s.addr || null, s.url || null, s.token || null);
+    } catch (e) {
+      app.data.bridgeError = String(e?.message || e);
+    }
+    await loadBridgeData();
+  },
+  async disableBridge() {
+    const app = ctx.app;
+    app.data.bridgeError = null;
+    try {
+      app.data.bridge = await api.disableBridge();
+    } catch (e) {
+      app.data.bridgeError = String(e?.message || e);
+    }
+    await loadBridgeData();
+  },
+  async pairBridgeDevice() {
+    const app = ctx.app;
+    const s = app.state.bridgeForm || (app.state.bridgeForm = {});
+    s.pairName = document.getElementById("bridge-pair-name")?.value.trim() || "";
+    if (!s.pairName) return;
+    s.receipt = null;
+    try {
+      s.receipt = await api.pairBridgeDevice(s.pairName);
+      s.pairName = "";
+      await loadBridgeData();
+    } catch (e) {
+      alert(t("bridge.error") + (e?.message || e));
+    }
+    ctx.renderMainOnly();
+  },
+  async unpairBridgeDevice(deviceName) {
+    try {
+      await api.unpairBridgeDevice(deviceName);
+    } catch (e) {
+      alert(t("bridge.error") + (e?.message || e));
+    }
+    await loadBridgeData();
   },
   resetWizard() {
     localStorage.removeItem("rc-onboarding");

@@ -400,8 +400,20 @@ pub(crate) async fn execute_remote_command(
                     .map_err(|e| e.to_string())?;
             Ok(serde_json::to_value(&proposal).map_err(|e| e.to_string())?)
         }
+        "capture" => {
+            let question = cmd
+                .question
+                .as_deref()
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+                .ok_or("invalid_command: a capture carries its question")?;
+            let c = db.0.lock().await;
+            let mission = crate::domain::missions::quick_capture(&c, question, "mobile")
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::to_value(&mission).map_err(|e| e.to_string())?)
+        }
         other => Err(format!(
-            "invalid_command: `{other}` — the remote vocabulary is approve | reject (PRD §10)"
+            "invalid_command: `{other}` — the remote vocabulary is approve | reject | capture (PRD §10)"
         )),
     }
 }
@@ -433,6 +445,7 @@ pub fn bridge_router(
             post(remote_approve),
         )
         .route("/api/proposals/{proposal_id}/reject", post(remote_reject))
+        .route("/api/capture", post(remote_capture))
         .with_state(BridgeState {
             db,
             dist_dir: dist_dir.clone(),
@@ -557,6 +570,33 @@ async fn remote_reject(
     match proposals::reject(&store, proposal_id, Some("mobile")) {
         Ok(proposal) => Json(proposal).into_response(),
         Err(e) => proposal_error_response(&e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureBody {
+    question: String,
+}
+
+/// Quick-capture (Story 6.15, FR-21.3): a question captured on the mobile
+/// surface lands on the home machine as a PENDING MISSION CARD — a typed
+/// `mission.quick_capture` event appended by the home writer. The card is a
+/// draft awaiting its stop condition and falsifiable success criterion;
+/// capture never launches a mission by itself (FR-1.2). The ONLY mutation
+/// the mobile surface carries beyond one-tap decisions (PRD §10).
+async fn remote_capture(
+    State(state): State<BridgeState>,
+    body: Result<Json<CaptureBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return bad_request(format!("invalid capture body: {e}")),
+    };
+    let c = state.db.0.lock().await;
+    match crate::domain::missions::quick_capture(&c, body.question.trim(), "mobile") {
+        Ok(mission) => Json(mission).into_response(),
+        Err(e) => bad_request(e),
     }
 }
 
@@ -982,6 +1022,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Quick-capture through the bridge (Story 6.15, FR-21.3): a paired
+    /// mobile surface POSTs a question and a PENDING MISSION CARD lands on
+    /// the home machine — a draft (never Active, never scheduled), captured
+    /// through the home writer with surface attribution. A blank question
+    /// is refused with the typed error.
+    #[tokio::test]
+    async fn a_remote_capture_lands_a_pending_mission_card() {
+        let db = test_db();
+        let receipt = {
+            let c = db.0.lock().await;
+            pair_device(&c, "Pixel 8").unwrap()
+        };
+        let res = app(db.clone())
+            .oneshot(
+                Request::post("/api/capture")
+                    .header("x-rc-pairing", &receipt.token)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"question\":\"Does attention sparsity hold at 32k?\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mission: crate::domain::missions::Mission =
+            body_json(res.into_body()).await;
+        assert_eq!(
+            mission.status,
+            crate::domain::missions::MissionStatus::Draft
+        );
+        assert_eq!(mission.schedule, "off", "capture never launches (FR-1.2)");
+        assert_eq!(mission.stop_condition, "", "the terminators are the owner's");
+        // it reads back through the same read slice
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/missions")
+                    .header("x-rc-pairing", &receipt.token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let missions: Vec<crate::domain::missions::Mission> =
+            body_json(res.into_body()).await;
+        assert_eq!(missions.len(), 1);
+        assert_eq!(missions[0].status, crate::domain::missions::MissionStatus::Draft);
+        // a blank question is refused honestly
+        let res = app(db)
+            .oneshot(
+                Request::post("/api/capture")
+                    .header("x-rc-pairing", &receipt.token)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"question\":\"   \"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let v: Value = body_json(res.into_body()).await;
+        assert!(v["error"].as_str().unwrap().contains("must not be empty"));
     }
 
     /// The remote vocabulary is closed: an unknown command kind is refused

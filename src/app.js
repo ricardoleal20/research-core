@@ -13,6 +13,8 @@ import { RC as RC_BUS, ctx } from "./ui/rc";
 import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer, renderCheckpointsDrawer } from "./ui/missions";
 import { renderDashboard } from "./ui/dashboard";
 import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings, renderExportModal } from "./ui/screens";
+import { onMobile } from "./api";
+import { bootMobile } from "./ui/mobile";
 
 // ========== ACCENT SLOT (the bible's six swappable options) ==========
 const ACCENTS = {
@@ -533,6 +535,9 @@ function openCommandPalette() { app.state.commandPaletteOpen = true; render(); }
 function closeCommandPalette() { app.state.commandPaletteOpen = false; render(); }
 
 // ========== GLOBAL EVENTS ==========
+// The desktop shell's global handlers never fire on the mobile companion
+// (its handlers live on RCM, and Cmd+K belongs to the laptop).
+if (!onMobile) {
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
@@ -557,6 +562,7 @@ document.addEventListener("click", (e) => {
     render();
   }
 });
+}
 
 // ========== WIZARD HANDLERS ==========
 function wizSaveInputs() {
@@ -693,6 +699,16 @@ export {
 };
 
 // ========== BOOT ==========
+// The mobile companion (Story 6.15, FR-21.2): served at `/m` by the
+// bridge, the same built UI boots into the companion instead of the
+// desktop shell — status + quick-capture + one-tap only, never the lock,
+// the wizard, or the board (the depth divide, NFR-5/NFR-13).
+if (onMobile) {
+  bootMobile();
+} else {
+boot();
+}
+function boot() {
 const savedLang = localStorage.getItem("rc-lang");
 if (savedLang) setLang(savedLang);
 document.documentElement.lang = getLang();
@@ -704,3 +720,4 @@ loadBase().then(() => {
   render();
   if (!app.state.locked && app.state.view !== "lock" && app.state.view !== "wizard") loadViewData(app.state.view);
 });
+}

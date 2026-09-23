@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -216,8 +216,34 @@ const mockSkills: Skill[] = [
 const nowISO = () => "2025-09-01T12:00:00Z";
 
 // In-memory missions so the question box → mission composer flow works in-browser.
-const missions: Mission[] = [];
-let missionSeq = 0;
+// Seeded with one quick-captured draft (Story 6.15, FR-21.3): the dev
+// missions home and mobile companion render the pending-card state — a
+// captured question awaiting its terminators, never a launch.
+const missions: Mission[] = [
+  {
+    id: "m-draft-seed",
+    seq: 1,
+    ts: nowISO(),
+    question: "Does attention sparsity hold at 32k context?",
+    stopCondition: "",
+    successCriterion: "",
+    autonomy: "watch",
+    spendCeilingCents: 0,
+    roles: [],
+    schedule: "off",
+    status: "draft",
+    spendCents: 0,
+    spendState: "ok",
+  },
+];
+let missionSeq = 1;
+// The bridge's mock state (Story 6.14, FR-21.1): off by default, one
+// channel at a time, a pairing ledger mirroring the typed core.
+const mockBridge: { status: BridgeStatusView; devices: PairedDevice[]; tokenSeq: number } = {
+  status: { mode: "off", active: false, describe: null, pairedDevices: 0 },
+  devices: [],
+  tokenSeq: 0,
+};
 // In-memory run lists per mission id (empty until events would reference them).
 const missionRuns: Record<string, MissionRun[]> = {};
 
@@ -2513,6 +2539,125 @@ export const mockApi = {
     d.status = "rejected";
     d.decided = { seq: mockDiffSeq + 100, ts: nowISO(), actor: "user" };
     return { ...d, hunks: d.hunks.map((h) => ({ ...h })) };
+  },
+  // Quick-capture (Story 6.15, FR-21.3): a captured question lands as a
+  // pending mission card — a draft awaiting its terminators; capture never
+  // launches a mission by itself (FR-1.2).
+  quickCapture: async (question: string, surface?: string | null): Promise<Mission> => {
+    await delay();
+    const q = question.trim();
+    if (!q) throw new Error("mission.question must not be empty — a mission that cannot end cannot exist (AD-12)");
+    missionSeq += 1;
+    const mission: Mission = {
+      id: "m" + missionSeq + "-" + Date.now(),
+      seq: missionSeq,
+      ts: nowISO(),
+      question: q,
+      stopCondition: "",
+      successCriterion: "",
+      autonomy: "watch",
+      spendCeilingCents: 0,
+      roles: [],
+      schedule: "off",
+      status: "draft",
+      spendCents: 0,
+      spendState: "ok",
+    };
+    missions.push(mission);
+    return { ...mission };
+  },
+  // Completing the draft (Story 6.15): the terminators arrive, the mission
+  // becomes Active — the owner's explicit launch.
+  completeCapturedMission: async (
+    missionId: string,
+    stopCondition: string,
+    successCriterion: string,
+    autonomy: Autonomy,
+    spendCeilingCents: number,
+  ): Promise<Mission> => {
+    await delay();
+    const m = missions.find((x) => x.id === missionId);
+    if (!m) throw new Error(`not_found: no mission with id \`${missionId}\``);
+    if (m.status !== "draft") {
+      throw new Error(
+        `not_draft: mission \`${missionId}\` is \`${m.status}\`, not a captured draft — completion is the draft's path (Story 6.15)`,
+      );
+    }
+    if (!stopCondition.trim() || !successCriterion.trim()) {
+      throw new Error("mission.stop_condition must not be empty — a mission that cannot end cannot exist (AD-12)");
+    }
+    m.stopCondition = stopCondition;
+    m.successCriterion = successCriterion;
+    m.autonomy = autonomy;
+    m.spendCeilingCents = spendCeilingCents;
+    m.schedule = "daily-03:00";
+    m.status = "active";
+    return { ...m };
+  },
+  // The bridge (Story 6.14, FR-21.1): off by default, one channel at a
+  // time, pairing as a user action — mirroring the typed core's contract.
+  bridgeStatus: async (): Promise<BridgeStatusView> => {
+    await delay();
+    return { ...mockBridge.status, pairedDevices: mockBridge.devices.length };
+  },
+  enableBridge: async (
+    mode: string,
+    _listenAddr?: string | null,
+    _chopflowUrl?: string | null,
+    _chopflowToken?: string | null,
+  ): Promise<BridgeStatusView> => {
+    await delay();
+    if (mode !== "tunnel" && mode !== "chopflow" && mode !== "off") {
+      throw new Error(`unknown_mode: \`${mode}\` — expected off | tunnel | chopflow (FR-21.1)`);
+    }
+    if (mockBridge.status.active && mode !== "off") {
+      throw new Error(
+        `bridge_already_active: a bridge channel is already active (${mockBridge.status.describe}) — one channel at a time (AD-7); disable it first`,
+      );
+    }
+    if (mode === "off") {
+      mockBridge.status = { mode: "off", active: false, describe: null, pairedDevices: mockBridge.devices.length };
+    } else if (mode === "chopflow" && !_chopflowUrl && !_chopflowToken) {
+      throw new Error(
+        "chopflow_unconfigured: the ChopFlow adapter needs a deployment base URL (RC_CHOPFLOW_URL) and its pairing token (RC_CHOPFLOW_TOKEN) — an unconfigured ChopFlow is an honest error, never a crash (FR-22.3 spirit)",
+      );
+    } else {
+      mockBridge.status = {
+        mode,
+        active: true,
+        describe: mode === "tunnel" ? "tunnel 0.0.0.0:4762" : `chopflow ${_chopflowUrl}`,
+        pairedDevices: mockBridge.devices.length,
+      };
+    }
+    return { ...mockBridge.status };
+  },
+  disableBridge: async (): Promise<BridgeStatusView> => {
+    await delay();
+    mockBridge.status = { mode: "off", active: false, describe: null, pairedDevices: mockBridge.devices.length };
+    return { ...mockBridge.status };
+  },
+  pairBridgeDevice: async (deviceName: string): Promise<PairingReceipt> => {
+    await delay();
+    const device = deviceName.trim();
+    if (!device) throw new Error("invalid device name — a paired device is named (e.g. `Pixel 8`, `iPad sala`)");
+    mockBridge.tokenSeq += 1;
+    const token = "mock-token-" + mockBridge.tokenSeq + "-" + "a".repeat(24);
+    const fingerprint = token.slice(-8);
+    mockBridge.devices = mockBridge.devices.filter((d) => d.device !== device);
+    mockBridge.devices.push({ device, fingerprint, pairedSeq: mockEventSeq + mockBridge.tokenSeq, pairedTs: nowISO() });
+    return { device, token, fingerprint };
+  },
+  unpairBridgeDevice: async (deviceName: string): Promise<PairedDevice[]> => {
+    await delay();
+    if (!mockBridge.devices.some((d) => d.device === deviceName)) {
+      throw new Error(`unknown_device: no paired device named \`${deviceName}\` — the paired list is the truth`);
+    }
+    mockBridge.devices = mockBridge.devices.filter((d) => d.device !== deviceName);
+    return mockBridge.devices.map((d) => ({ ...d }));
+  },
+  listBridgeDevices: async (): Promise<PairedDevice[]> => {
+    await delay();
+    return mockBridge.devices.map((d) => ({ ...d }));
   },
   // The dashboard's one aggregated read (Story 5.10, FR-18.1): the same
   // composition the core folds — every widget over the mock's own reads,

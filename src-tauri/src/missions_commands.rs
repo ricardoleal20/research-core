@@ -68,6 +68,54 @@ pub async fn create_mission(
     Ok(missions.into_iter().next().expect("fold of one creation event yields one mission"))
 }
 
+/// Quick-capture (Story 6.15, FR-21.3, resolving FR-1.5): a question
+/// captured anywhere lands on the home machine as a PENDING MISSION CARD —
+/// one `mission.quick_capture` event (actor=user, surface-attributed).
+/// The card is a draft awaiting its stop condition and falsifiable success
+/// criterion; capture never launches a mission by itself (FR-1.2).
+#[tauri::command]
+pub async fn quick_capture(
+    db: State<'_, Db>,
+    question: String,
+    surface: Option<String>,
+) -> Result<Mission, String> {
+    let c = db.0.lock().await;
+    crate::domain::missions::quick_capture(
+        &c,
+        &question,
+        surface.as_deref().unwrap_or("desktop"),
+    )
+}
+
+/// Complete a captured draft (Story 6.15): the owner gives the draft its
+/// stop condition and falsifiable success criterion — only then does the
+/// mission become Active. A non-draft is refused with `not_draft:`.
+#[tauri::command]
+pub async fn complete_captured_mission(
+    db: State<'_, Db>,
+    mission_id: String,
+    stop_condition: String,
+    success_criterion: String,
+    autonomy: String,
+    spend_ceiling_cents: u64,
+) -> Result<Mission, String> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|e| format!("invalid mission id `{mission_id}`: {e}"))?;
+    let autonomy = Autonomy::parse(&autonomy).ok_or_else(|| {
+        format!("unknown autonomy stop `{autonomy}` — expected watch | suggest | act_with_receipts")
+    })?;
+    let c = db.0.lock().await;
+    crate::domain::missions::complete_quick_capture(
+        &c,
+        mission_id,
+        &stop_condition,
+        &success_criterion,
+        autonomy,
+        spend_ceiling_cents,
+    )
+}
+
 /// All missions, folded from the log in `seq` order (oldest first).
 #[tauri::command]
 pub async fn list_missions(db: State<'_, Db>) -> Result<Vec<Mission>, String> {
