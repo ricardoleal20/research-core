@@ -527,6 +527,18 @@ impl MissionsProjection {
                 missions.push(mission);
                 continue;
             }
+            if event.kind == crate::domain::submissions::SUBMISSION_CREATED {
+                // A submission mission (Story 6.13, FR-19.4): choosing a
+                // venue spawns a mission — the checklist appears on the
+                // missions home and dashboard like any mission. Autonomy
+                // is act-with-receipts by construction (agent pre-checks
+                // ride the quarantine), spend ceiling 0 (the pre-check is
+                // deterministic and free), schedule off.
+                let mission = Self::submission_from_event(event)?;
+                index.insert(mission.id, missions.len());
+                missions.push(mission);
+                continue;
+            }
             if event.kind == MISSION_QUICK_CAPTURE {
                 // A captured draft (Story 6.15, FR-21.3): the card exists,
                 // its terminators do not — status Draft, schedule off, no
@@ -675,6 +687,35 @@ impl MissionsProjection {
             roles: Vec::new(),
             schedule: "off".into(),
             status: MissionStatus::Draft,
+            spend_cents: 0,
+            spend_state: SpendState::Ok,
+        })
+    }
+
+    /// A mission born from `submission.created` (Story 6.13): the same
+    /// read model the missions home renders, with the submission's
+    /// defaults — the checklist is a mission like any other.
+    fn submission_from_event(event: &StoredEvent) -> Result<Mission, EventError> {
+        let payload: crate::domain::submissions::SubmissionCreatedPayload =
+            serde_json::from_value(event.payload.clone()).map_err(|e| {
+                EventError::Invalid(format!(
+                    "corrupt {} payload at seq {}: {e}",
+                    crate::domain::submissions::SUBMISSION_CREATED,
+                    event.seq
+                ))
+            })?;
+        Ok(Mission {
+            id: event.id,
+            seq: event.seq,
+            ts: event.ts,
+            question: payload.question,
+            stop_condition: payload.stop_condition,
+            success_criterion: payload.success_criterion,
+            autonomy: Autonomy::ActWithReceipts,
+            spend_ceiling_cents: 0,
+            roles: Vec::new(),
+            schedule: "off".into(),
+            status: MissionStatus::Active,
             spend_cents: 0,
             spend_state: SpendState::Ok,
         })

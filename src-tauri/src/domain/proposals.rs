@@ -49,9 +49,18 @@ pub const PROPOSAL_VOIDED: &str = "proposal.voided";
 /// The closed vocabulary of proposalable event kinds (AD-15): the domain
 /// changes an agent may propose. v1: hypothesis lifecycle transitions, and
 /// evidence pins (Story 3.4, FR-11.5) — a fetched job result proposes a
-/// numerical pin; the merge applies it (auto-pinning is v0.2.0). The
+/// numerical pin; the merge applies it (auto-pinning is v0.2.0). v0.2.0
+/// (Stories 6.12/6.13): a journal-fit run proposes the submission mission
+/// of its top venue (`submission.created`), and the submission pre-check
+/// proposes machine item checks (`submission.item_checked`) — human-only
+/// items are refused at the edge (never agent-checkable, FR-19.4). The
 /// proposal constructor rejects anything else at the edge.
-pub const PROPOSAL_TARGETS: &[&str] = &[HYPOTHESIS_STATUS_CHANGED, EVIDENCE_PINNED];
+pub const PROPOSAL_TARGETS: &[&str] = &[
+    HYPOTHESIS_STATUS_CHANGED,
+    EVIDENCE_PINNED,
+    crate::domain::submissions::SUBMISSION_CREATED,
+    crate::domain::submissions::SUBMISSION_ITEM_CHECKED,
+];
 
 /// A proposal's lifecycle status (AD-13). `Pending` is the only initial
 /// state; every deciding event (`merge.approved`, `merge.rejected`,
@@ -278,6 +287,35 @@ fn validate_proposed_payload(
                     ))
                 })
         }
+        crate::domain::submissions::SUBMISSION_CREATED => {
+            serde_json::from_value::<crate::domain::submissions::SubmissionCreatedPayload>(
+                payload.clone(),
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                EventError::Invalid(format!(
+                    "proposal.proposed_payload does not parse as a `{kind}` payload: {e}"
+                ))
+            })
+        }
+        crate::domain::submissions::SUBMISSION_ITEM_CHECKED => {
+            let intended: crate::domain::submissions::SubmissionItemPayload =
+                serde_json::from_value(payload.clone()).map_err(|e| {
+                    EventError::Invalid(format!(
+                        "proposal.proposed_payload does not parse as a `{kind}` payload: {e}"
+                    ))
+                })?;
+            // Human-only items are NEVER agent-checkable (FR-19.4): the
+            // edge refuses the proposal before it exists — the refusal is
+            // structural, not a runtime check.
+            if crate::domain::submissions::item_is_human(&intended.venue_id, &intended.item_id) {
+                return Err(EventError::Invalid(format!(
+                    "proposal.target: the intended `submission.item_checked` names the human-only criterion `{}` of venue `{}` — human items are never agent-checkable (FR-19.4)",
+                    intended.item_id, intended.venue_id
+                )));
+            }
+            Ok(())
+        }
         _ => Err(EventError::Invalid(format!(
             "proposal.target: `{kind}` is not a proposalable event kind (AD-3)"
         ))),
@@ -395,6 +433,25 @@ pub(crate) fn entity_current_seq(events: &[StoredEvent], target: Uuid) -> Option
             HYPOTHESIS_STATUS_CHANGED | HYPOTHESIS_RELATED => {
                 event.causes.iter().any(|c| *c == target)
             }
+            // A submission mission is an entity (Story 6.13): its birth
+            // event is its identity; its item checks mutate its state —
+            // a pending pre-check's basis goes stale the moment another
+            // check lands (AD-13).
+            crate::domain::submissions::SUBMISSION_CREATED => event.id == target,
+            // A fit run is a proposal target (Story 6.12): the ranking is
+            // derived from the board at its own seq — the basis of the
+            // "choose the top venue" proposal.
+            crate::domain::journals::JOURNAL_FIT_COMPLETED => event.id == target,
+            crate::domain::submissions::SUBMISSION_ITEM_CHECKED
+            | crate::domain::submissions::SUBMISSION_ITEM_UNCHECKED => {
+                event.causes.iter().any(|c| *c == target)
+                    || event
+                        .payload
+                        .get("mission_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|s| s == target.to_string())
+                        .unwrap_or(false)
+            }
             MERGE_APPROVED => event
                 .causes
                 .first()
@@ -429,7 +486,9 @@ impl ProposalsProjection {
         let events = &cursor.live_owned(raw);
         let mut proposals: Vec<Proposal> = Vec::new();
         let mut index: HashMap<Uuid, usize> = HashMap::new();
-        // target enrichment: hypothesis creation events by id
+        // target enrichment: hypothesis creation events by id, and
+        // submission missions (Story 6.13) — a submission-targeting
+        // proposal enriches to its mission + a "Checklist — venue" label.
         let mut hyp_mission: HashMap<Uuid, Uuid> = HashMap::new();
         let mut hyp_label: HashMap<Uuid, (i64, String)> = HashMap::new();
         for event in events {
@@ -441,6 +500,43 @@ impl ProposalsProjection {
                     {
                         hyp_mission.insert(event.id, payload.mission_id);
                         hyp_label.insert(event.id, (event.seq, payload.statement));
+                    }
+                }
+                crate::domain::submissions::SUBMISSION_CREATED => {
+                    if let Ok(payload) = serde_json::from_value::<
+                        crate::domain::submissions::SubmissionCreatedPayload,
+                    >(event.payload.clone())
+                    {
+                        let venue = crate::domain::journals::venue(&payload.venue_id);
+                        hyp_mission.insert(event.id, payload.source_mission_id.unwrap_or(event.id));
+                        hyp_label.insert(
+                            event.id,
+                            (
+                                event.seq,
+                                format!(
+                                    "Checklist — {}",
+                                    venue.map(|v| v.name.as_str()).unwrap_or(payload.venue_id.as_str())
+                                ),
+                            ),
+                        );
+                    }
+                }
+                crate::domain::journals::JOURNAL_FIT_COMPLETED => {
+                    if let Ok(payload) = serde_json::from_value::<
+                        crate::domain::journals::JournalFitCompletedPayload,
+                    >(event.payload.clone())
+                    {
+                        // The fit's proposal enriches to its scope's mission
+                        // and a "Journal Fit — venue" label (the ranking's
+                        // top candidate names the card).
+                        let label = payload
+                            .candidates
+                            .first()
+                            .and_then(|c| crate::domain::journals::venue(&c.venue_id))
+                            .map(|v| v.name.clone())
+                            .unwrap_or_else(|| "Journal Fit".into());
+                        hyp_mission.insert(event.id, payload.mission_id.unwrap_or(event.id));
+                        hyp_label.insert(event.id, (event.seq, format!("Fit — {label}")));
                     }
                 }
                 PROPOSAL_CREATED => {
