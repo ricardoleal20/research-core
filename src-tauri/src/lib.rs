@@ -194,6 +194,8 @@ pub fn run() {
             missions_commands::run_agent_step,
             jobs_commands::declare_compute_target,
             jobs_commands::list_compute_targets,
+            jobs_commands::list_registered_adapters,
+            jobs_commands::probe_compute_target,
             jobs_commands::get_host_allowlist,
             jobs_commands::set_host_allowlist,
             jobs_commands::submit_job,

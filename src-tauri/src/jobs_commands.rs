@@ -15,6 +15,7 @@
 // the target's effective autonomy dial (FR-5.3 — auto-enqueue allowed on
 // a cluster, never on a laptop); a user-initiated submit always proceeds.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -43,27 +44,60 @@ fn err(e: impl ToString) -> String {
 
 /// One compute target as the mission card's target row and the trust
 /// center's target rows render it: a name (mono chip), the adapter kind
-/// behind it, and — for `ssh` targets — the host plus whether it is on
-/// the allowlist. The built-in `local` needs no declaration (FR-11.1: v1
-/// ships local).
+/// behind it, the host an `ssh`/`scheduler` target connects to plus
+/// whether it is on the allowlist, and the per-kind config map the
+/// v0.2.0 kinds carry. The built-in `local` needs no declaration
+/// (FR-11.1: v1 ships local).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeTargetView {
     pub name: String,
     pub kind: String,
-    /// The host an `ssh` target connects to (`None` for `local`).
+    /// The host an `ssh`/`scheduler` target connects to (`None` for the
+    /// other kinds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// Whether the host is on the allowlist (`None` for `local` targets —
-    /// the allowlist governs ssh hosts only).
+    /// Whether the gate value is on the allowlist (`None` when the kind
+    /// has no allowlist gate — the allowlist governs ssh/scheduler hosts
+    /// and kubernetes contexts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowlisted: Option<bool>,
+    /// The per-kind config map (scheduler flavor/prefixes, kubernetes
+    /// context/namespace/image, chopflow endpoint/queue — empty for
+    /// `local`/`ssh`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
     /// The built-in `local` target (no `target.declared` event behind it).
     pub builtin: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seq: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<DateTime<Utc>>,
+}
+
+/// One registered adapter kind as the settings row lists it (Story 6.5:
+/// kind + contract version — community adapters appear exactly as
+/// first-party ones do).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredAdapterView {
+    pub kind: String,
+    /// The adapter contract version the adapter was validated against.
+    pub contract_version: String,
+    /// Whether the kind ships with ResearchCore (local/ssh/scheduler/
+    /// kubernetes/chopflow) or registered from outside.
+    pub builtin: bool,
+}
+
+/// A target probe's outcome (the settings row's discovery/unreachable
+/// state, per adapter): `ok` carries the adapter's own detail line,
+/// `unreachable` its typed reason. `unsupported` is honest for kinds
+/// with no probe (a community adapter need not implement one).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetProbeView {
+    pub status: String,
+    pub detail: String,
 }
 
 /// Resolve a target NAME to its adapter kind: a declared target's kind,
@@ -78,13 +112,35 @@ fn resolve_kind(declared: &[DeclaredTarget], name: &str) -> Option<String> {
     None
 }
 
-/// Resolve a target NAME to its declared host (ssh targets); `None` for
-/// the built-in `local` and unknown names.
+/// Resolve a target NAME to its declared host (ssh/scheduler targets);
+/// `None` for the built-in `local` and unknown names.
 fn resolve_host(declared: &[DeclaredTarget], name: &str) -> Option<Option<String>> {
     declared
         .iter()
         .find(|t| t.name == name)
         .map(|t| t.host.clone())
+}
+
+/// Resolve a target NAME to its declared config map (the v0.2.0 kinds);
+/// `None` for the built-in `local` and unknown names.
+fn resolve_config(declared: &[DeclaredTarget], name: &str) -> Option<BTreeMap<String, String>> {
+    declared
+        .iter()
+        .find(|t| t.name == name)
+        .map(|t| t.config.clone())
+}
+
+/// The allowlist's gate value for a target (defense in depth — the
+/// adapters gate again at their own boundary): the host an
+/// `ssh`/`scheduler` target connects to, the context a `kubernetes`
+/// target runs on; `None` for kinds with no gate (`local`, `chopflow` —
+/// its endpoint is validated at declaration).
+fn gate_value(kind: &str, host: Option<&String>, config: &BTreeMap<String, String>) -> Option<String> {
+    match kind {
+        "ssh" | "scheduler" => host.cloned(),
+        "kubernetes" => config.get("context").cloned(),
+        _ => None,
+    }
 }
 
 /// The target names a submitter can choose from (for error messages).
@@ -98,7 +154,9 @@ fn known_names(declared: &[DeclaredTarget]) -> Vec<String> {
 
 /// The compute target list (FR-11.1): declared targets from the log, with
 /// the built-in `local` always present. `ssh` targets carry their host
-/// and their allowlisted status (Story 3.3).
+/// and their allowlisted status (Story 3.3); the v0.2.0 kinds carry
+/// their config maps and their own gate values (the scheduler's host,
+/// the kubernetes context).
 pub(crate) fn list_targets_inner(
     events: &[StoredEvent],
 ) -> Result<Vec<ComputeTargetView>, EventError> {
@@ -111,21 +169,21 @@ pub(crate) fn list_targets_inner(
             kind: DEFAULT_TARGET_KIND.into(),
             host: None,
             allowlisted: None,
+            config: BTreeMap::new(),
             builtin: true,
             seq: None,
             ts: None,
         });
     }
     views.extend(declared.into_iter().map(|t| {
-        let allowlisted = t
-            .host
-            .as_ref()
-            .map(|h| allowlist.iter().any(|allowed| allowed == h));
+        let allowlisted = gate_value(&t.kind, t.host.as_ref(), &t.config)
+            .map(|gate| allowlist.iter().any(|allowed| *allowed == gate));
         ComputeTargetView {
             name: t.name,
             kind: t.kind,
             host: t.host,
             allowlisted,
+            config: t.config,
             builtin: false,
             seq: Some(t.seq),
             ts: Some(t.ts),
@@ -247,19 +305,24 @@ pub(crate) async fn poll_live_jobs(
 // Shell commands
 // ---------------------------------------------------------------------------
 
-/// Declare a named compute target (FR-11.1, Story 3.3): `{ name, kind,
-/// host? }` where the kind names a registered adapter (`local` | `ssh`)
-/// and an `ssh` target carries the host it connects to. Appends one
-/// `target.declared` event (actor=user) and returns the fresh target
-/// list.
+/// Declare a named compute target (FR-11.1, Stories 3.3 + 6.2–6.4):
+/// `{ name, kind, host?, config? }` where the kind names a registered
+/// adapter, an `ssh` target carries the host it connects to (a
+/// `scheduler` target MAY — its submission node), and the v0.2.0 kinds
+/// carry their per-kind config map. Appends one `target.declared` event
+/// (actor=user) and returns the fresh target list.
 #[tauri::command]
 pub async fn declare_compute_target(
     db: State<'_, Db>,
     name: String,
     kind: String,
     host: Option<String>,
+    config: Option<std::collections::HashMap<String, String>>,
 ) -> Result<Vec<ComputeTargetView>, String> {
-    declare_compute_target_inner(db.inner(), &name, &kind, host.as_deref()).await
+    let config: BTreeMap<String, String> =
+        config.unwrap_or_default().into_iter().collect();
+    declare_compute_target_inner(db.inner(), &name, &kind, host.as_deref(), &config)
+        .await
 }
 
 /// The host allowlist (Story 3.3): the hosts SSH targets may connect to.
@@ -408,10 +471,12 @@ pub(crate) async fn submit_job_initiated(
             }
         }
         // The allowlist, at the command layer (defense in depth — the
-        // adapter refuses again at its own boundary): an ssh target's
-        // host must be allowlisted BEFORE any connection is attempted.
+        // adapter refuses again at its own boundary): an ssh/scheduler
+        // target's host must be allowlisted BEFORE any connection is
+        // attempted, and a kubernetes target's context likewise.
         let allowlist = fold_host_allowlist(&events);
         let host = resolve_host(&declared, target).flatten();
+        let config = resolve_config(&declared, target).unwrap_or_default();
         if kind == "ssh" {
             let Some(host) = host.as_deref() else {
                 return Err(EventError::Invalid(format!(
@@ -432,6 +497,42 @@ pub(crate) async fn submit_job_initiated(
                 ));
             }
         }
+        if kind == "scheduler"
+            && let Some(host) = host.as_deref()
+            && !allowlist.iter().any(|allowed| allowed == host)
+        {
+            return Err(EventError::Invalid(
+                TargetError::HostNotAllowed {
+                    host: host.to_string(),
+                    known: if allowlist.is_empty() {
+                        "empty — add hosts in Settings → Compute targets".to_string()
+                    } else {
+                        allowlist.join(" | ")
+                    },
+                }
+                .to_string(),
+            ));
+        }
+        if kind == "kubernetes" {
+            let Some(context) = config.get("context") else {
+                return Err(EventError::Invalid(format!(
+                    "missing_config: `{target}` needs `context` — the cluster context it runs on"
+                )));
+            };
+            if !allowlist.iter().any(|allowed| allowed == context) {
+                return Err(EventError::Invalid(
+                    TargetError::ContextNotAllowed {
+                        context: context.clone(),
+                        known: if allowlist.is_empty() {
+                            "empty — add contexts in Settings → Compute targets".to_string()
+                        } else {
+                            allowlist.join(" | ")
+                        },
+                    }
+                    .to_string(),
+                ));
+            }
+        }
         let adapter = TargetRegistry::v1()
             .adapter(&kind)
             .map_err(|e| EventError::Invalid(e.to_string()))?;
@@ -439,6 +540,7 @@ pub(crate) async fn submit_job_initiated(
             name: target.to_string(),
             host,
             allowlist,
+            config,
         };
         (adapter, target_info)
     };
@@ -742,14 +844,17 @@ pub(crate) fn list_job_result_proposals_inner(
 }
 
 /// Declare a named compute target (shared by the command and tests): the
-/// kind must name a registered adapter (`local` | `ssh`), the name is a
-/// slug, and an `ssh` target requires its host (a local target carries
-/// none) — then one `target.declared` event and the fresh list.
+/// kind must name a registered adapter, the name is a slug, an `ssh`
+/// target requires its host (a `scheduler` target MAY carry one — its
+/// submission node; the other kinds carry none), and the config map is
+/// validated per kind — then one `target.declared` event and the fresh
+/// list.
 async fn declare_compute_target_inner(
     db: &Db,
     name: &str,
     kind: &str,
     host: Option<&str>,
+    config: &BTreeMap<String, String>,
 ) -> Result<Vec<ComputeTargetView>, String> {
     let name = name.trim().to_string();
     let kind = kind.trim().to_string();
@@ -757,19 +862,20 @@ async fn declare_compute_target_inner(
     let registry = TargetRegistry::v1();
     if !registry.kinds().contains(&kind.as_str()) {
         return Err(format!(
-            "unknown_kind: `{kind}` — no adapter of that kind is registered (v1: {})",
+            "unknown_kind: `{kind}` — no adapter of that kind is registered ({})",
             registry.kinds().join(" | ")
         ));
     }
-    if kind != "ssh" && host.is_some() {
+    if !matches!(kind.as_str(), "ssh" | "scheduler") && host.is_some() {
         return Err(format!(
-            "invalid_host: a `{kind}` target carries no host — only ssh targets name the machine they connect to"
+            "invalid_host: a `{kind}` target carries no host — only ssh and scheduler targets name the machine they connect to"
         ));
     }
     let event = NewEvent::target_declared(TargetDeclaredPayload {
         name,
         kind,
         host: host.map(str::to_string),
+        config: config.clone(),
     })
     .map_err(err)?;
     let conn = db.0.lock().await;
@@ -777,6 +883,75 @@ async fn declare_compute_target_inner(
     store.append(event).map_err(err)?;
     let events = store.events_all().map_err(err)?;
     list_targets_inner(&events).map_err(err)
+}
+
+/// The registered adapter kinds with their contract versions (Story 6.5,
+/// NFR-15): what the settings row lists — community adapters appear
+/// exactly as first-party ones do.
+#[tauri::command]
+pub async fn list_registered_adapters() -> Result<Vec<RegisteredAdapterView>, String> {
+    Ok(first_party_adapters())
+}
+
+pub(crate) fn first_party_adapters() -> Vec<RegisteredAdapterView> {
+    const BUILTIN: [&str; 3] = ["local", "scheduler", "ssh"];
+    BUILTIN
+        .iter()
+        .map(|kind| RegisteredAdapterView {
+            kind: kind.to_string(),
+            contract_version: crate::adapters::targets::ADAPTER_CONTRACT_VERSION.to_string(),
+            builtin: true,
+        })
+        .collect()
+}
+
+/// Probe one compute target (the settings row's discovery/unreachable
+/// state): a cheap reachability check through the target's own adapter —
+/// never a submit, never a job. Unreachable targets answer with their
+/// typed reason; kinds with no probe say so honestly.
+#[tauri::command]
+pub async fn probe_compute_target(
+    db: State<'_, Db>,
+    name: String,
+) -> Result<TargetProbeView, String> {
+    let (kind, info) = {
+        let conn = db.0.lock().await;
+        let events = EventStore::new(&conn).events_all().map_err(err)?;
+        let declared = fold_declared_targets(&events);
+        let Some(target) = declared.iter().find(|t| t.name == name) else {
+            return Err(format!(
+                "unknown_target: `{name}` — declared targets: {}",
+                known_names(&declared).join(" | ")
+            ));
+        };
+        (
+            target.kind.clone(),
+            TargetInfo {
+                name: target.name.clone(),
+                host: target.host.clone(),
+                allowlist: fold_host_allowlist(&events),
+                config: target.config.clone(),
+            },
+        )
+    };
+    Ok(match kind.as_str() {
+        "local" => TargetProbeView {
+            status: "ok".into(),
+            detail: "local machine — always reachable".into(),
+        },
+        "ssh" => crate::adapters::targets::Ssh::new()
+            .probe(&info)
+            .map(|detail| TargetProbeView { status: "ok".into(), detail })
+            .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
+        "scheduler" => crate::adapters::targets::Scheduler::new()
+            .probe(&info)
+            .map(|detail| TargetProbeView { status: "ok".into(), detail })
+            .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
+        other => TargetProbeView {
+            status: "unsupported".into(),
+            detail: format!("no probe for kind `{other}`"),
+        },
+    })
 }
 
 #[cfg(test)]
@@ -830,6 +1005,27 @@ mod tests {
     async fn events(db: &Db) -> Vec<crate::eventstore::StoredEvent> {
         let conn = db.0.lock().await;
         EventStore::new(&conn).events_all().unwrap()
+    }
+
+    /// Poll a mission's live jobs (bounded) until one job reaches a
+    /// terminal — a fixed sleep flakes under a fully parallel test run,
+    /// a bounded retry does not.
+    async fn poll_until_finished(db: &Db, mission: Uuid, job_id: Uuid) -> Vec<Job> {
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            poll_live_jobs(db, Some(mission)).await.unwrap();
+            let jobs = {
+                let conn = db.0.lock().await;
+                let all = EventStore::new(&conn).events_all().unwrap();
+                JobsProjection::fold_for(&all, mission).unwrap()
+            };
+            if let Some(job) = jobs.iter().find(|j| j.id == job_id)
+                && matches!(job.phase, JobPhase::Finished | JobPhase::Failed)
+            {
+                return jobs;
+            }
+        }
+        panic!("the job never reached its terminal");
     }
 
     // ---- validation before submit (AD-6) ----
@@ -980,23 +1176,23 @@ mod tests {
     async fn targets_declare_list_and_refuse_unknown_kinds() {
         let db = test_db();
         // v1 registers `local` and `ssh`; anything else is a typed error.
-        let err = declare_compute_target_inner(&db, "cluster", "kubernetes", None)
+        let err = declare_compute_target_inner(&db, "cluster", "kubernetes", None, &BTreeMap::new())
             .await
             .unwrap_err();
         assert!(err.starts_with("unknown_kind:"), "unexpected: {err}");
         assert!(err.contains("local"), "the error names the v1 kinds: {err}");
         assert!(err.contains("ssh"), "the error names the v1 kinds: {err}");
         // an ssh target requires its host; a local target carries none
-        let err = declare_compute_target_inner(&db, "cluster", "ssh", None)
+        let err = declare_compute_target_inner(&db, "cluster", "ssh", None, &BTreeMap::new())
             .await
             .unwrap_err();
         assert!(err.contains("host"), "unexpected: {err}");
-        let err = declare_compute_target_inner(&db, "laptop", "local", Some("gpu-01.lab"))
+        let err = declare_compute_target_inner(&db, "laptop", "local", Some("gpu-01.lab"), &BTreeMap::new())
             .await
             .unwrap_err();
         assert!(err.starts_with("invalid_host:"), "unexpected: {err}");
         // declare a second local target — the list grows past the builtin
-        declare_compute_target_inner(&db, "laptop", "local", None).await.unwrap();
+        declare_compute_target_inner(&db, "laptop", "local", None, &BTreeMap::new()).await.unwrap();
         let targets = {
             let conn = db.0.lock().await;
             let events = EventStore::new(&conn).events_all().unwrap();
@@ -1036,9 +1232,101 @@ mod tests {
     }
 
     async fn declare_ssh_target(db: &Db, name: &str, host: &str) {
-        declare_compute_target_inner(db, name, "ssh", Some(host))
+        declare_compute_target_inner(db, name, "ssh", Some(host), &BTreeMap::new())
             .await
             .unwrap();
+    }
+
+    /// The scheduler fake-binary harness (the config keys point the
+    /// adapter at stand-ins — the same mechanism a real cluster uses).
+    fn scheduler_fakes(submit_body: &str, poll_body: &str, acct_body: &str) -> BTreeMap<String, String> {
+        let dir = std::env::temp_dir().join(format!("rc-cmd-sched-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = BTreeMap::new();
+        for (name, body) in [("sbatch", submit_body), ("squeue", poll_body), ("sacct", acct_body)] {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let key = match name {
+                "sbatch" => "submitPrefix",
+                "squeue" => "pollPrefix",
+                _ => "acctPrefix",
+            };
+            config.insert(key.to_string(), path.to_string_lossy().into_owned());
+        }
+        config
+    }
+
+    // ---- scheduler targets: the whole lifecycle + spend (Story 6.2) ----
+
+    #[tokio::test]
+    async fn a_scheduler_job_lives_its_lifecycle_and_records_its_spend() {
+        let db = test_db();
+        let mission = create_mission(&db).await;
+        let config = scheduler_fakes(
+            "printf 'Submitted batch job 4242\\n'",
+            "printf 'squeue: error: Invalid job id specified\\n' >&2\nexit 1",
+            "printf 'COMPLETED 0:0\\n'",
+        );
+        declare_compute_target_inner(&db, "cluster-1", "scheduler", None, &config)
+            .await
+            .unwrap();
+        // the declared target lists its kind and config
+        {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            let targets = list_targets_inner(&events).unwrap();
+            let cluster = targets.iter().find(|t| t.name == "cluster-1").unwrap();
+            assert_eq!(cluster.kind, "scheduler");
+            assert_eq!(cluster.config.get("flavor"), None);
+            assert!(cluster.config.contains_key("submitPrefix"));
+            assert_eq!(cluster.allowlisted, None, "no host — no gate");
+        }
+        // a host-carrying scheduler target is allowlist-gated like ssh
+        let err = declare_compute_target_inner(
+            &db,
+            "cluster-2",
+            "scheduler",
+            Some("login.hpc.edu"),
+            &BTreeMap::new(),
+        )
+        .await;
+        assert!(err.is_ok(), "declaring is fine — the submit is gated");
+        let err = submit_job_initiated(
+            &db,
+            mission,
+            "cluster-2",
+            spec("python3", &["train.py"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("host_not_allowed:"), "unexpected: {err}");
+        // the free host-less target submits through the fake harness
+        let job = submit_job_initiated(
+            &db,
+            mission,
+            "cluster-1",
+            spec("python3", &["train.py"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap();
+        assert_eq!(job.target, "cluster-1");
+        // the phase machine needs its polls: submitting → the cluster job
+        // is known → the poll resolves the terminal
+        let jobs = poll_until_finished(&db, mission, job.id).await;
+        assert_eq!(jobs[0].phase, JobPhase::Finished, "phase: {:?}", jobs[0].phase);
+        assert_eq!(jobs[0].exit_code, Some(0));
+        // usage attributed to the scheduler target like any other (AD-10)
+        let all = events(&db).await;
+        assert!(all.iter().any(|e| {
+            e.kind == TARGET_SPEND_RECORDED && e.payload["target"] == serde_json::json!("cluster-1")
+        }), "the scheduler job's spend landed");
     }
 
     #[tokio::test]
@@ -1125,13 +1413,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(job.target, "cluster-1");
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        poll_live_jobs(&db, Some(mission)).await.unwrap();
-        let jobs = {
-            let conn = db.0.lock().await;
-            let all = EventStore::new(&conn).events_all().unwrap();
-            JobsProjection::fold_for(&all, mission).unwrap()
-        };
+        let jobs = poll_until_finished(&db, mission, job.id).await;
         assert_eq!(jobs[0].phase, JobPhase::Finished);
         assert_eq!(jobs[0].exit_code, Some(0));
         let result = fetch_job_inner(&db, job.id).await.unwrap();
@@ -1172,7 +1454,7 @@ mod tests {
                 .id
         };
         declare_ssh_target(&db, "cluster-1", "gpu-01.lab").await;
-        declare_compute_target_inner(&db, "laptop", "local", None)
+        declare_compute_target_inner(&db, "laptop", "local", None, &BTreeMap::new())
             .await
             .unwrap();
         set_host_allowlist_inner(&db, vec!["gpu-01.lab".into()])
