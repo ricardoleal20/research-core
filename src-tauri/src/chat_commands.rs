@@ -35,13 +35,96 @@ fn err(e: impl ToString) -> String {
     e.to_string()
 }
 
-/// An attachment file as picked (desktop): its display name and absolute
-/// path. The browser mock reads content client-side instead.
+/// An attachment file as picked (desktop): its display name, its absolute
+/// path, and the picker grant token that proves the path came from the
+/// native file picker (review R-07) — `add_chat_attachments` reads a file
+/// ONLY through a valid grant, so an injected script naming
+/// `~/.ssh/id_ed25519` (or any path the user never picked) is refused
+/// before anything is read. The browser mock reads content client-side
+/// instead.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentPick {
     pub name: String,
     pub path: String,
+    #[serde(default)]
+    pub pick_token: Option<String>,
+}
+
+/// One picker grant (review R-07): the canonical path the native picker
+/// returned, redeemable exactly once by the token that references it.
+#[derive(Clone)]
+struct PickGrant {
+    path: std::path::PathBuf,
+    minted_at: std::time::Instant,
+}
+
+/// How long a picker grant stays redeemable — a pending attachment can
+/// sit in the composer for a while before the message sends.
+const PICK_GRANT_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// The process-local grant table (a restart clears it — the user re-picks).
+fn pick_grants() -> &'static std::sync::Mutex<std::collections::HashMap<String, PickGrant>> {
+    static GRANTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PickGrant>>> =
+        std::sync::OnceLock::new();
+    GRANTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Mint a one-shot grant for one picker-returned path (test seam too: the
+/// command-layer tests mint grants the same way the picker does).
+pub(crate) fn mint_pick_grant(path: &std::path::Path) -> String {
+    prune_expired_pick_grants();
+    let canonical =
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let token = Uuid::new_v4().to_string();
+    pick_grants()
+        .lock()
+        .expect("pick grants poisoned")
+        .insert(
+            token.clone(),
+            PickGrant { path: canonical, minted_at: std::time::Instant::now() },
+        );
+    token
+}
+
+fn prune_expired_pick_grants() {
+    pick_grants()
+        .lock()
+        .expect("pick grants poisoned")
+        .retain(|_, g| g.minted_at.elapsed() <= PICK_GRANT_TTL);
+}
+
+/// Verify one pick against its grant (review R-07): the token must name a
+/// live grant, and the pick's path must canonicalize to the granted path.
+/// One-shot — a redeemed grant is spent, win or lose.
+fn verify_pick_grant(pick: &AttachmentPick) -> Result<(), String> {
+    let Some(token) = pick.pick_token.as_deref() else {
+        return Err(
+            "attachment_refused: no picker token — only files the native picker returned can be attached"
+                .into(),
+        );
+    };
+    let mut grants = pick_grants().lock().expect("pick grants poisoned");
+    let Some(grant) = grants.get(token).cloned() else {
+        return Err(
+            "attachment_refused: unknown or spent picker token — attach through the file picker"
+                .into(),
+        );
+    };
+    // one-shot: the grant is spent the moment it is presented
+    grants.remove(token);
+    if grant.minted_at.elapsed() > PICK_GRANT_TTL {
+        return Err("attachment_refused: picker token expired — pick the file again".into());
+    }
+    let canonical = std::fs::canonicalize(&pick.path).map_err(|_| {
+        format!("attachment_refused: `{}` is not readable / no se puede leer", pick.name)
+    })?;
+    if canonical != grant.path {
+        return Err(
+            "attachment_refused: the path does not match what the picker returned".into(),
+        );
+    }
+    Ok(())
 }
 
 /// The largest file stored as an attachment ref — bigger files are refused
@@ -556,6 +639,8 @@ fn attach_one(
 }
 
 /// The multi-file picker the composer's attach button opens (desktop).
+/// Each returned pick carries a one-shot grant token (review R-07) — the
+/// only way its path can later be read by `add_chat_attachments`.
 #[tauri::command]
 pub async fn pick_attachment_files(app: tauri::AppHandle) -> Result<Vec<AttachmentPick>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -573,9 +658,11 @@ pub async fn pick_attachment_files(app: tauri::AppHandle) -> Result<Vec<Attachme
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.display().to_string());
+            let pick_token = mint_pick_grant(&path);
             Some(AttachmentPick {
                 name,
                 path: path.display().to_string(),
+                pick_token: Some(pick_token),
             })
         })
         .collect())
@@ -584,7 +671,9 @@ pub async fn pick_attachment_files(app: tauri::AppHandle) -> Result<Vec<Attachme
 /// Attach picked files to a conversation (FR-16.1): each is read locally,
 /// classified (text/pdf/binary), stored by its digest-addressed ref, and
 /// evented. Per-file refusals ride the result — a bad file never blocks
-/// the good ones, and nothing is silently dropped.
+/// the good ones, and nothing is silently dropped. Every pick must clear
+/// its picker grant first (review R-07): a path the native picker did not
+/// return is refused before anything is read.
 #[tauri::command]
 pub async fn add_chat_attachments(
     db: State<'_, Db>,
@@ -599,15 +688,29 @@ pub async fn add_chat_attachments(
     if exists == 0 {
         return Err(format!("chat `{chat_id}` not found"));
     }
+    Ok(attach_granted_files(&c, paths.inner(), &chat_id, &files))
+}
+
+/// The grant-verified attach loop the command layer and the tests share.
+pub(crate) fn attach_granted_files(
+    c: &Connection,
+    paths: &AppPaths,
+    chat_id: &str,
+    files: &[AttachmentPick],
+) -> Value {
     let mut attached: Vec<ChatAttachment> = Vec::new();
     let mut refused: Vec<Value> = Vec::new();
-    for pick in &files {
-        match attach_one(&c, paths.inner(), &chat_id, pick) {
+    for pick in files {
+        if let Err(reason) = verify_pick_grant(pick) {
+            refused.push(json!({ "name": pick.name, "reason": reason }));
+            continue;
+        }
+        match attach_one(c, paths, chat_id, pick) {
             Ok(a) => attached.push(a),
             Err(reason) => refused.push(json!({ "name": pick.name, "reason": reason })),
         }
     }
-    Ok(json!({ "attached": attached, "refused": refused }))
+    json!({ "attached": attached, "refused": refused })
 }
 
 /// Remove an attachment from a conversation (FR-16.1's removable chips):
@@ -1104,9 +1207,9 @@ mod tests {
                 &paths,
                 &cid,
                 &[
-                    AttachmentPick { name: "notas.md".into(), path: text_file.display().to_string() },
-                    AttachmentPick { name: "figura.png".into(), path: bin_file.display().to_string() },
-                    AttachmentPick { name: "paper.pdf".into(), path: pdf_file.display().to_string() },
+                    AttachmentPick { name: "notas.md".into(), path: text_file.display().to_string(), pick_token: None },
+                    AttachmentPick { name: "figura.png".into(), path: bin_file.display().to_string(), pick_token: None },
+                    AttachmentPick { name: "paper.pdf".into(), path: pdf_file.display().to_string(), pick_token: None },
                 ],
             )
             .unwrap()
@@ -1143,7 +1246,7 @@ mod tests {
             &c,
             &paths,
             &cid,
-            &[AttachmentPick { name: "notas.md".into(), path: bad.display().to_string() }],
+            &[AttachmentPick { name: "notas.md".into(), path: bad.display().to_string(), pick_token: None }],
         )
         .unwrap();
         assert_eq!(out["refused"].as_array().unwrap().len(), 1);
@@ -1244,15 +1347,104 @@ mod tests {
         chat_id: &str,
         files: &[AttachmentPick],
     ) -> Result<Value, String> {
-        let mut attached: Vec<ChatAttachment> = Vec::new();
-        let mut refused: Vec<Value> = Vec::new();
-        for pick in files {
-            match attach_one(c, paths, chat_id, pick) {
-                Ok(a) => attached.push(a),
-                Err(reason) => refused.push(json!({ "name": pick.name, "reason": reason })),
-            }
-        }
-        Ok(json!({ "attached": attached, "refused": refused }))
+        // the tests attach the way the real flow does: through a minted
+        // picker grant per file (review R-07)
+        let granted: Vec<AttachmentPick> = files
+            .iter()
+            .map(|p| {
+                let mut g = p.clone();
+                if g.pick_token.is_none() {
+                    g.pick_token = Some(mint_pick_grant(std::path::Path::new(&g.path)));
+                }
+                g
+            })
+            .collect();
+        Ok(attach_granted_files(c, paths, chat_id, &granted))
+    }
+
+    /// The webview can name any path it likes — `add_chat_attachments`
+    /// reads ONLY paths a native-picker grant covers (review R-07). A pick
+    /// with no token, a forged token, or a path swapped after the pick is
+    /// refused before a single byte is read.
+    #[tokio::test]
+    async fn a_pick_without_a_live_grant_never_reads_the_file() {
+        let db = test_db();
+        let paths = test_paths();
+        let pid = project_id(&db).await;
+        let chat = {
+            let c = conn(&db).await;
+            create_chat_inner(&c, &pid, "asistente", "General", None, None, None).unwrap()
+        };
+        let cid = chat_id(&chat);
+        let secret = paths.data_dir.join("id_ed25519");
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        std::fs::write(&secret, "BEGIN OPENSSH PRIVATE KEY (sentinel)\n").unwrap();
+        let secret_str = secret.display().to_string();
+
+        // 1. no token at all — the arbitrary-file-read shape from the review
+        let c = conn(&db).await;
+        let out = attach_granted_files(
+            &c,
+            &paths,
+            &cid,
+            &[AttachmentPick { name: "k".into(), path: secret_str.clone(), pick_token: None }],
+        );
+        assert!(out["attached"].as_array().unwrap().is_empty(), "attached without a grant: {out}");
+        let refused = out["refused"].as_array().unwrap();
+        assert_eq!(refused.len(), 1);
+        assert!(
+            refused[0]["reason"].as_str().unwrap().starts_with("attachment_refused:"),
+            "unexpected: {refused:?}"
+        );
+
+        // 2. a forged token (never minted)
+        let out = attach_granted_files(
+            &c,
+            &paths,
+            &cid,
+            &[AttachmentPick {
+                name: "k".into(),
+                path: secret_str.clone(),
+                pick_token: Some("not-a-real-token".into()),
+            }],
+        );
+        assert!(out["attached"].as_array().unwrap().is_empty());
+
+        // 3. a real token for a DIFFERENT file — the swapped-path shape
+        let innocent = paths.data_dir.join("notas.txt");
+        std::fs::write(&innocent, "harmless notes").unwrap();
+        let token = mint_pick_grant(&innocent);
+        let out = attach_granted_files(
+            &c,
+            &paths,
+            &cid,
+            &[AttachmentPick {
+                name: "notas.txt".into(),
+                path: secret_str,
+                pick_token: Some(token),
+            }],
+        );
+        assert!(out["attached"].as_array().unwrap().is_empty(), "a granted path was swapped: {out}");
+
+        // 4. and a FRESH grant for the innocent path attaches it — the
+        //    guard refuses nothing the picker actually returned
+        let out = attach_granted_files(
+            &c,
+            &paths,
+            &cid,
+            &[AttachmentPick {
+                name: "notas.txt".into(),
+                path: innocent.display().to_string(),
+                pick_token: Some(mint_pick_grant(&innocent)),
+            }],
+        );
+        assert_eq!(out["attached"].as_array().unwrap().len(), 1, "a granted pick attaches: {out}");
+
+        // nothing but the granted file ever entered the attachment store
+        // (the guard `c` from step 1 is still held — no re-acquire)
+        let events = EventStore::new(&c).events_all().unwrap();
+        let whole = serde_json::to_string(&events).unwrap();
+        assert!(!whole.contains("OPENSSH PRIVATE KEY"), "the ungranted file was read or logged");
     }
 
     /// The hypothesis fold is consulted by board_context_for — a sanity

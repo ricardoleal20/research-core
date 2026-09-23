@@ -6,7 +6,7 @@ import { mockApi, mockActive } from "./mock-backend";
 // the picked {name, path} pairs (the core reads + classifies + stores
 // locally); the pure-vite browser mock sends the client-read {name,
 // content} pairs instead. Never both.
-export type AttachmentPick = { name: string; path?: string | null; content?: string | null };
+export type AttachmentPick = { name: string; path?: string | null; content?: string | null; pickToken?: string | null };
 
 // A type alias (not an interface) so it stays assignable to Tauri's
 // `InvokeArgs` (Record<string, unknown>) via the implicit index signature.
@@ -761,8 +761,8 @@ export const api = mockActive ? browserApi : {
   // pair; the core reads, classifies (text/pdf/binary), digests, and
   // stores locally — content leaves only inside the provider call (NFR-12)
   pickAttachmentFiles: () =>
-    invoke<{ name: string; path: string }[]>("pick_attachment_files"),
-  addChatAttachments: (chatId: string, files: { name: string; path: string }[]) =>
+    invoke<{ name: string; path: string; pickToken: string }[]>("pick_attachment_files"),
+  addChatAttachments: (chatId: string, files: { name: string; path: string; pickToken?: string }[]) =>
     invoke<{ attached: ChatAttachment[]; refused: { name: string; reason: string }[] }>(
       "add_chat_attachments",
       { chatId, files },
