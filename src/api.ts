@@ -178,7 +178,10 @@ const browserApi = {
   // served by the in-memory mock in plain `vite` dev.
   listRefs: async (projectId: string, filter?: string | null) => {
     if (await servedByCore) {
-      const params = new URLSearchParams({ projectId });
+      // the server reads the snake_case `project_id` (review R-14): the
+      // camelCase key silently crossed projects — the served library
+      // listed refs across ALL projects
+      const params = new URLSearchParams({ project_id: projectId });
       if (filter) params.set("filter", filter);
       return httpJson<Ref[]>(`/api/refs?${params.toString()}`);
     }
@@ -247,6 +250,19 @@ const browserApi = {
   getDashboardSummary: async (): Promise<DashboardSummary> => {
     if (await servedByCore) return httpJson<DashboardSummary>("/api/dashboard");
     return mockApi.getDashboardSummary();
+  },
+  // Readiness gate (review R-14): the served browser view used to fall
+  // through to the seeded MOCK board (a fabricated verdict beside the real
+  // dashboard) — the routes exist, so the served view reads the real fold.
+  getReadinessReport: async (missionId: string | null): Promise<ReadinessReport> => {
+    if (await servedByCore) {
+      return httpJson<ReadinessReport>(
+        missionId
+          ? `/api/missions/${encodeURIComponent(missionId)}/readiness`
+          : "/api/readiness",
+      );
+    }
+    return mockApi.getReadinessReport(missionId);
   },
   getMissionRuns: async (missionId: string) =>
     (await servedByCore)
@@ -672,9 +688,6 @@ export const api = mockActive ? browserApi : {
   listRefs: (projectId: string, filter?: string | null) =>
     invoke<Ref[]>("list_refs", { projectId, filter: filter ?? null }),
   getRef: (id: string) => invoke<Ref>("get_ref", { id }),
-  createRef: (r: any) => invoke<Ref>("create_ref", r),
-  updateRef: (r: any) => invoke<void>("update_ref", r),
-  deleteRef: (id: string) => invoke<void>("delete_ref", { id }),
   searchRefs: (projectId: string, q: string) => invoke<Ref[]>("search_refs", { projectId, q }),
   // evented references CRUD (FR-15, Epic 5): arXiv paste (the shared
   // fetch adapter behind the onboarding first-value flow), manual entry
