@@ -41,6 +41,14 @@ pub const PIN_SUPPORT_CHECKED: &str = "pin.support_checked";
 /// readiness gate counts ("unverified support after N sweeps").
 pub const SUPPORT_SWEEP_STEP: &str = "support-sweep";
 
+/// How many support sweeps must have passed a pin UNCHECKED before the
+/// readiness gate surfaces it as an info row (Story 6.10, FR-23.3) — the
+/// "unverified support after N sweeps" honesty rule: a pin never judged
+/// (no different model available, unreadable replies, refusals) is visible
+/// as to-verify, never silently assumed fresh. Sweeps count only AFTER the
+/// pin landed (the chances it had to be judged).
+pub const SUPPORT_SWEEP_THRESHOLD: usize = 3;
+
 /// The judge's role tag on spend events (AD-10): the support engine's LLM
 /// calls are role-tagged so receipts name what ran.
 pub const SUPPORT_JUDGE_ROLE: &str = "support";

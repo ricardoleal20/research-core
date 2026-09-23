@@ -72,8 +72,12 @@ use crate::domain::hypotheses::{
     RelationKind,
 };
 use crate::domain::manuscript::{self, ManuscriptFlag, ManuscriptFlagKind, ManuscriptScan};
+use crate::domain::nightshift::RUN_STARTED;
 use crate::domain::proposals::{ProposalStatus, ProposalsProjection};
 use crate::domain::search::search_disclosure;
+use crate::domain::support::{
+    SupportStatus, SUPPORT_SWEEP_STEP, SUPPORT_SWEEP_THRESHOLD,
+};
 use crate::eventstore::{EventError, StoredEvent};
 
 /// The gate's verdict (FR-13.1): `ready` renders "preprint-ready"; anything
@@ -105,6 +109,19 @@ pub enum ReadinessItemKind {
     /// INFO: a pinned claim whose latest machine verification failed —
     /// never a blocker (see the module doc).
     PinVerificationFailed,
+    /// INFO (Story 6.10, FR-23.3): a pinned claim whose SUPPORT check
+    /// returned `unsupported` — pinned but not held up by what it cites.
+    /// Never a blocker: the pin exists, the claim is anchored; the verdict
+    /// is already visible on the pin (honesty, not amnesia).
+    PinUnsupported,
+    /// INFO (Story 6.10, FR-23.3): a support verdict of `partially` — the
+    /// claim asserts more than its citing source supports.
+    PinPartiallySupported,
+    /// INFO (Story 6.10, FR-23.3): support still unverified after N sweeps —
+    /// a pinned claim the sweeps never judged (no different model
+    /// available, unreadable replies, refusals), visible as to-verify,
+    /// never silently assumed fresh.
+    SupportUnchecked,
     /// INFO: pending quarantine proposals — not board state (AD-3), so not a
     /// blocker; surfaced so a non-empty queue is never a surprise.
     MergeQueuePending,
@@ -250,6 +267,28 @@ impl ReadinessItem {
         }
     }
 
+    /// The support-info constructor (Story 6.10): one pinned claim, one
+    /// support-derived kind — every item references its CLAIMS-{n} chip.
+    fn support_info(
+        kind: ReadinessItemKind,
+        claim: &Claim,
+        hypothesis_seq: Option<i64>,
+    ) -> Self {
+        Self {
+            kind,
+            claim_id: Some(claim.id),
+            claim_seq: Some(claim.seq),
+            hypothesis_id: Some(claim.hypothesis_id),
+            hypothesis_seq,
+            hypothesis_status: None,
+            search_seq: None,
+            mission_id: None,
+            claim_ties: Vec::new(),
+            relation_ties: Vec::new(),
+            pending_count: 0,
+        }
+    }
+
     fn merge_queue(pending_count: u32, mission_id: Option<Uuid>) -> Self {
         Self {
             kind: ReadinessItemKind::MergeQueuePending,
@@ -388,6 +427,25 @@ fn relation_ties(relations: &[RelationChip]) -> Vec<ReadinessRelationTie> {
         .collect()
 }
 
+/// How many support sweeps ran for the mission AFTER `since_seq` — the
+/// chances a pin that landed at `since_seq` had to be judged (Story 6.10).
+/// A sweep is a `run.started` with the `support-sweep` step referencing the
+/// mission; only sweeps AFTER the pin count (the pin could not have been
+/// judged by a sweep that ran before it existed).
+fn support_sweeps_since(events: &[StoredEvent], mission_id: Uuid, since_seq: i64) -> usize {
+    let mid = mission_id.to_string();
+    events
+        .iter()
+        .filter(|e| {
+            e.seq > since_seq
+                && e.kind == RUN_STARTED
+                && e.payload.get("step").and_then(|s| s.as_str()) == Some(SUPPORT_SWEEP_STEP)
+                && (e.causes.contains(&mission_id)
+                    || e.payload.get("mission_id").and_then(|m| m.as_str()) == Some(mid.as_str()))
+        })
+        .count()
+}
+
 /// Is this hypothesis status resolved for the preprint tier? Supported and
 /// refuted are answers; proposed, testing, and revised are still open
 /// questions (revised is mid-rework by construction — revised→testing is its
@@ -517,7 +575,8 @@ pub fn readiness_report_with_manuscript(
         }
     }
 
-    // --- Infos: verified-failed pins + merge queue (never blockers) ---
+    // --- Infos: verified-failed pins, support status, merge queue (never
+    // blockers) ---
     let mut infos: Vec<ReadinessItem> = claims_in_scope
         .iter()
         .filter(|c| {
@@ -529,6 +588,47 @@ pub fn readiness_report_with_manuscript(
         })
         .map(|c| ReadinessItem::verification_failed(c, hyp_seq.get(&c.hypothesis_id).copied()))
         .collect();
+    // Support status (Story 6.10, FR-23.3): the gate CONSUMES the third
+    // signal — `unsupported` and `partially` render as info rows (the pin
+    // stays pinned; the verdict is a fact to see, not a gate to smuggle in
+    // through the back door), and support still unverified after
+    // SUPPORT_SWEEP_THRESHOLD sweeps since the pin landed surfaces as
+    // "unchecked" — never silently assumed fresh.
+    for c in claims_in_scope.iter().filter(|c| c.pinned) {
+        let Some(pin) = c.pin.as_ref() else {
+            continue;
+        };
+        let hyp_s = hyp_seq.get(&c.hypothesis_id).copied();
+        match pin.support.as_ref().map(|s| s.status) {
+            Some(SupportStatus::Unsupported) => infos.push(ReadinessItem::support_info(
+                ReadinessItemKind::PinUnsupported,
+                c,
+                hyp_s,
+            )),
+            Some(SupportStatus::Partially) => infos.push(ReadinessItem::support_info(
+                ReadinessItemKind::PinPartiallySupported,
+                c,
+                hyp_s,
+            )),
+            None | Some(SupportStatus::Stale) => {
+                // Unverified support after N sweeps — an info, never a
+                // blocker (the pin exists; the check simply never landed).
+                let mission = hyp_mission.get(&c.hypothesis_id).copied();
+                if mission.is_some_and(|m| {
+                    support_sweeps_since(&live, m, pin.seq) >= SUPPORT_SWEEP_THRESHOLD
+                }) {
+                    infos.push(ReadinessItem::support_info(
+                        ReadinessItemKind::SupportUnchecked,
+                        c,
+                        hyp_s,
+                    ));
+                }
+            }
+            // supported / unverifiable: the check landed — a fact on the
+            // pin, not a gate concern at tier 1.
+            Some(SupportStatus::Supported | SupportStatus::Unverifiable) => {}
+        }
+    }
     let pending_proposals: Vec<_> = proposals
         .iter()
         .filter(|p| {
