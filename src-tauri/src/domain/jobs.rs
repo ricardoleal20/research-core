@@ -95,7 +95,9 @@ impl JobSpec {
     /// argv directly and never constructs shell strings, and validation is
     /// the second layer of that guarantee (the future SSH adapter's remote
     /// side benefits from it too). `args` need no metacharacter check —
-    /// argv entries are data, never interpreted.
+    /// argv entries are data, never interpreted. Env KEYS are names, not
+    /// data: each must be a POSIX identifier (`[A-Za-z_][A-Za-z0-9_]*`),
+    /// the shape the SSH transfer's `KEY='value'` encoding assumes (R-01).
     pub fn validate(&self) -> Result<(), SpecError> {
         if self.cmd.trim().is_empty() {
             return Err(SpecError::EmptyCmd);
@@ -104,7 +106,7 @@ impl JobSpec {
             return Err(SpecError::FreeformShell { cmd: self.cmd.clone(), ch });
         }
         for key in self.env.keys() {
-            if key.trim().is_empty() || key.contains('=') || key.contains('\0') {
+            if !valid_env_key(key) {
                 return Err(SpecError::InvalidEnvKey(key.clone()));
             }
         }
@@ -122,6 +124,20 @@ impl JobSpec {
     }
 }
 
+/// An env key is a NAME, not data: `[A-Za-z_][A-Za-z0-9_]*` — the exact
+/// shape the SSH transfer's `KEY='value'` assignment encoding assumes. A
+/// key carrying whitespace or shell metacharacters (`X;touch /tmp/pwned`,
+/// ``X`id` ``, `KEY a b`) never passes validation, so it can never reach a
+/// remote login shell through the env map (review R-01).
+pub(crate) fn valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Everything a spec can fail validation on — typed, and error strings
 /// lead with a stable code so they stay bilingual-safe (EXPERIENCE.md).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -130,7 +146,7 @@ pub enum SpecError {
     EmptyCmd,
     #[error("freeform_shell: cmd `{cmd}` carries shell syntax (`{ch}`) — the runtime never constructs shell strings; pass arguments in args (AD-6)")]
     FreeformShell { cmd: String, ch: char },
-    #[error("invalid_spec: env key `{0}` — keys are names: never empty, never `=`")]
+    #[error("invalid_spec: env key `{0}` — keys are POSIX identifier names (`[A-Za-z_][A-Za-z0-9_]*`): never empty, never whitespace, never shell syntax (AD-6)")]
     InvalidEnvKey(String),
     #[error("invalid_host: {0}")]
     InvalidHost(String),
@@ -604,6 +620,46 @@ mod tests {
         let mut s = spec("python3");
         s.workdir = Some("   ".into());
         assert_eq!(s.validate(), Err(SpecError::BlankWorkdir));
+    }
+
+    // ---- env keys are names, never shell data (review R-01) ----
+
+    #[test]
+    fn validate_rejects_every_hostile_env_key() {
+        // Each of these passed the old empty/`=`/NUL check and reached the
+        // remote login shell UNQUOTED through `KEY='value'` — remote code
+        // execution on the allowlisted host. They are names or they are
+        // refused, before any adapter sees them.
+        for hostile in [
+            "X;touch /tmp/pwned", // command separation
+            "X&&touch /tmp/pwned",
+            "X|touch /tmp/pwned", // pipes
+            "X`id`",              // backtick substitution
+            "X$(id)",             // command substitution
+            "KEY a b",            // whitespace splits the assignment
+            "X\tY",               // tab whitespace
+            "X\nY",               // newline
+            "BAD=KEY",            // `=` inside the name
+            "1X",                 // digits first (not a POSIX name)
+            "X-Y",                // dash is not a name character
+            "X.Y",                // dot is not a name character
+            "",                   // blank
+            "  ",                 // whitespace-only
+        ] {
+            let mut s = spec("python3");
+            s.env.insert(hostile.into(), "1".into());
+            let err = s.validate().expect_err(hostile);
+            assert!(
+                matches!(err, SpecError::InvalidEnvKey(ref k) if k == hostile),
+                "{hostile:?} must be refused as an env key, got {err:?}"
+            );
+        }
+        // POSIX identifier names always pass — the encoding's assumption.
+        for good in ["EPOCHS", "_FOO", "A1_b", "x"] {
+            let mut s = spec("python3");
+            s.env.insert(good.into(), "data ; $(not-a-command)".into());
+            assert_eq!(s.validate(), Ok(()), "{good:?} is a valid env key");
+        }
     }
 
     // ---- typed constructors ----

@@ -125,14 +125,17 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// Encode the validated spec's argv into the ssh transport's command
-/// string: env assignments (`KEY='value'` — keys are validated names, no
-/// `=`), an optional `cd -- 'dir' &&` prefix for workdir, then the cmd
-/// and every arg as quoted words. Nothing user-supplied is transferred
-/// unencoded; see the module comment for why this is not a freeform path.
+/// string: env assignments (`'KEY'='value'` — BOTH sides single-quoted;
+/// keys are validated POSIX names, and quoting the key is harmless for a
+/// valid name while keeping a hostile key inert even if validation ever
+/// regresses — review R-01), an optional `cd -- 'dir' &&` prefix for
+/// workdir, then the cmd and every arg as quoted words. Nothing
+/// user-supplied is transferred unencoded; see the module comment for why
+/// this is not a freeform path.
 fn remote_command_line(spec: &JobSpec) -> String {
     let mut words: Vec<String> = Vec::new();
     for (key, value) in &spec.env {
-        words.push(format!("{key}={}", shell_quote(value)));
+        words.push(format!("{}={}", shell_quote(key), shell_quote(value)));
     }
     if let Some(dir) = spec.workdir.as_deref() {
         words.push(format!("cd -- {} &&", shell_quote(dir)));
@@ -351,9 +354,41 @@ printf '%s\n' "$@""#,
         let lines: Vec<&str> = result.stdout.trim_end_matches('\n').split('\n').collect();
         assert!(lines.contains(&"gpu-01.lab"), "the host is one argv element: {lines:?}");
         let line = lines.last().unwrap();
-        assert!(line.contains("EPOCHS='10; rm -rf /'"), "env value quoted inert: {line}");
+        assert!(line.contains("'EPOCHS'='10; rm -rf /'"), "env assignment fully quoted (key AND value) inert: {line}");
         assert!(line.contains("cd -- '/tmp/lab dir' &&"), "workdir quoted: {line}");
         assert!(line.contains("'--data=x;y'"), "args quoted inert: {line}");
+    }
+
+    // ---- env keys are names (review R-01): hostile keys never transfer ----
+
+    #[tokio::test]
+    async fn a_hostile_env_key_is_refused_at_the_adapter_boundary() {
+        let _lock = ssh_test_lock();
+        // The fake would leave a marker if the remote shell ever executed
+        // anything beyond the intended assignment.
+        let marker = std::env::temp_dir().join(format!("rc-ssh-pwned-{}", uuid::Uuid::new_v4()));
+        let _fake = fake_ssh(
+            Some(marker.to_str().unwrap()),
+            "exit 0",
+        );
+        let ssh = Ssh::new();
+        for hostile in ["X;touch /tmp/pwned", "KEY a b", "X$(id)", "X`id`"] {
+            let mut s = spec("python3", &["train.py"]);
+            s.env.insert(hostile.into(), "1".into());
+            let err = ssh
+                .submit(&s, &info(Some("gpu-01.lab"), &["gpu-01.lab"]))
+                .unwrap_err();
+            assert!(
+                err.to_string().starts_with("invalid_spec: env key"),
+                "{hostile:?}: unexpected: {err}"
+            );
+        }
+        // and nothing ever connected — no marker, no process
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !marker.exists(),
+            "a hostile env key must never reach a remote shell"
+        );
     }
 
     // ---- the lifecycle over the loopback harness ----
