@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -603,6 +603,18 @@ const browserApi = {
       );
     }
     return mockApi.runPinVerification(hypothesisId);
+  },
+  // Support checks (Story 6.9, FR-23.1): a mutation — an LLM run through
+  // the provider layer; the served browser view refuses it like every
+  // other write, and the read-only support status rides the evidence read.
+  runPinSupportChecks: async (hypothesisId: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — run support checks from the desktop app / " +
+          "Vista de solo lectura — ejecuta las comprobaciones de soporte desde la app de escritorio"
+      );
+    }
+    return mockApi.runPinSupportChecks(hypothesisId);
   },
   // Onboarding (Story 1.9, FR-8.1): the first-value flow is a mutation —
   // the served browser view refuses it like every other write.
@@ -1243,6 +1255,11 @@ export const api = mockActive ? browserApi : {
   // verification on every pin.
   runPinVerification: (hypothesisId: string | null) =>
     invoke<Claim[]>("run_pin_verification", { hypothesisId }),
+  // Support checks (Story 6.9, FR-23.1): the entailment run — one
+  // pin.support_checked event per judged pin (actor system/support,
+  // different-model judge), plus the per-pin records and re-folded claims.
+  runPinSupportChecks: (hypothesisId: string | null) =>
+    invoke<SupportRunSummary>("run_pin_support_checks", { hypothesisId }),
 
   // morning digest (event-sourced, Story 2.3): the Night Shift result —
   // the manual trigger runs every active mission's scan now; schedule

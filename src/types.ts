@@ -323,6 +323,51 @@ export interface PinVerification {
   ts: string;
 }
 
+// The support check (Story 6.9, FR-23.1/23.2) — the THIRD signal on a pin:
+// an entailment-style faithfulness judgment by an LLM (actor system/support)
+// through the provider layer, attributed to its judging model. Never
+// conflated with confidence (the assessing model's own judgment) or
+// verification (existence by code): three signals, three chips. The judging
+// model always DIFFERS from the pin's assessing model (NFR-3 extended —
+// never the same model grading its own pin).
+export type SupportVerdict = "supported" | "partially" | "unsupported" | "unverifiable";
+
+// The read model's display vocabulary: the event's verdict, plus `stale`
+// (fold-derived — the result predates the current pin, re-checkable).
+export type SupportStatus = SupportVerdict | "stale";
+
+export interface PinSupportCheck {
+  status: SupportStatus;
+  confidence: number; // the judge's confidence in its verdict, 0.0–1.0
+  judgingModel: string; // rendered mono with the result — attribution
+  ts: string; // visibly dated — never silently assumed fresh
+}
+
+// One pin's check attempt from a support run (Story 6.9): the landed
+// verdict, or the honest code-form skip reason (no_different_model |
+// unparsed | provider_error | runtime_killed | autonomy_watch |
+// cost_ceiling_reached) — never a fake verdict.
+export interface SupportCheckRecord {
+  claimSeq: number; // the CLAIMS-n chip
+  verdict: SupportVerdict | null;
+  confidence: number | null;
+  judgingModel: string | null;
+  skip: string | null;
+}
+
+// One support run's summary (Story 6.9): the rollup the digest's one-line
+// verdict renders from, the per-pin records (specifics, never aggregates
+// alone), and the re-folded claims of the scope.
+export interface SupportRunSummary {
+  checked: number;
+  supported: number;
+  partially: number;
+  unsupported: number;
+  unverifiable: number;
+  records: SupportCheckRecord[];
+  claims: Claim[];
+}
+
 export interface EvidencePin {
   seq: number; // the evidence.pinned event's seq (latest per claim wins)
   ts: string;
@@ -338,6 +383,7 @@ export interface EvidencePin {
   refLabel: string | null; // author-year from the library (citation pins only)
   refRemoved?: boolean | null; // FR-15.6: the pinned ref was removed — "source removed" flag
   verification: PinVerification | null; // latest machine verification; null = unverified
+  support?: PinSupportCheck | null; // latest support check (6.9); null/absent = unchecked
 }
 
 export interface Claim {

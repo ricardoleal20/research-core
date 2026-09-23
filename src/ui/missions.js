@@ -275,6 +275,7 @@ export function renderBoard(app) {
             <h2 class="heading-2">${t("hyp.board")}</h2>
             <div class="flex items-center gap-2">
               ${btn({ label: t("ev.verify"), variant: "outline", size: "sm", iconName: "check", onClick: "RC.verifyPins()" })}
+              ${btn({ label: t("ev.support.check"), variant: "outline", size: "sm", iconName: "shield", onClick: "RC.checkSupport()" })}
             </div>
           </div>
           ${renderAddHypothesis()}
@@ -505,6 +506,33 @@ function verificationChip(v) {
   return `<span class="inline-flex items-center gap-1 text-[10px] text-rose-600">${icon("danger", "w-3 h-3")} ${t("ev.verificationFailed")}</span>`;
 }
 
+// The support chip (Story 6.9, FR-23.2): the THIRD signal, deliberately a
+// different visual idiom from the existence dot (plain icon + text) and the
+// confidence line (plain text) — a ringed chip with the shield icon, one
+// color per verdict, and the judging model in mono (attribution: an LLM
+// judgment with a name, never "verified by code"). null = unchecked
+// ("por verificar") — a state of its own, never a default green.
+function supportChip(s) {
+  if (!s) return `<span class="inline-flex items-center gap-1 rounded-md bg-gray-50 px-1.5 py-0.5 text-[10px] font-medium text-muted ring-1 ring-inset ring-gray-500/15">${icon("shield", "w-3 h-3")} ${t("ev.support.unchecked")}</span>`;
+  const styles = {
+    supported: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+    partially: "bg-amber-50 text-amber-700 ring-amber-600/20",
+    unsupported: "bg-rose-50 text-rose-700 ring-rose-600/20",
+    unverifiable: "bg-slate-100 text-slate-600 ring-slate-500/20",
+    stale: "bg-gray-50 text-muted ring-gray-500/15",
+  };
+  const labels = {
+    supported: "ev.support.supported",
+    partially: "ev.support.partial",
+    unsupported: "ev.support.unsupported",
+    unverifiable: "ev.support.unverifiable",
+    stale: "ev.support.stale",
+  };
+  const cls = styles[s.status] || styles.unverifiable;
+  const label = labels[s.status] || labels.unverifiable;
+  return `<span class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${cls}">${s.status === "stale" ? icon("history", "w-3 h-3") : icon("shield", "w-3 h-3")} ${t(label)} <span class="font-mono opacity-70">${esc(s.judgingModel)}</span></span>`;
+}
+
 function renderEvidenceRows(h, claims) {
   return `
     <div class="space-y-1.5 rounded-xl border border-border bg-gray-50/50 p-3">
@@ -525,6 +553,7 @@ function renderEvidenceRows(h, claims) {
                 : ""}
               <span class="text-[10px] text-muted">${t("ev.confidence")} <span class="font-mono tabular">${(c.pin.confidence * 100).toFixed(0)}%</span> · ${esc(c.pin.assessingModel)}</span>
               ${verificationChip(c.pin.verification)}
+              ${supportChip(c.pin.support)}
             </div>` : ""}
         </div>
       `).join("")}
@@ -1207,6 +1236,24 @@ Object.assign(RC, {
       await reloadBoard(app);
     } catch (e) {
       alert(t("ev.verifyError") + (e?.message || e));
+    }
+  },
+  // Story 6.9 (FR-23.1): run the entailment checks on the board's pins —
+  // an LLM run through the provider layer (the SANCTIONED counterpart of
+  // the no-LLM existence verifier), one pin.support_checked event per
+  // judgment. The honest rollup surfaces skips (a pin with no different
+  // model available is skipped, never faked).
+  async checkSupport() {
+    const app = ctx.app;
+    try {
+      const summary = await api.runPinSupportChecks(app.state.boardMissionId);
+      const skipped = summary.records.filter((r) => r.skip).length;
+      if (skipped > 0) {
+        alert(t("ev.support.skippedToast", { count: skipped }));
+      }
+      await reloadBoard(app);
+    } catch (e) {
+      alert(t("ev.support.error") + (e?.message || e));
     }
   },
   async runStep(missionId, role) {

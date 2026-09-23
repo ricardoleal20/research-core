@@ -640,6 +640,19 @@ const DICT: Record<string, Record<Lang, string>> = {
   "ev.verifyError": { es: "No se pudo verificar: ", en: "Could not verify: ", pt: "Não foi possível verificar: ", fr: "Impossible de vérifier : " },
   "ev.verifSource": { es: "Fuente consultada: ", en: "Source consulted: ", pt: "Fonte consultada: ", fr: "Source consultée : " },
 
+  // The support check (Story 6.9, FR-23.2): the THIRD signal's chip — a
+  // distinct idiom from the existence dot and the confidence line, with the
+  // judging model in mono. Labels are verdicts, never "verified".
+  "ev.support.check": { es: "Comprobar soporte", en: "Check support", pt: "Verificar suporte", fr: "Vérifier le soutien" },
+  "ev.support.error": { es: "No se pudo comprobar el soporte: ", en: "Could not check support: ", pt: "Não foi possível verificar o suporte: ", fr: "Impossible de vérifier le soutien : " },
+  "ev.support.skippedToast": { es: "{count} ancla(s) quedaron sin comprobar (sin un modelo distinto disponible o respuesta no legible) — siguen por verificar, nunca supuestas.", en: "{count} pin(s) were left unchecked (no different model available, or an unreadable reply) — they stay to-verify, never assumed.", pt: "{count} âncora(s) ficaram por verificar (sem um modelo distinto disponível ou resposta ilegível) — continuam por verificar, nunca assumidas.", fr: "{count} ancrage(s) restent à vérifier (aucun modèle distinct disponible ou réponse illisible) — ils restent à vérifier, jamais supposés." },
+  "ev.support.supported": { es: "soporta", en: "supports", pt: "suporta", fr: "soutient" },
+  "ev.support.partial": { es: "soporte parcial", en: "partial support", pt: "suporte parcial", fr: "soutien partiel" },
+  "ev.support.unsupported": { es: "no soporta", en: "does not support", pt: "não suporta", fr: "ne soutient pas" },
+  "ev.support.unverifiable": { es: "indeterminado", en: "unverifiable", pt: "indeterminável", fr: "indécidable" },
+  "ev.support.stale": { es: "obsoleto", en: "stale", pt: "obsoleto", fr: "périmé" },
+  "ev.support.unchecked": { es: "soporte por verificar", en: "support to-verify", pt: "suporte por verificar", fr: "soutien à vérifier" },
+
   // board at a glance (FR-2.4, Story 1.8): all hypotheses, all states,
   // one view — with the checkpoint control in its header.
   "board.title": { es: "El tablero de un vistazo", en: "The board at a glance", pt: "O quadro num relance", fr: "Le tableau en un coup d'œil" },
