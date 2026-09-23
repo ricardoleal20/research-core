@@ -1,4 +1,6 @@
 mod agent;
+mod bridge;
+mod bridge_commands;
 mod chat_commands;
 mod checkpoints_commands;
 mod commands;
@@ -60,6 +62,10 @@ pub fn run() {
             // In-process server shell (AD-7): the same app in the browser —
             // same core instance, one writer (AD-14), read-only API.
             server::spawn(db.clone(), data_dir.clone());
+            // The bridge (Story 6.14, FR-21.1, NFR-13): OFF unless
+            // RC_BRIDGE explicitly enables a channel (off | tunnel |
+            // chopflow) — one pluggable channel, never a second writer.
+            bridge::startup(db.clone(), data_dir.clone());
             // Night Shift scheduler (FR-4.1): one tick per minute — due
             // missions run their nightly literature scan, dead runs are
             // reaped honestly, and terminators evaluate (AD-12).
@@ -265,6 +271,16 @@ pub fn run() {
             manuscript_commands::propose_manuscript_diff,
             manuscript_commands::approve_manuscript_diff,
             manuscript_commands::reject_manuscript_diff,
+            // bridge (Story 6.14, FR-21.1, NFR-13): the ONE remote channel —
+            // enable/disable, status, and the pairing ledger. Remote reads
+            // and remote approve/reject/capture route through the same typed
+            // core commands in-process (single writer, AD-14).
+            bridge_commands::bridge_status,
+            bridge_commands::enable_bridge,
+            bridge_commands::disable_bridge,
+            bridge_commands::pair_bridge_device,
+            bridge_commands::unpair_bridge_device,
+            bridge_commands::list_bridge_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

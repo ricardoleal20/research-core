@@ -638,7 +638,7 @@ mod tests {
         let outcome = {
             let conn = db.0.lock().await;
             let store = EventStore::new(&conn);
-            crate::domain::proposals::approve(&store, proposal.id, false).unwrap()
+            crate::domain::proposals::approve(&store, proposal.id, false, None).unwrap()
         };
         assert_eq!(outcome.proposal.status, crate::domain::proposals::ProposalStatus::Merged);
         {

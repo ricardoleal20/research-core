@@ -1618,7 +1618,7 @@ mod tests {
         // the merge (the only construction site is crate-private — the
         // command path calls approve(); the fold contract is the same)
         let merge = store
-            .append(NewEvent::merge_approved(proposal.id, false, false).unwrap())
+            .append(NewEvent::merge_approved(proposal.id, false, false, None).unwrap())
             .unwrap();
         let [pinned] = EvidenceProjection::fold(&store.events_all().unwrap())
             .unwrap()
@@ -1677,7 +1677,7 @@ mod tests {
             )
             .unwrap();
         store
-            .append(NewEvent::merge_approved(proposal.id, true, false).unwrap())
+            .append(NewEvent::merge_approved(proposal.id, true, false, None).unwrap())
             .unwrap();
         let err = EvidenceProjection::fold(&store.events_all().unwrap())
             .expect_err("a tampered merged intent must fail the fold");
@@ -1706,7 +1706,7 @@ mod tests {
             )
             .unwrap();
         store
-            .append(NewEvent::merge_approved(proposal.id, false, false).unwrap())
+            .append(NewEvent::merge_approved(proposal.id, false, false, None).unwrap())
             .unwrap();
         assert!(EvidenceProjection::fold(&store.events_all().unwrap())
             .unwrap()

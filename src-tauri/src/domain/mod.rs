@@ -2,6 +2,7 @@
 // payload schemas, exposed as typed constructors on `NewEvent` (AD-15), and
 // the pure folds that read current state from the log.
 
+pub mod bridge;
 pub mod chat;
 pub mod checkpoints;
 pub mod digest;
