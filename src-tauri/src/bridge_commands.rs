@@ -21,6 +21,17 @@ pub async fn bridge_status(db: State<'_, Db>) -> Result<BridgeStatusView, String
     Ok(bridge::status(db.inner()).await)
 }
 
+/// The notifications read (Story 6.16, FR-21.4): pending quarantine
+/// proposals + the digest-ready notice — verdict summaries only, never
+/// research content beyond the summary (NFR-13). The desktop bell polls
+/// this; the same items push through the active bridge adapter.
+#[tauri::command]
+pub async fn list_notifications(
+    db: State<'_, Db>,
+) -> Result<Vec<bridge::NotificationItem>, String> {
+    bridge::notifications(db.inner()).await
+}
+
 /// Enable the ONE bridge channel (FR-21.1): `mode` is `tunnel` (the
 /// default adapter — direct reachability, mobile companion at `/m`) or
 /// `chopflow` (first-class, optional). Off by default; a second start while

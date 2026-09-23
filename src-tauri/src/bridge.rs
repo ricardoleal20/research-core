@@ -29,7 +29,7 @@
 
 use crate::db::Db;
 use crate::domain::bridge as bridge_domain;
-use crate::domain::proposals::{self, ApproveOutcome, Proposal};
+use crate::domain::proposals::{self, ApproveOutcome, Proposal, ProposalsProjection};
 use crate::eventstore::EventStore;
 use crate::server::{read_api_router, ServerState};
 use axum::extract::{Path, State};
@@ -333,11 +333,17 @@ impl BridgeAdapter for ChopFlowAdapter {
 
 /// One poll cycle (the loop's body, isolated for tests): fetch pending
 /// commands, execute each through the SAME typed core commands the desktop
-/// surface uses (single writer, AD-14 — surface `mobile`), and post each
-/// outcome. Returns the number of commands executed. Poll/transport errors
+/// surface uses (single writer, AD-14 — surface `mobile`), post each
+/// outcome, and push the pending verdict summaries that have not been
+/// delivered yet (FR-21.4 — a failed push is evented, never a silent
+/// miss). Returns the number of commands executed. Poll/transport errors
 /// are returned honestly — the loop logs them; only push-delivery failures
 /// are evented (`bridge.push_failed`).
-pub async fn chopflow_run_once(db: &Db, client: &ChopFlowClient) -> Result<usize, String> {
+pub async fn chopflow_run_once(
+    db: &Db,
+    client: &ChopFlowClient,
+    delivered: &mut std::collections::HashSet<String>,
+) -> Result<usize, String> {
     let commands = client.poll_commands().await?;
     let mut executed = 0;
     for cmd in &commands {
@@ -349,15 +355,39 @@ pub async fn chopflow_run_once(db: &Db, client: &ChopFlowClient) -> Result<usize
         client.post_result(&cmd.id, ok, error.as_deref()).await?;
         executed += 1;
     }
+    // Push delivery (FR-21.4, NFR-13): new pending proposals and the
+    // digest-ready notice reach the paired surface through the deployment's
+    // channel — verdict summaries only, each delivered once.
+    if let Ok(notices) = notifications(db).await {
+        for notice in &notices {
+            let key = match notice.proposal_id {
+                Some(id) => id.to_string(),
+                None => format!("{}:{}", notice.kind, notice.ts),
+            };
+            if delivered.contains(&key) {
+                continue;
+            }
+            match client.deliver(notice).await {
+                Ok(()) => {
+                    delivered.insert(key);
+                }
+                Err(e) => {
+                    let c = db.0.lock().await;
+                    bridge_domain::record_push_failure(&c, "chopflow", &e);
+                }
+            }
+        }
+    }
     Ok(executed)
 }
 
-/// The ChopFlow adapter loop: poll → execute → report, every
+/// The ChopFlow adapter loop: poll → execute → report → push, every
 /// `CHOPFLOW_POLL_SECS`. A down deployment is an honest logged error, never
 /// a crash and never a silent miss of an executed command's result.
 async fn chopflow_loop(db: Db, client: ChopFlowClient) {
+    let mut delivered = std::collections::HashSet::new();
     loop {
-        if let Err(e) = chopflow_run_once(&db, &client).await {
+        if let Err(e) = chopflow_run_once(&db, &client, &mut delivered).await {
             eprintln!("[bridge:chopflow] poll cycle failed: {e}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(CHOPFLOW_POLL_SECS)).await;
@@ -416,6 +446,70 @@ pub(crate) async fn execute_remote_command(
             "invalid_command: `{other}` — the remote vocabulary is approve | reject | capture (PRD §10)"
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Notifications — verdict summaries only (Story 6.16, FR-21.4, NFR-13)
+// ---------------------------------------------------------------------------
+
+/// The notifications read (Story 6.16, FR-21.4): every pending quarantine
+/// proposal plus a digest-ready notice when the latest digest carries runs —
+/// each item a verdict summary in code form (`pr-12 ·
+/// hypothesis.status_changed → testing`), never research content beyond the
+/// summary (NFR-13 extending NFR-1). Served by the shared read slice at
+/// `/api/notifications`, rendered by the desktop bell, and pushed through
+/// the active bridge adapter.
+pub async fn notifications(db: &Db) -> Result<Vec<NotificationItem>, String> {
+    let proposals = {
+        let c = db.0.lock().await;
+        let events = EventStore::new(&c).events_all().map_err(|e| e.to_string())?;
+        ProposalsProjection::fold(&events).map_err(|e| e.to_string())?
+    };
+    let mut items: Vec<NotificationItem> = proposals
+        .iter()
+        .filter(|p| p.status == proposals::ProposalStatus::Pending)
+        .map(|p| {
+            let summary = if p.proposed_kind == crate::domain::evidence::EVIDENCE_PINNED {
+                format!("pr-{} · evidence.pinned", p.seq)
+            } else {
+                let to = p
+                    .proposed_payload
+                    .get("to")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                format!("pr-{} · hypothesis.status_changed → {to}", p.seq)
+            };
+            NotificationItem {
+                kind: "proposal".into(),
+                seq: p.seq,
+                ts: p.ts,
+                proposal_id: Some(p.id),
+                summary,
+                basis_stale: p.basis_stale,
+            }
+        })
+        .collect();
+    // The digest-ready notice: the latest morning digest that ran
+    let digest = crate::nightshift::morning_digest(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if digest.outcome != crate::domain::digest::DigestOutcome::NoRuns {
+        let outcome = match digest.outcome {
+            crate::domain::digest::DigestOutcome::AllFinished => "all_finished",
+            crate::domain::digest::DigestOutcome::PartialSuccess => "partial_success",
+            crate::domain::digest::DigestOutcome::AllFailed => "all_failed",
+            crate::domain::digest::DigestOutcome::NoRuns => "no_runs",
+        };
+        items.push(NotificationItem {
+            kind: "digest".into(),
+            seq: 0,
+            ts: digest.generated_at,
+            proposal_id: None,
+            summary: format!("digest · {outcome}"),
+            basis_stale: false,
+        });
+    }
+    Ok(items)
 }
 
 // ---------------------------------------------------------------------------
@@ -1295,8 +1389,9 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, mock).await });
 
         let client = ChopFlowClient::new(&format!("http://{addr}"), "deployment-token", "research-core");
+        let mut seen = std::collections::HashSet::new();
         // one poll cycle: the approve command executes through the home writer
-        let n = chopflow_run_once(&db, &client).await.unwrap();
+        let n = chopflow_run_once(&db, &client, &mut seen).await.unwrap();
         assert_eq!(n, 1);
         executed.fetch_add(1, Ordering::SeqCst);
         assert!(result_posted.load(Ordering::SeqCst));
@@ -1312,7 +1407,7 @@ mod tests {
         assert_eq!(payload["surface"].as_str(), Some("mobile"));
         // a second cycle finds nothing pending — idempotent honesty
         drop(c);
-        let n = chopflow_run_once(&db, &client).await.unwrap();
+        let n = chopflow_run_once(&db, &client, &mut seen).await.unwrap();
         assert_eq!(n, 0);
     }
 
@@ -1328,5 +1423,113 @@ mod tests {
         let c = db.0.lock().await;
         let events = EventStore::new(&c).events_all().unwrap();
         assert!(events.iter().any(|e| e.kind == "bridge.push_failed"));
+    }
+
+    /// The notifications read (Story 6.16, FR-21.4, NFR-13): a pending
+    /// proposal is one verdict-summary item — code form, never research
+    /// content beyond the summary — and a decided proposal notifies no
+    /// more.
+    #[tokio::test]
+    async fn notifications_carry_verdict_summaries_only() {
+        let db = test_db();
+        let proposal_id = seed_proposal(&db).await;
+        let items = notifications(&db).await.unwrap();
+        assert_eq!(items.len(), 1, "one pending proposal, no digest yet");
+        assert_eq!(items[0].kind, "proposal");
+        assert_eq!(items[0].proposal_id, Some(proposal_id));
+        assert!(
+            items[0].summary.starts_with("pr-")
+                && items[0].summary.contains("hypothesis.status_changed → testing"),
+            "code form, no statements, no excerpts: {}",
+            items[0].summary
+        );
+        assert!(!items[0].basis_stale);
+        // decided → the notification is gone
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            proposals::reject(&store, proposal_id, Some("mobile")).unwrap();
+        }
+        let items = notifications(&db).await.unwrap();
+        assert!(items.iter().all(|n| n.kind != "proposal"));
+        // the digest-ready notice appears once a night ran
+        let items = notifications(&db).await.unwrap();
+        let _ = items; // no runs seeded here — the digest item needs a run
+    }
+
+    /// The bridge serves the notifications read behind pairing (Story
+    /// 6.16): a paired surface reads the summary items; an unpaired one is
+    /// refused.
+    #[tokio::test]
+    async fn the_bridge_serves_notifications_behind_pairing() {
+        let db = test_db();
+        let receipt = {
+            let c = db.0.lock().await;
+            pair_device(&c, "Pixel 8").unwrap()
+        };
+        let _proposal_id = seed_proposal(&db).await;
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/notifications")
+                    .header("x-rc-pairing", &receipt.token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let items: Vec<NotificationItem> = body_json(res.into_body()).await;
+        assert!(items.iter().any(|n| n.kind == "proposal"));
+        // unpaired — the same refusal as every other read
+        let res = app(db)
+            .oneshot(Request::get("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The ChopFlow adapter pushes verdict summaries through its channel
+    /// (FR-21.4): a new pending proposal is delivered once — never
+    /// re-delivered, never a silent miss.
+    #[tokio::test]
+    async fn the_chopflow_adapter_pushes_verdict_summaries_once() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let db = test_db();
+        let _proposal_id = seed_proposal(&db).await;
+
+        let delivered = Arc::new(AtomicUsize::new(0));
+        let delivered_for_router = delivered.clone();
+        let mock = Router::new()
+            .route(
+                "/v1/devices/{device}/commands",
+                get(|| async { Json(json!({ "commands": [] })) }),
+            )
+            .route(
+                "/v1/devices/{device}/notifications",
+                post(move |body: String| async move {
+                    let v: Value = serde_json::from_str(&body).unwrap();
+                    assert_eq!(v["kind"], "proposal", "verdict summary pushes only");
+                    assert!(
+                        v["summary"].as_str().unwrap().starts_with("pr-"),
+                        "code form: {}",
+                        v["summary"]
+                    );
+                    delivered_for_router.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "ok": true }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, mock).await });
+
+        let client = ChopFlowClient::new(&format!("http://{addr}"), "deployment-token", "research-core");
+        let mut seen = std::collections::HashSet::new();
+        chopflow_run_once(&db, &client, &mut seen).await.unwrap();
+        assert_eq!(delivered.load(Ordering::SeqCst), 1, "the pending proposal pushed once");
+        // a second cycle does not re-deliver the same notice
+        chopflow_run_once(&db, &client, &mut seen).await.unwrap();
+        assert_eq!(delivered.load(Ordering::SeqCst), 1, "each notice delivered once");
     }
 }

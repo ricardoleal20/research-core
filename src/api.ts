@@ -982,6 +982,12 @@ const browserApi = {
     }
     return mockApi.listBridgeDevices();
   },
+  // The notifications read (Story 6.16, FR-21.4): pending proposals +
+  // digest-ready — verdict summaries only (NFR-13).
+  listNotifications: async (): Promise<NotificationItem[]> => {
+    if (await servedByCore) return httpJson<NotificationItem[]>("/api/notifications");
+    return mockApi.listNotifications();
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -1362,6 +1368,8 @@ export const api = mockActive ? browserApi : {
   unpairBridgeDevice: (deviceName: string) =>
     invoke<PairedDevice[]>("unpair_bridge_device", { deviceName }),
   listBridgeDevices: () => invoke<PairedDevice[]>("list_bridge_devices"),
+  // the notification bell's read (Story 6.16, FR-21.4): verdict summaries only
+  listNotifications: () => invoke<NotificationItem[]>("list_notifications"),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

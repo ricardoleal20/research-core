@@ -44,6 +44,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // System push (Story 6.16, FR-21.4): pending-proposal and
+        // digest-ready notifications reach the desktop through the OS
+        // notification center — verdict summaries only (NFR-13).
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Resolve data dir: ~/Library/Application Support/Research Core/db.sqlite
             let data_dir = app
@@ -281,6 +285,7 @@ pub fn run() {
             // and remote approve/reject/capture route through the same typed
             // core commands in-process (single writer, AD-14).
             bridge_commands::bridge_status,
+            bridge_commands::list_notifications,
             bridge_commands::enable_bridge,
             bridge_commands::disable_bridge,
             bridge_commands::pair_bridge_device,

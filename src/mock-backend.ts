@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -2658,6 +2658,35 @@ export const mockApi = {
   listBridgeDevices: async (): Promise<PairedDevice[]> => {
     await delay();
     return mockBridge.devices.map((d) => ({ ...d }));
+  },
+  // The notifications read (Story 6.16, FR-21.4): verdict summaries only —
+  // code form, never statements or excerpts (NFR-13).
+  listNotifications: async (): Promise<NotificationItem[]> => {
+    await delay();
+    const items: NotificationItem[] = proposals
+      .filter((p) => p.status === "pending")
+      .map((p) => ({
+        kind: "proposal",
+        seq: p.seq,
+        ts: p.ts,
+        proposalId: p.id,
+        summary:
+          p.proposedKind === "evidence.pinned"
+            ? `pr-${p.seq} · evidence.pinned`
+            : `pr-${p.seq} · hypothesis.status_changed → ${String((p.proposedPayload as any).to || "")}`,
+        basisStale: p.basisStale,
+      }));
+    if (seededDigest.outcome !== "no_runs") {
+      items.push({
+        kind: "digest",
+        seq: 0,
+        ts: seededDigest.generatedAt,
+        proposalId: null,
+        summary: `digest · ${seededDigest.outcome}`,
+        basisStale: false,
+      });
+    }
+    return items;
   },
   // The dashboard's one aggregated read (Story 5.10, FR-18.1): the same
   // composition the core folds — every widget over the mock's own reads,

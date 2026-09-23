@@ -15,6 +15,7 @@ import { renderDashboard } from "./ui/dashboard";
 import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings, renderExportModal } from "./ui/screens";
 import { onMobile } from "./api";
 import { bootMobile } from "./ui/mobile";
+import { renderBell, startBellPolling } from "./ui/notifications";
 
 // ========== ACCENT SLOT (the bible's six swappable options) ==========
 const ACCENTS = {
@@ -103,6 +104,8 @@ const app = {
     chatThinking: false,
     skills: [], // the skills registry (Story 5.6): the curated six + user-added
     assistantDraft: { missionId: null, skill: null }, // the scope a new conversation is born with
+    notifications: [], // the bell's read (Story 6.16, FR-21.4): verdict summaries only
+    bellOpen: false,
   },
 };
 
@@ -143,6 +146,7 @@ function unlock() {
   app.state.locked = false;
   if (!app.state.onboardingCompleted) { app.state.view = "wizard"; render(); }
   else { navigate("missions"); }
+  startBellPolling();
 }
 
 // ========== SHELL ==========
@@ -195,6 +199,7 @@ function renderShell() {
           </div>
           <div class="flex items-center gap-2">
             <button onclick="RC.openExport()" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("ex.title")}">${icon("fileText", "w-4 h-4")}</button>
+            ${renderBell(app)}
             <button onclick="RC.navigate('settings')" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("rc.nav.settings")}">${icon("settings", "w-4 h-4")}</button>
             <button onclick="RC.lockApp()" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("rc.lock.title")}">${icon("lock", "w-4 h-4")}</button>
           </div>
@@ -545,6 +550,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") {
+    if (app.state.bellOpen) { RC.bellClose(); return; }
     if (app.state.commandPaletteOpen) { closeCommandPalette(); return; }
     if (app.state.readinessOpen) { app.state.readinessOpen = false; render(); return; }
     if (app.state.receiptRunId) { app.state.receiptRunId = null; render(); return; }
@@ -718,6 +724,9 @@ applyMotion();
 render();
 loadBase().then(() => {
   render();
-  if (!app.state.locked && app.state.view !== "lock" && app.state.view !== "wizard") loadViewData(app.state.view);
+  if (!app.state.locked && app.state.view !== "lock" && app.state.view !== "wizard") {
+    loadViewData(app.state.view);
+    startBellPolling();
+  }
 });
 }

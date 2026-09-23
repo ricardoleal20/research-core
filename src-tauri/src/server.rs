@@ -115,6 +115,20 @@ pub(crate) fn read_api_router() -> Router<ServerState> {
             "/api/manuscript/{mission_id}/diffs",
             get(manuscript_diffs),
         )
+        .route("/api/notifications", get(notifications))
+}
+
+/// The notifications read (Story 6.16, FR-21.4, NFR-13): pending quarantine
+/// proposals + the digest-ready notice, each a verdict summary in code form
+/// — never research content beyond the summary. A pure composition over the
+/// shared folds (proposals + digest) — a render never appends.
+async fn notifications(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<crate::bridge::NotificationItem>>, StatusCode> {
+    crate::bridge::notifications(&state.db)
+        .await
+        .map(Json)
+        .map_err(|_| internal())
 }
 
 pub fn router(db: Db, dist_dir: std::path::PathBuf, data_dir: std::path::PathBuf) -> Router {
@@ -1718,5 +1732,65 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The notifications route (Story 6.16, FR-21.4, NFR-13): verdict
+    /// summaries only — pending proposals as code-form lines, plus the
+    /// digest-ready notice — over the shared folds. A read: POST is not
+    /// routed (single writer, AD-14).
+    #[tokio::test]
+    async fn get_api_notifications_serves_verdict_summaries_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Watch,
+                    spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
+                    roles: vec![],
+                })
+                .unwrap())
+                .unwrap();
+            let hyp = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            crate::domain::proposals::propose_transition(
+                &store,
+                "run-7",
+                hyp.id,
+                crate::domain::hypotheses::HypothesisStatus::Testing,
+                "run 7 suggests testing",
+            )
+            .unwrap();
+        }
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let items: Vec<crate::bridge::NotificationItem> = body_json(res.into_body()).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, "proposal");
+        assert!(items[0].summary.contains("hypothesis.status_changed → testing"));
+        assert!(!items[0].summary.contains("X holds"), "no statements — summaries only (NFR-13)");
+        // an empty core notifies honestly — nothing pending, no digest
+        let res = app(test_db())
+            .oneshot(Request::get("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let items: Vec<crate::bridge::NotificationItem> = body_json(res.into_body()).await;
+        assert!(items.is_empty());
+        // single writer (AD-14): a notification is a read — POST is not routed
+        let res = app(db)
+            .oneshot(Request::post("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }
