@@ -185,8 +185,13 @@ impl NightShift {
         let last_run = {
             let conn = self.db.0.lock().await;
             let events = EventStore::new(&conn).events_all()?;
+            // Rollback-aware (review R-15): an orphaned `run.started` must
+            // not read as "ran today" — the rollout skipped a full local
+            // day of scheduled scans after a rollback.
+            let cursor = crate::domain::checkpoints::FoldCursor::over(&events);
             events
                 .iter()
+                .filter(|e| cursor.is_live(e))
                 .filter(|e| e.kind == RUN_STARTED && references_mission(e, mission.id))
                 .map(|e| e.ts)
                 .max()
@@ -785,7 +790,7 @@ mod tests {
         let ev = &searches[0];
         // the PRISMA record: the mission's question, the database, the count
         assert_eq!(ev.payload["query"], mission.payload["question"]);
-        assert_eq!(ev.payload["database"], json!("arxiv"));
+        assert_eq!(ev.payload["database"], json!("corpus-sim"));
         let count = ev.payload["result_count"].as_u64().unwrap();
         assert_eq!(ev.payload["null_result"], json!(count == 0));
         // attributed to the run (AD-2), caused by the mission
@@ -801,7 +806,7 @@ mod tests {
         let disclosure =
             crate::domain::search::search_disclosure(&events, Some(mission.id)).unwrap();
         assert_eq!(disclosure.total, 1);
-        assert_eq!(disclosure.rows[0].database, "arxiv");
+        assert_eq!(disclosure.rows[0].database, "corpus-sim");
         assert_eq!(disclosure.rows[0].run_id.as_deref(), Some(records[0].run_id.as_str()));
     }
 

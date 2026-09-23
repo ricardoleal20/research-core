@@ -297,7 +297,11 @@ pub struct LibraryProjection;
 impl LibraryProjection {
     pub fn fold(conn: &Connection, events: &[StoredEvent]) -> Result<Vec<LibraryRef>, EventError> {
         let mut refs = baseline(conn)?;
-        for event in events {
+        // Rollback-aware (review R-15): the one projection that diverged
+        // from the rest after a rollback — orphaned `ref.added` /
+        // `ref.removed` events now leave the library like every read model.
+        let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+        for event in &cursor.live_owned(events) {
             match event.kind.as_str() {
                 REF_ADDED => {
                     let payload: RefAddedPayload = match serde_json::from_value(event.payload.clone())

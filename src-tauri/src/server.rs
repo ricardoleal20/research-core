@@ -699,7 +699,7 @@ mod tests {
                 &store,
                 &crate::domain::search::SearchParams {
                     query: "sparse attention".into(),
-                    database: "arxiv".into(),
+                    database: "corpus-sim".into(),
                     filters: Default::default(),
                     order: None,
                     first_page: true,
@@ -736,7 +736,7 @@ mod tests {
         let disclosure: SearchDisclosure = body_json(res.into_body()).await;
         assert_eq!(disclosure.total, 2);
         assert_eq!(disclosure.null_result_count, 1);
-        assert_eq!(disclosure.rows[0].database, "arxiv");
+        assert_eq!(disclosure.rows[0].database, "corpus-sim");
         assert!(!disclosure.rows[0].null_result);
         assert!(disclosure.rows[1].null_result);
         assert_eq!(disclosure.rows[1].result_count, 0);

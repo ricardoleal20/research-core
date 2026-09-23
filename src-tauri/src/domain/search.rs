@@ -31,8 +31,11 @@ use crate::eventstore::{Actor, EventError, EventStore, NewEvent, StoredEvent};
 pub const SEARCH_RUN: &str = "search.run";
 
 /// The Night Shift literature scan's database (Story 4.1): v1's scan runs
-/// the simulated arXiv corpus — the event records what actually ran.
-pub const DATABASE_ARXIV: &str = "arxiv";
+/// the simulated arXiv corpus — the event records what actually ran, and
+/// "what actually ran" is the corpus, not arXiv (review R-16/FR-12.1: the
+/// disclosure the product sells as its honesty mechanism must not misstate
+/// the source). The discovery name changes when real adapters land.
+pub const DATABASE_ARXIV: &str = "corpus-sim";
 
 /// The `search.run` payload (FR-12.1): the PRISMA record of one search.
 /// `started_at` is the event envelope's `ts` (the store assigns it);
@@ -392,7 +395,14 @@ pub fn search_disclosure(
     mission: Option<Uuid>,
 ) -> Result<SearchDisclosure, EventError> {
     let mut rows = Vec::new();
-    for event in events.iter().filter(|e| e.kind == SEARCH_RUN) {
+    // Rollback-aware (review R-15): rolled-back `search.run` rows (and
+    // their `null_result_count`, which feeds readiness blockers) must not
+    // count — the disclosure and the board agree post-rollback.
+    let cursor = crate::domain::checkpoints::FoldCursor::over(events);
+    for event in events
+        .iter()
+        .filter(|e| cursor.is_live(e) && e.kind == SEARCH_RUN)
+    {
         if let Some(mission_id) = mission {
             let in_mission = event.payload.get("mission_id").and_then(Value::as_str)
                 == Some(mission_id.to_string().as_str())
