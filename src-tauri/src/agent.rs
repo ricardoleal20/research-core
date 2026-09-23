@@ -294,14 +294,38 @@ pub async fn run_review(
 
     // Parse the JSON every mode returns (real providers and CLIs verbatim;
     // the simulated provider reconstructs it from the prompt markers).
-    let parsed: Value = serde_json::from_str(&extract_json(&resp.content))
-        .unwrap_or_else(|_| json!({}));
+    let parsed: Value = serde_json::from_str(&extract_json(&resp.content)).map_err(|e| {
+        // Review R-12 (NFR-9): unparseable provider output is refused
+        // LOUDLY, never persisted — the old code fabricated a confident
+        // 7.5/10 + default verdict and fed the review chart and the
+        // next-review prompt. No row lands.
+        let snippet: String = resp.content.chars().take(200).collect();
+        format!(
+            "review_parse_failed: the provider did not return review JSON (`{e}`) — no score was invented and no row was persisted. Reply began: {snippet:?}"
+        )
+    })?;
     let dims: Vec<Dim> = parsed.get("dims").cloned()
-        .map(|v| serde_json::from_value(v).unwrap_or_default()).unwrap_or_default();
+        .map(|v| serde_json::from_value(v).unwrap_or_default())
+        .ok_or_else(|| {
+            // Valid JSON that isn't a structured review (an apology, a
+            // plain-text reply) is the same fabrication path — refuse.
+            let snippet: String = resp.content.chars().take(200).collect();
+            format!(
+                "review_parse_failed: the provider reply carries no `dims` array — no score was invented and no row was persisted. Reply began: {snippet:?}"
+            )
+        })?;
     let findings: Vec<Finding> = parsed.get("findings").cloned()
         .map(|v| serde_json::from_value(v).unwrap_or_default()).unwrap_or_default();
     let verdict = parsed.get("verdict").and_then(|v| v.as_str()).unwrap_or("Revisión completada.").to_string();
-    let score = if dims.is_empty() { 7.5 } else { dims.iter().map(|d| d.score).sum::<f64>() / dims.len() as f64 };
+    let score = if dims.is_empty() {
+        // An empty dims array means the model produced no criteria — the
+        // old 7.5 fallback was INVENTED data (review R-12/NFR-9): refuse.
+        return Err(format!(
+            "review_parse_failed: the provider returned an empty `dims` array — no score was invented and no row was persisted"
+        ));
+    } else {
+        dims.iter().map(|d| d.score).sum::<f64>() / dims.len() as f64
+    };
 
     // persist review
     let review_id = uuid::Uuid::new_v4().to_string();
