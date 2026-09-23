@@ -1257,6 +1257,7 @@ mod tests {
                 Some("127.0.0.1:0".into()),
                 None,
                 None,
+                std::path::PathBuf::from("/nonexistent-data"),
             )
             .await
             .unwrap();
@@ -1270,6 +1271,7 @@ mod tests {
                 None,
                 Some("http://127.0.0.1:9".into()),
                 Some("tok".into()),
+                std::path::PathBuf::from("/nonexistent-data"),
             )
             .await
             .unwrap_err();
@@ -1284,6 +1286,7 @@ mod tests {
                 Some("127.0.0.1:0".into()),
                 None,
                 None,
+                std::path::PathBuf::from("/nonexistent-data"),
             )
             .await
             .unwrap_err();
@@ -1297,6 +1300,7 @@ mod tests {
                 Some("127.0.0.1:0".into()),
                 None,
                 None,
+                std::path::PathBuf::from("/nonexistent-data"),
             )
             .await
             .unwrap();
@@ -1319,6 +1323,7 @@ mod tests {
                 None,
                 Some("".into()),
                 Some("".into()),
+                std::path::PathBuf::from("/nonexistent-data"),
             )
             .await
             .unwrap_err();
@@ -1334,6 +1339,7 @@ mod tests {
                 None,
                 Some("http://127.0.0.1:9".into()),
                 Some("".into()),
+                std::path::PathBuf::from("/nonexistent-data"),
             )
             .await
             .unwrap_err();
