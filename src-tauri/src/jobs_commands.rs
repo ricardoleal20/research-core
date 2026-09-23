@@ -171,14 +171,62 @@ fn append_target_spend(
     )
 }
 
+/// When this process started — the jobs reaper's horizon (review R-05).
+/// The adapters' process tables are process-local: a job whose last
+/// observation predates this moment belongs to a previous process life
+/// and can never be observed again — poll gives it an honest terminal
+/// instead of a forever-`Running` row. (Test seam: a test may move the
+/// horizon to simulate a restart.)
+/// The reaper-horizon override, shared by `process_start` and the test
+/// seam (a static inside each function would be a DIFFERENT static — the
+/// override must be one cell).
+#[cfg(test)]
+static PROCESS_START_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>> =
+    std::sync::OnceLock::new();
+
+fn process_start() -> chrono::DateTime<chrono::Utc> {
+    #[cfg(test)]
+    {
+        if let Some(dt) = PROCESS_START_OVERRIDE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .expect("process start override poisoned")
+            .clone()
+        {
+            return dt;
+        }
+    }
+    static START: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> = std::sync::OnceLock::new();
+    *START.get_or_init(chrono::Utc::now)
+}
+
+/// Test seam (review R-05): move the reaper's horizon — `None` restores
+/// the real process start.
+#[cfg(test)]
+pub(crate) fn set_process_start_for_tests(when: Option<chrono::DateTime<chrono::Utc>>) {
+    *PROCESS_START_OVERRIDE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("process start override poisoned") = when;
+}
+
+/// The honest terminal reason for a job whose handle died with a previous
+/// process (review R-05): the job was live before this process started
+/// and no adapter can ever observe it again.
+const LOST_AFTER_RESTART: &str = "lost_after_restart";
+
 /// Poll every live (queued/running) job — optionally scoped to one
 /// mission — appending the observed transitions: `job.running` when a
 /// queued job is first seen running, `job.finished` / `job.failed` (with
 /// the terminal's stamp + reason) when a job ends, each followed by its
 /// `target.spend_recorded`. Jobs whose handle the adapter no longer knows
-/// (e.g. a restart lost the process table) are skipped honestly — the
-/// read model keeps its last observed state. Called per command
-/// (`poll_jobs`) and per Night Shift tick.
+/// get the jobs reaper (review R-05, FR-9.1's no-silent-run guarantee for
+/// the jobs domain): one whose last observation PREDATES this process
+/// belongs to a previous life — `job.failed(lost_after_restart)`, an
+/// honest terminal with a reason, never a forever-`Running` row; one
+/// observed within this process keeps its last observed state (a
+/// same-process race is not a death). Called per command (`poll_jobs`)
+/// and per Night Shift tick.
 pub(crate) async fn poll_live_jobs(
     db: &Db,
     mission: Option<Uuid>,
@@ -202,20 +250,40 @@ pub(crate) async fn poll_live_jobs(
             .collect()
     };
     // Observe outside the lock: each monitor is a non-blocking read.
+    let start = process_start();
     let mut observed: Vec<(Job, TargetJobStatus)> = Vec::new();
+    let mut reaped: Vec<Job> = Vec::new();
     for (job, adapter) in live {
         match adapter.monitor(&JobHandle::new(job.handle.clone())) {
             Ok(status) => observed.push((job, status)),
-            Err(TargetError::UnknownJob(_)) => continue, // process table lost — keep the last observed state
+            Err(TargetError::UnknownJob(_)) => {
+                // process table lost the handle: a previous process life's
+                // job can never be observed again — reap it honestly
+                let last_seen = job.running_ts.unwrap_or(job.ts);
+                if last_seen < start {
+                    reaped.push(job);
+                } // else: observed within this process — keep last state
+            }
             Err(_) => continue,
         }
     }
-    if observed.is_empty() {
+    if observed.is_empty() && reaped.is_empty() {
         return Ok(Vec::new());
     }
     let mut appended = Vec::new();
     let conn = db.0.lock().await;
     let store = EventStore::new(&conn);
+    // The reaper's terminals (FR-9.1 for jobs): honest, stamped, reasoned —
+    // and fetchable (the job is terminal now, so `fetch_job` answers
+    // instead of refusing forever). No target spend: usage that could
+    // never be observed is not attributable.
+    for job in reaped {
+        appended.push(store.append(NewEvent::job_failed(lifecycle(
+            &job,
+            None,
+            Some(LOST_AFTER_RESTART.into()),
+        ))?)?);
+    }
     for (job, status) in observed {
         match status {
             TargetJobStatus::Running => {
@@ -1325,7 +1393,94 @@ mod tests {
 
     // ---- the poll loop is mission-scoped when asked ----
 
+    /// Review R-05 (FR-9.1 for jobs): a job left Running by a previous
+    /// process life (the adapter's process table died with it) is reaped
+    /// with an honest `job.failed(lost_after_restart)` — terminal, stamped,
+    /// reasoned, and fetchable — instead of a forever-`Running` row. A
+    /// job submitted within THIS process whose handle is briefly unknown
+    /// is never reaped (last observed state wins).
     #[tokio::test]
+    async fn a_restart_lost_running_job_fails_honestly() {
+        let db = test_db();
+        let mission = create_mission(&db).await;
+        // simulate the restart FIRST: the reaper's horizon moves to NOW +
+        // margin, so anything not observed by THIS process is a previous
+        // life's job
+        set_process_start_for_tests(Some(chrono::Utc::now() + chrono::Duration::hours(1)));
+        // a job from a previous process life: submitted + running, handle
+        // unknown to every adapter table
+        let ghost = {
+            let conn = db.0.lock().await;
+            let store = EventStore::new(&conn);
+            let submitted = store
+                .append(
+                    NewEvent::job_submitted(crate::domain::jobs::JobSubmittedPayload {
+                        mission_id: mission,
+                        target: "local".into(),
+                        handle: "h-ghost-restart".into(),
+                        spec: spec("python3", &["train.py"]),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .append(
+                    NewEvent::job_running(JobLifecyclePayload {
+                        mission_id: mission,
+                        job_id: submitted.id,
+                        target: "local".into(),
+                        code: None,
+                        reason: None,
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            submitted.id
+        };
+        // a genuinely live local job (a real child, tracked in the
+        // adapter's table) whose events ALSO predate the horizon — monitor
+        // returns Ok, so the reaper must never touch it. (submit's own
+        // reflect-poll reaps the ghost right here — that IS the reaper
+        // running.)
+        let live = submit_job_inner(&db, mission, "local", spec("sleep", &["10"]))
+            .await
+            .unwrap();
+        // an explicit poll after both — the ghost should already be
+        // terminal and honorably skippable (nothing left to reap)
+        let appended = poll_live_jobs(&db, None).await.unwrap();
+        set_process_start_for_tests(None); // restore before any other test
+        assert!(
+            appended.iter().all(|e| e.kind == crate::domain::jobs::JOB_FAILED),
+            "only reaper terminals appended: {:?}",
+            appended.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
+        );
+        // the ghost is terminal, stamped and reasoned
+        let jobs = crate::domain::jobs::JobsProjection::fold(&events(&db).await).unwrap();
+        let ghost_job = jobs.iter().find(|j| j.id == ghost).unwrap();
+        assert_eq!(ghost_job.phase, JobPhase::Failed);
+        assert_eq!(ghost_job.reason.as_deref(), Some(LOST_AFTER_RESTART));
+        assert!(
+            ghost_job.finished_ts.is_some(),
+            "the reaper's terminal is stamped (AD-12)"
+        );
+        // the LIVE job is NOT reaped — still running; a reaper must never
+        // invent a death for a job it can observe
+        let live_job = jobs.iter().find(|j| j.id == live.id).unwrap();
+        assert!(
+            matches!(live_job.phase, JobPhase::Queued | JobPhase::Running),
+            "a live tracked job survives the reaper untouched"
+        );
+        // and the reaped job is no longer a forever-`job_not_terminal`
+        // hang: fetch now refuses (honestly — a lost process has no
+        // captured output) with the job already terminal, NOT with the
+        // terminal-state refusal that used to leave the row Running
+        let err = fetch_job_inner(&db, ghost).await.unwrap_err().to_string();
+        assert!(
+            !err.contains("job_not_terminal"),
+            "the reaped job must not refuse as if it were still running: {err}"
+        );
+    }
+
     async fn polling_one_mission_leaves_another_missions_jobs_alone() {
         let db = test_db();
         let a = create_mission(&db).await;
