@@ -119,8 +119,12 @@ fn resolve_citation_source(
 /// Resolve a numerical pin's artifact by the `artifact_ref` grammar:
 /// `jobs/<id>/stdout` re-fetches the compute job's results through the
 /// target adapter (the same seam `fetch_job` uses); anything else is a
-/// local file path (absolute, or relative to the working directory).
-fn resolve_artifact_source(artifact_ref: &str) -> (Option<PinSource>, String) {
+/// local file path — readable ONLY under the workspace's data dirs
+/// (review R-08): `PinSource::File` used to read any path the webview
+/// could name (`/etc/passwd`, `~/.ssh/id_rsa`), making the verifier a
+/// file-content guessing oracle. An artifact outside the roots reads
+/// `no_source` — an honest failure, never a read.
+fn resolve_artifact_source(artifact_ref: &str, file_roots: &[std::path::PathBuf]) -> (Option<PinSource>, String) {
     if let Some(id) = artifact_ref
         .trim()
         .strip_prefix("jobs/")
@@ -135,10 +139,130 @@ fn resolve_artifact_source(artifact_ref: &str) -> (Option<PinSource>, String) {
             );
         }
     }
-    (
-        Some(PinSource::File { path: artifact_ref.trim().to_string() }),
-        artifact_ref.trim().to_string(),
-    )
+    let path = artifact_ref.trim();
+    if under_roots(path, file_roots) {
+        (Some(PinSource::File { path: path.to_string() }), path.to_string())
+    } else {
+        // outside the workspace — never read, never guessed
+        (None, path.to_string())
+    }
+}
+
+/// Lexically normalize a path (no fs access — the artifact may not exist
+/// yet) and decide whether it stays under one of the allowed roots.
+/// `..` never escapes: it is resolved component-wise; a path that climbs
+/// out of every root is out.
+fn under_roots(path: &str, roots: &[std::path::PathBuf]) -> bool {
+    use std::path::{Component, Path};
+    fn normalize(path: &Path) -> Option<std::path::PathBuf> {
+        let mut out = std::path::PathBuf::new();
+        for c in path.components() {
+            match c {
+                Component::Prefix(_) | Component::RootDir => return None, // absolute — handled by the caller
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !out.pop() {
+                        return None; // climbs out — refuse
+                    }
+                }
+                Component::Normal(p) => out.push(p),
+            }
+        }
+        Some(out)
+    }
+    let raw = Path::new(path);
+    if raw.is_absolute() {
+        return roots.iter().any(|root| raw.starts_with(root));
+    }
+    let Some(rel) = normalize(raw) else { return false };
+    roots.iter().any(|root| root.join(&rel).starts_with(root))
+}
+
+// ---------------------------------------------------------------------------
+// The URL guard (review R-08): a ref's own URL is user-controllable data,
+// and the verifier used to GET it from the user's machine with redirects
+// followed — SSRF against localhost services and cloud metadata endpoints,
+// with the fetch outcome as a response oracle. The guard allows only
+// http/https to PUBLIC hosts, on the initial URL and every redirect hop.
+// ---------------------------------------------------------------------------
+
+/// One blocked-address reason.
+fn blocked_ip(ip: &std::net::IpAddr) -> Option<&'static str> {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            if v4.is_loopback() {
+                Some("loopback")
+            } else if v4.is_private() {
+                Some("private")
+            } else if v4.is_link_local() {
+                Some("link-local")
+            } else if v4.is_unspecified() {
+                Some("unspecified")
+            } else {
+                None
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                Some("loopback")
+            } else if v6.is_unspecified() {
+                Some("unspecified")
+            } else if v6.is_unique_local() || v6.is_unicast_link_local() {
+                Some("link-local/unique-local")
+            } else {
+                // IPv4-mapped addresses hide a private v4 inside a v6
+                match v6.to_ipv4_mapped() {
+                    Some(v4) => blocked_ip(&std::net::IpAddr::V4(v4)),
+                    None => None,
+                }
+            }
+        }
+    }
+}
+
+/// Guard one URL string (initial fetch or redirect target): http/https
+/// only, hostname not localhost, and no literal or resolved address in a
+/// private/loopback/link-local range. Resolution failure defers to the
+/// fetch itself (it will fail as a visible fetch_error).
+fn guard_url(raw: &str) -> Result<(), String> {
+    let url: reqwest::Url = raw
+        .parse()
+        .map_err(|e| format!("url_refused: unparseable url `{raw}`: {e}"))?;
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("url_refused: scheme `{scheme}` — the verifier fetches http/https only"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("url_refused: `{raw}` names no host"))?;
+    let lowered = host.to_ascii_lowercase();
+    if lowered == "localhost" || lowered.ends_with(".localhost") || lowered.ends_with(".local") || lowered.ends_with(".internal") {
+        return Err(format!("url_refused: host `{host}` is a local name"));
+    }
+    // literal IPs and DNS-resolved names: no private ranges, ever.
+    // (`host_str` brackets IPv6 literals — `[::1]` — strip them for the
+    // parse; the url crate also normalizes v4-mapped addresses to
+    // `::ffff:7f00:1`, which `to_ipv4_mapped` still unmasks.)
+    let check = |ip: std::net::IpAddr| -> Result<(), String> {
+        blocked_ip(&ip).map_or(Ok(()), |why| {
+            Err(format!("url_refused: `{host}` resolves to a {why} address — the verifier never fetches private networks"))
+        })
+    };
+    let literal = lowered.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = literal.parse::<std::net::IpAddr>() {
+        return check(ip);
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    match std::net::ToSocketAddrs::to_socket_addrs(&(literal, port)) {
+        Ok(addrs) => {
+            for addr in addrs {
+                check(addr.ip())?;
+            }
+            Ok(())
+        }
+        // DNS failure: let the fetch produce its own honest error
+        Err(_) => Ok(()),
+    }
 }
 
 /// The real fetcher: the research adapters + plain HTTP/fs, the same data
@@ -165,15 +289,27 @@ impl PinSourceFetcher for CoreFetcher {
                     Ok(None) => Err(format!("not_found: no arXiv paper with id `{id}`")),
                     Err(e) => Err(e),
                 },
-                // A plain URL (the ref's URL or a canonical DOI link;
-                // redirects followed). The body text is the fetched
+                // A plain URL (the ref's URL or a canonical DOI link) —
+                // behind the SSRF guard (review R-08): http/https to
+                // public hosts only, on the initial URL AND every redirect
+                // hop (a public URL redirecting to 169.254.169.254 is
+                // refused mid-flight). The body text is the fetched
                 // content — publisher HTML included, so an excerpt that
                 // only matches after HTML unwrapping reads not_found, an
                 // honest failure rather than a guess.
                 PinSource::Url { url } => {
+                    guard_url(url)?;
                     let client = reqwest::Client::builder()
                         .user_agent("research-core/0.1")
                         .timeout(std::time::Duration::from_secs(20))
+                        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                            // re-guard every hop — a redirect into a
+                            // private network is refused, never followed
+                            match guard_url(attempt.url().as_str()) {
+                                Ok(()) => attempt.follow(),
+                                Err(reason) => attempt.error(reason),
+                            }
+                        }))
                         .build()
                         .map_err(|e| e.to_string())?;
                     let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
@@ -210,6 +346,7 @@ impl PinSourceFetcher for CoreFetcher {
 #[tauri::command]
 pub async fn run_pin_verification(
     db: State<'_, Db>,
+    paths: State<'_, crate::AppPaths>,
     hypothesis_id: Option<String>,
 ) -> Result<Vec<Claim>, String> {
     let scope = match hypothesis_id.as_deref().map(str::trim) {
@@ -219,8 +356,12 @@ pub async fn run_pin_verification(
                 .map_err(|e| format!("invalid hypothesis id `{raw}`: {e}"))?,
         ),
     };
+    // The roots a `PinSource::File` artifact may live under (review R-08):
+    // the workspace's data dir and its attachments dir — nothing else is
+    // ever read.
+    let file_roots = vec![paths.data_dir.clone(), paths.data_dir.join("attachments")];
     let fetcher = CoreFetcher { db: db.inner().clone() };
-    run_pin_verification_inner(db.inner(), scope, &fetcher).await
+    run_pin_verification_inner(db.inner(), scope, &file_roots, &fetcher).await
 }
 
 /// Plain inner (testable without Tauri state; the fetcher is injected so
@@ -231,6 +372,7 @@ pub async fn run_pin_verification(
 pub(crate) async fn run_pin_verification_inner(
     db: &Db,
     scope: Option<Uuid>,
+    file_roots: &[std::path::PathBuf],
     fetcher: &dyn PinSourceFetcher,
 ) -> Result<Vec<Claim>, String> {
     // Phase 1: fold + resolve every pin's source under one lock.
@@ -248,7 +390,7 @@ pub(crate) async fn run_pin_verification_inner(
                     resolve_citation_source(&conn, pin.ref_id.as_deref().unwrap_or(""))?
                 }
                 PinKind::Numerical => {
-                    resolve_artifact_source(pin.artifact_ref.as_deref().unwrap_or(""))
+                    resolve_artifact_source(pin.artifact_ref.as_deref().unwrap_or(""), file_roots)
                 }
             };
             checks.push(PinCheck {
@@ -410,6 +552,15 @@ mod tests {
         (db, path)
     }
 
+    /// The file roots a `PinSource::File` artifact may live under (review
+    /// R-08): a temp workspace dir, exactly the shape the command passes.
+    fn roots() -> Vec<std::path::PathBuf> {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("rc-verifier-roots-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        vec![dir.clone(), dir.join("attachments")]
+    }
+
     fn cleanup(path: &std::path::PathBuf) {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
@@ -506,7 +657,7 @@ mod tests {
             format!("Title.\nAbstract: {excerpt}\nEnd."),
         );
 
-        let claims = run_pin_verification_inner(&db, Some(h), &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &fetcher).await.unwrap();
         assert_eq!(claims.len(), 1);
         assert!(claims[0].pinned, "the pin stays");
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
@@ -564,11 +715,106 @@ mod tests {
             "1706.03762".into(),
             format!("Attention Is All You Need. {excerpt}"),
         );
-        let claims = run_pin_verification_inner(&db, None, &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, None, &roots(), &fetcher).await.unwrap();
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
         assert_eq!(v.status, VerificationStatus::Verified);
         assert_eq!(v.source, "arxiv:1706.03762");
         cleanup(&path);
+    }
+
+    /// A numerical pin whose artifact lives OUTSIDE the file roots is
+    /// never read (review R-08): `/etc/passwd`, `~/.ssh/id_rsa`, and a
+    /// `..`-climb out of the workspace all read `no_source` — the
+    /// digest-oracle shape (guess a file's content, let `digest_ok`/not
+    /// confirm it) is gone. The pin fails visibly and stays.
+    #[tokio::test]
+    async fn an_artifact_outside_the_file_roots_is_never_read() {
+        let (db, path) = test_db();
+        let h = seed_hypothesis(&db).await;
+        let hostile_refs = [
+            "/etc/passwd",
+            "/etc/ssh/ssh_host_rsa_key",
+            "../../etc/passwd",
+            "runs/../../../../etc/passwd",
+        ];
+        let mut claim_ids = Vec::new();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            for (i, artifact) in hostile_refs.iter().enumerate() {
+                let claim = store
+                    .append(RawNewEvent::claim_registered("A claim.", h, None).unwrap())
+                    .unwrap();
+                store
+                    .append(
+                        RawNewEvent::evidence_pinned_numerical(
+                            claim.id,
+                            h,
+                            artifact,
+                            "any content",
+                            0.9,
+                            "GLM-5.3",
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                claim_ids.push((i, claim.id));
+            }
+        }
+        // a fetcher that would happily read any path — it must never be
+        // asked to: out-of-root artifacts resolve to no source at all
+        let mut fetcher = SeededFetcher::new();
+        for artifact in &hostile_refs {
+            fetcher.files.insert((*artifact).to_string(), "root:toor".into());
+        }
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &fetcher).await.unwrap();
+        assert_eq!(claims.len(), hostile_refs.len());
+        for claim in &claims {
+            assert!(claim.pinned, "a refused artifact never deletes the pin");
+            let v = claim.pin.as_ref().unwrap().verification.as_ref().unwrap();
+            assert_eq!(
+                (v.status, v.detail.as_str()),
+                (VerificationStatus::Failed, DETAIL_NO_SOURCE),
+                "an out-of-root artifact reads no_source, never a fetch"
+            );
+        }
+        assert_eq!(fetcher.fetch_count(), 0, "no hostile path was ever fetched");
+        let _ = claim_ids;
+        cleanup(&path);
+    }
+
+    /// The URL guard (review R-08): only http/https to public hosts —
+    /// localhost names, private/loopback/link-local literals (v4, v6, and
+    /// v4-mapped) are refused before any connection.
+    #[test]
+    fn the_url_guard_refuses_private_and_local_targets() {
+        // the SSRF shapes from the review, plus the standard ones
+        for hostile in [
+            "http://169.254.169.254/latest/meta-data/", // cloud metadata
+            "http://metadata.google.internal/",          // local name
+            "http://localhost:23119/api",                // localhost + port
+            "http://127.0.0.1/",
+            "http://10.0.0.1/",                          // private v4
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://[::1]/",                             // v6 loopback
+            "http://[fe80::1]/",                         // v6 link-local
+            "http://[fd00::1]/",                         // v6 unique-local
+            "http://[::ffff:127.0.0.1]/",                // v4-mapped
+            "http://0.0.0.0/",                           // unspecified
+            "file:///etc/passwd",                        // scheme
+            "ftp://example.org/",
+            "gopher://example.org/",
+        ] {
+            let err = guard_url(hostile).expect_err(hostile);
+            assert!(
+                err.starts_with("url_refused:"),
+                "{hostile:?}: unexpected: {err}"
+            );
+        }
+        // public targets pass (a literal public IP — no DNS in the test)
+        assert_eq!(guard_url("https://93.184.216.34/"), Ok(()));
+        assert_eq!(guard_url("http://93.184.216.34/paper"), Ok(()));
     }
 
     /// A numerical pin verifies when the artifact re-reads to the pinned
@@ -603,7 +849,7 @@ mod tests {
         // Digest recomputes over the re-read artifact → verified.
         let mut fetcher = SeededFetcher::new();
         fetcher.files.insert("runs/007/table-3.csv".into(), content.into());
-        let claims = run_pin_verification_inner(&db, Some(h), &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &fetcher).await.unwrap();
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
         assert_eq!(v.status, VerificationStatus::Verified);
         assert_eq!(v.detail, DETAIL_DIGEST_OK);
@@ -614,7 +860,7 @@ mod tests {
         changed
             .files
             .insert("runs/007/table-3.csv".into(), "accuracy: 0.901, n=3 seeds".into());
-        let claims = run_pin_verification_inner(&db, Some(h), &changed).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &changed).await.unwrap();
         assert!(claims[0].pinned, "a failed verification never deletes the pin");
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
         assert_eq!(v.status, VerificationStatus::Failed);
@@ -622,7 +868,7 @@ mod tests {
 
         // The artifact is missing → failed, artifact_missing; still pinned.
         let missing = SeededFetcher::new();
-        let claims = run_pin_verification_inner(&db, Some(h), &missing).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &missing).await.unwrap();
         assert!(claims[0].pinned);
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
         assert_eq!(v.status, VerificationStatus::Failed);
@@ -662,7 +908,7 @@ mod tests {
         }
         let mut fetcher = SeededFetcher::new();
         fetcher.jobs.insert(job_id, stdout.into());
-        let claims = run_pin_verification_inner(&db, None, &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, None, &roots(), &fetcher).await.unwrap();
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
         assert_eq!(v.status, VerificationStatus::Verified);
         assert_eq!(v.detail, DETAIL_DIGEST_OK);
@@ -707,7 +953,7 @@ mod tests {
         fetcher
             .urls
             .insert("https://example.org/paper".into(), "Entirely different text.".into());
-        let claims = run_pin_verification_inner(&db, Some(h), &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &fetcher).await.unwrap();
         assert_eq!(claims.len(), 2);
         for claim in &claims {
             assert!(claim.pinned, "a failed verification never deletes the pin");
@@ -721,7 +967,7 @@ mod tests {
 
         // A fetch error (the corpus entry vanishes) → failed/fetch_error.
         let unreachable = SeededFetcher::new();
-        let claims = run_pin_verification_inner(&db, Some(h), &unreachable).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &unreachable).await.unwrap();
         let v = claims
             .iter()
             .find(|c| c.id == absent)
@@ -751,7 +997,7 @@ mod tests {
 
         // First run: the source is unreachable → failed/fetch_error.
         let down = SeededFetcher::new();
-        run_pin_verification_inner(&db, Some(h), &down).await.unwrap();
+        run_pin_verification_inner(&db, Some(h), &roots(), &down).await.unwrap();
         let (status, detail, _) = verification_of(&db, claim).await.unwrap();
         assert_eq!((status, detail.as_str()), (VerificationStatus::Failed, DETAIL_FETCH_ERROR));
 
@@ -762,7 +1008,7 @@ mod tests {
             "https://example.org/attention".into(),
             format!("Title. {excerpt}"),
         );
-        run_pin_verification_inner(&db, Some(h), &up).await.unwrap();
+        run_pin_verification_inner(&db, Some(h), &roots(), &up).await.unwrap();
         let (status, detail, _) = verification_of(&db, claim).await.unwrap();
         assert_eq!((status, detail.as_str()), (VerificationStatus::Verified, DETAIL_EXCERPT_MATCHED));
 
@@ -810,7 +1056,7 @@ mod tests {
         );
         // Scoped to h1: only h1's claim comes back (and only h1's pin got
         // an event).
-        let claims = run_pin_verification_inner(&db, Some(h1), &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h1), &roots(), &fetcher).await.unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].hypothesis_id, h1);
         assert!(claims[0].pin.as_ref().unwrap().verification.is_some());
@@ -820,7 +1066,7 @@ mod tests {
         assert_eq!(verified_events(&events).len(), 1);
         // Workspace-wide: the second run covers both (h1 re-verifies, h2
         // verifies for the first time).
-        let claims = run_pin_verification_inner(&db, None, &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, None, &roots(), &fetcher).await.unwrap();
         assert_eq!(claims.len(), 2);
         assert!(claims.iter().all(|c| c
             .pin
@@ -876,7 +1122,7 @@ mod tests {
             "https://example.org/attention".into(),
             format!("Title. {excerpt}"),
         );
-        let claims = run_pin_verification_inner(&db, Some(h), &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &fetcher).await.unwrap();
         let v = claims[0].pin.as_ref().unwrap().verification.as_ref().unwrap();
         assert_eq!(v.status, VerificationStatus::Verified, "verified by code");
         assert_eq!(fetcher.fetch_count(), 1, "exactly one data fetch");
@@ -918,7 +1164,7 @@ mod tests {
             "https://example.org/attention".into(),
             format!("Title. {excerpt}"),
         );
-        let claims = run_pin_verification_inner(&db, Some(h), &fetcher).await.unwrap();
+        let claims = run_pin_verification_inner(&db, Some(h), &roots(), &fetcher).await.unwrap();
         let pin = claims[0].pin.as_ref().unwrap();
         // The machine axis.
         assert_eq!(pin.verification.as_ref().unwrap().status, VerificationStatus::Verified);
