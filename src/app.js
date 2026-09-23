@@ -2,6 +2,9 @@
 // (prototype/index.html). The shell, render loop, theming, and component
 // idioms are carried from the bible; the data flows through src/api.ts
 // (Tauri commands, same-origin served reads, or the in-memory mock).
+// The stylesheet is the local-first build input: vendored fonts + the
+// PostCSS-compiled Tailwind layer + the bible's custom CSS (src/app.css).
+import "./app.css";
 import { api } from "./api";
 import { t, setLang, getLang } from "./i18n";
 import { icon, esc, btn, toggleRcSelect, pickRcSelect, closeRcSelects } from "./ui/helpers";
