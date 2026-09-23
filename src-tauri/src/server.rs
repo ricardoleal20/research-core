@@ -90,6 +90,20 @@ pub(crate) fn read_api_router() -> Router<ServerState> {
             "/api/missions/{mission_id}/readiness",
             get(mission_readiness),
         )
+        // The journal-targeting reads (Story 6.11, FR-19.1/19.2 —
+        // read-only per AD-14): the bundled venue templates and the
+        // tier-2 journal-ready report.
+        .route("/api/venues", get(venues_all))
+        .route(
+            "/api/venues/{venue_id}/readiness",
+            get(venue_readiness),
+        )
+        // The submission checklists (Story 6.13, FR-19.4 — read-only per
+        // AD-14): the mission-folded checklists and one checklist's full
+        // view (per-item state + the tier-2 verdict). Checking, unchecking,
+        // pre-checking, and completing stay on the Tauri command path.
+        .route("/api/submissions", get(submissions_all))
+        .route("/api/submissions/{mission_id}", get(submission_view))
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
         .route("/api/adapters", get(registered_adapters))
@@ -369,6 +383,67 @@ async fn mission_readiness(
     readiness_report_inner(&c, Some(mission_id))
         .map(Json)
         .map_err(|_| internal())
+}
+
+/// Every bundled venue template (Story 6.11, FR-19.2 — read-only per
+/// AD-14): straight from the local dataset, no cloud fetches (NFR-1).
+async fn venues_all() -> Json<Vec<crate::domain::journals::VenueTemplate>> {
+    Json(crate::domain::journals::venues().to_vec())
+}
+
+/// The tier-2 journal-ready report of one venue (Story 6.11, FR-19.1 —
+/// read-only): the two-tier verdict derived from the shared log at its
+/// current head; `?mission=<uuid>` scopes it to one mission's board.
+async fn venue_readiness(
+    State(state): State<ServerState>,
+    Path(venue_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<crate::domain::readiness::TierTwoReport>, StatusCode> {
+    let mission = match params.get("mission").map(String::as_str) {
+        None | Some("") => None,
+        Some(raw) => Some(raw.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?),
+    };
+    let c = state.db.0.lock().await;
+    crate::journal_commands::journal_readiness_inner(&c, mission, &venue_id)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// Every submission mission (Story 6.13 — read-only): the folded
+/// checklists over the shared log.
+async fn submissions_all(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<crate::domain::submissions::SubmissionMission>>, StatusCode> {
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    crate::domain::submissions::SubmissionProjection::fold(&events)
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+/// One submission mission's full view (Story 6.13 — read-only): the
+/// checklist + the tier-2 "ready to submit?" verdict.
+async fn submission_view(
+    State(state): State<ServerState>,
+    Path(mission_id): Path<String>,
+) -> Result<Json<crate::submissions_commands::SubmissionView>, StatusCode> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let c = state.db.0.lock().await;
+    let events = EventStore::new(&c).events_all().map_err(|_| internal())?;
+    let submission =
+        crate::domain::submissions::SubmissionProjection::for_mission(&events, mission_id)
+            .map_err(|_| internal())?
+            .ok_or_else(|| StatusCode::NOT_FOUND)?;
+    let readiness =
+        crate::submissions_commands::submission_readiness_inner(&c, &events, &submission)
+            .map_err(|_| internal())?;
+    Ok(Json(crate::submissions_commands::SubmissionView {
+        all_checked: submission.all_checked(),
+        submission,
+        readiness,
+    }))
 }
 
 /// The morning digest (Story 2.3, FR-4.4 — read-only per AD-14; the manual
@@ -1547,6 +1622,93 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The journal-targeting routes (Story 6.11, FR-19.1/19.2 — read-only
+    /// per AD-14): the venue list serves the bundled local dataset, and
+    /// the venue readiness route serves the tier-2 fold over the shared
+    /// log — an unknown venue is an honest error, a malformed mission
+    /// query is a 400, and POST is not routed.
+    #[tokio::test]
+    async fn get_api_venues_serve_the_bundled_dataset_and_the_tier_two_gate() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(
+                    NewEvent::mission_created(MissionCreatedPayload {
+                        question: "Does X hold up?".into(),
+                        stop_condition: "Stop after $5.".into(),
+                        success_criterion: "A blind rater agrees.".into(),
+                        autonomy: Autonomy::Suggest,
+                        spend_ceiling_cents: 500,
+                        schedule: "daily-03:00".into(),
+                        roles: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            let h = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            store
+                .append(NewEvent::claim_registered("X holds at 32k.", h.id, None).unwrap())
+                .unwrap();
+        }
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/venues").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let venues: Vec<crate::domain::journals::VenueTemplate> =
+            body_json(res.into_body()).await;
+        assert!(venues.len() >= 5, "the bundled seed list");
+        assert!(venues.iter().all(|v| !v.criteria.is_empty()));
+
+        // the tier-2 fold: the dirty board is never journal-ready, the
+        // manuscript-dependent checks fail honestly
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/venues/siam-jsc/readiness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let report: crate::domain::readiness::TierTwoReport =
+            body_json(res.into_body()).await;
+        assert_eq!(report.venue_id, "siam-jsc");
+        assert_eq!(
+            report.verdict,
+            crate::domain::readiness::ReadinessVerdict::NotReady
+        );
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.detail.as_deref() == Some("no_manuscript")));
+
+        // a malformed mission query is a 400, an unknown venue an honest
+        // error side — never a panic
+        let res = app(db.clone())
+            .oneshot(
+                Request::get("/api/venues/siam-jsc/readiness?mission=not-a-uuid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let res = app(db)
+            .oneshot(
+                Request::get("/api/venues/no-such-venue/readiness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     /// The dashboard route (Story 5.10, FR-18.1 — read-only per AD-14): the

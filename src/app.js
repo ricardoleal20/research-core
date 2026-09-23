@@ -12,6 +12,7 @@ import { renderLock, bindLock, renderWizard } from "./ui/lock";
 import { RC as RC_BUS, ctx } from "./ui/rc";
 import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer, renderCheckpointsDrawer } from "./ui/missions";
 import { renderDashboard } from "./ui/dashboard";
+import { renderPublishHome } from "./ui/publish";
 import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings, renderExportModal } from "./ui/screens";
 import { onMobile } from "./api";
 import { bootMobile } from "./ui/mobile";
@@ -68,6 +69,7 @@ const app = {
     boardMissionId: null,
     readinessOpen: false,
     readinessMissionId: null,
+    readinessVenueId: null,
     receiptRunId: null,
     checkpointsOpen: false,
     rollbackConfirm: null,
@@ -84,6 +86,11 @@ const app = {
     runs: {}, // missionId -> MissionRun[]
     runsOpen: {}, // missionId -> bool (drill-down toggle)
     board: {}, // missionId -> { hyps: [], evidence: Record<hypId, Claim[]>, proposals: [] }
+  venues: null,
+  submissions: null,
+  submissionViews: {},
+  publishScopeMissionId: null,
+  tierTwo: undefined,
     disclosure: {}, // missionId -> SearchDisclosure (the Divulgación fold)
     checkpoints: null, // CheckpointsView (the restore-point control)
     rollbackOutcome: null, // the last rollback's orphaned outcome
@@ -131,7 +138,7 @@ function applyMotion() {
 }
 
 // ========== ROUTER ==========
-const routes = ["dashboard", "missions", "refs", "review", "assistant", "actions", "digest", "status", "settings", "board"];
+const routes = ["dashboard", "missions", "refs", "review", "assistant", "actions", "digest", "status", "settings", "publish", "board"];
 function navigate(view) {
   if (!routes.includes(view)) view = "missions";
   app.state.previousView = app.state.view;
@@ -158,6 +165,7 @@ function renderShell() {
     { id: "dashboard", label: t("rc.nav.dashboard"), icon: "home" },
     { id: "missions", label: t("rc.nav.home"), icon: "target" },
     { id: "refs", label: t("rc.nav.refs"), icon: "book" },
+    { id: "publish", label: t("rc.nav.publish"), icon: "send" },
     { id: "review", label: t("rc.nav.review"), icon: "sparkle" },
     { id: "assistant", label: t("rc.nav.assistant"), icon: "message" },
     { id: "actions", label: t("rc.nav.actions"), icon: "check" },
@@ -279,6 +287,7 @@ function renderMain() {
     case "dashboard": html = renderDashboard(app); break;
     case "missions": html = renderMissionsHome(app); break;
     case "refs": html = renderRefs(app); break;
+    case "publish": html = renderPublishHome(app); break;
     case "review": html = renderReview(app); break;
     case "assistant": html = renderAssistant(app); break;
     case "actions": html = renderActions(app); break;
@@ -405,6 +414,34 @@ async function loadManuscriptsList() {
   renderMainOnly();
 }
 
+// The Publication surface's reads (Stories 6.11/6.13, FR-19): the
+// bundled venue templates (local data, no cloud — NFR-1) and the
+// submission checklists with their "ready to submit?" verdicts; loaded
+// fresh per visit so an edited dataset or new checklist shows without a
+// reload.
+async function loadPublishData() {
+  try {
+    app.data.venues = await api.listVenues();
+  } catch (e) {
+    console.error(e);
+    app.data.venues = [];
+  }
+  try {
+    const submissions = await api.listSubmissions();
+    app.data.submissions = submissions;
+    const views = {};
+    await Promise.all(submissions.map(async (sub) => {
+      try { views[sub.id] = await api.getSubmission(sub.id); } catch (e2) { views[sub.id] = null; }
+    }));
+    app.data.submissionViews = views;
+  } catch (e) {
+    console.error(e);
+    app.data.submissions = [];
+    app.data.submissionViews = {};
+  }
+  renderMainOnly();
+}
+
 async function loadDigest() {
   try {
     app.data.digest = await api.getMorningDigest();
@@ -464,6 +501,7 @@ function loadViewData(view) {
   if (view === "dashboard") loadDashboard();
   if (view === "missions") loadMissions();
   if (view === "refs") loadRefs();
+  if (view === "publish") loadPublishData();
   if (view === "assistant") loadAssistant();
   if (view === "digest") loadDigest();
   if (view === "settings") {
@@ -481,6 +519,7 @@ function renderCommandPalette() {
     { name: t("rc.nav.dashboard"), action: "RC.navigate('dashboard')" },
     { name: t("rc.nav.home"), action: "RC.navigate('missions')" },
     { name: t("rc.nav.refs"), action: "RC.navigate('refs')" },
+    { name: t("rc.nav.publish"), action: "RC.navigate('publish')" },
     { name: t("rc.nav.review"), action: "RC.navigate('review')" },
     { name: t("rc.nav.assistant"), action: "RC.navigate('assistant')" },
     { name: t("rc.nav.actions"), action: "RC.navigate('actions')" },
@@ -695,7 +734,7 @@ window.RC = RC_BUS;
 Object.assign(ctx, {
   app, render, renderMainOnly, navigate,
   loadMissions, loadRuns, loadBoard, loadDigest, loadTrust, loadTargets, loadRefs, loadViewData, loadAssistant, loadDashboard,
-  loadManuscript, loadManuscriptsList,
+  loadManuscript, loadManuscriptsList, loadPublishData,
 });
 
 export { app, render, renderMainOnly, navigate };

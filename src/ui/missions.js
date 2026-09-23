@@ -5,7 +5,7 @@
 // command. Visual anatomy per DESIGN.md: mission-card, hypothesis-card,
 // evidence-pin, quarantine-diff, spend-meter, digest-item,
 // readiness-blocking-item.
-import { t } from "../i18n";
+import { t, getLang } from "../i18n";
 import { api, servedByCoreFlag } from "../api";
 import { icon, esc, badge, btn, card, rcSelect, pageHeader, fmtCents, fmtTs } from "./helpers";
 import { RC, ctx } from "./rc";
@@ -586,6 +586,8 @@ function renderQuarantine(app, pending, decided) {
 
 function renderProposal(app, p) {
   const isPin = p.proposedKind === "evidence.pinned";
+  const submission = p.proposedKind === "submission.created";
+  const itemCheck = p.proposedKind === "submission.item_checked";
   const payload = p.proposedPayload;
   const target = p.targetSeq ? `H-${p.targetSeq}` : (p.targetLabel || "");
   return `
@@ -597,10 +599,18 @@ function renderProposal(app, p) {
       ${isPin ? `
         <p class="text-xs text-muted">${t("quarantine.artifact")} <span class="font-mono">${esc(payload.artifact_ref || "")}</span></p>
         <pre class="rounded-lg bg-gray-50 border border-border p-3 text-[11px] font-mono whitespace-pre-wrap break-all leading-relaxed">${esc(payload.excerpt || "")}</pre>
+      ` : submission ? `
+        <p class="text-sm">${icon("send", "w-3.5 h-3.5 inline text-muted")} <span class="font-medium">${t("quarantine.submissionProposes")}</span></p>
+        <p class="text-xs text-muted leading-relaxed"><span class="font-medium text-foreground">${t("quarantine.venue")}:</span> <span class="font-mono">${esc(payload.venue_id || "")}</span></p>
+        <p class="text-xs text-muted leading-relaxed"><span class="font-medium text-foreground">${t("quarantine.stopCondition")}:</span> ${esc(payload.stop_condition || "")}</p>
+      ` : itemCheck ? `
+        <p class="text-sm"><span class="font-mono text-xs text-muted">${esc(p.targetLabel || "")}</span> <span class="text-muted">→</span> <span class="font-mono text-xs font-medium">${esc(payload.item_id || "")}</span></p>
+        ${payload.note ? `<p class="text-xs text-muted leading-relaxed"><span class="font-medium text-foreground">${t("quarantine.evidence")}:</span> <span class="font-mono text-[11px]">${esc(payload.note)}</span></p>` : ""}
       ` : `
         <p class="text-sm"><span class="font-mono text-xs text-muted">${esc(target)}</span> <span class="font-mono text-xs">${esc(payload.from)}</span> <span class="text-muted">→</span> <span class="font-mono text-xs font-medium">${esc(payload.to)}</span></p>
       `}
       <p class="text-xs text-muted leading-relaxed"><span class="font-medium text-foreground">${t("quarantine.basis")}:</span> ${esc(isPin ? (payload.assessing_model || "") : (payload.basis || ""))}</p>
+      ${submission || itemCheck ? `<p class="text-[11px] text-muted">${t("quarantine.submissionNote")}</p>` : ""}
       ${p.basisStale ? `
         <div class="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2 flex items-center gap-2">
           ${icon("danger", "w-4 h-4 text-amber-700 shrink-0")}
@@ -843,9 +853,89 @@ export function renderReadinessDrawer(app) {
           </div>
           <p class="text-[11px] text-muted mt-2">${t("rd.trailNote")}</p>
         </div>
+        ${renderTierTwoSection(app)}
       </div>`}
     </div>`;
   document.body.appendChild(overlay);
+}
+
+// ========== TIER TWO — the journal-ready verdict (Story 6.11, FR-19.1) ==========
+// The drawer's second tier: a venue select over the bundled templates +
+// the per-venue checklist verdict — every item referencing the specific
+// board/manuscript object that blocks it; human-only items render
+// flagged, never auto-passed (the bible's readiness-blocking-item idiom).
+function renderTierTwoSection(app) {
+  const venues = app.data.venues || [];
+  const selected = app.state.readinessVenueId;
+  const report = app.data.tierTwo;
+  const lang = getLang();
+  const venueOf = (id) => venues.find((v) => v.id === id);
+  return `
+    <div class="border-t border-border pt-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-sm font-medium">${t("rd.tier2.title")}</span>
+        ${report ? badge(report.verdict === "ready" ? t("rd.ready") : t("rd.notReady"), report.verdict === "ready" ? "success" : "destructive") : ""}
+      </div>
+      <p class="text-[11px] text-muted">${t("rd.tier2.note")}</p>
+      ${rcSelect({
+        id: "readiness-venue",
+        size: "sm",
+        cls: "w-full",
+        dir: "up",
+        options: [{ value: "", label: t("rd.tier2.select") }, ...venues.map((v) => ({ value: v.id, label: v.name }))],
+        value: selected || "",
+        onChange: "RC.selectReadinessVenue(this.value)",
+      })}
+      ${selected && !report ? `<p class="text-sm text-muted py-2 text-center">${t("rc.common.loading")}</p>` : ""}
+      ${selected && report ? `
+      <div class="space-y-1.5">
+        ${report.items.map((i) => renderTierTwoItem(i, venueOf(selected), lang)).join("")}
+      </div>` : ""}
+    </div>`;
+}
+
+function renderTierTwoItem(item, venue, lang) {
+  // human-only items carry their label in the dataset (data-owned copy)
+  const criterion = venue?.criteria.find((c) => c.id === item.criterionId);
+  const label = item.kind === "human_only"
+    ? ((lang === "en" ? criterion?.labelEn : criterion?.labelEs) || criterion?.labelEs || item.criterionId)
+    : t("rd.c." + item.kind);
+  const statusChip = {
+    pass: [t("rd.tier2.pass"), "success"],
+    fail: [t("rd.tier2.fail"), "destructive"],
+    human_pending: [t("rd.tier2.humanPending"), "warning"],
+    human_confirmed: [t("rd.tier2.humanConfirmed"), "success"],
+  }[item.status] || [item.status, "muted"];
+  const dot = { pass: "bg-emerald-500", fail: "bg-amber-500", human_pending: "bg-slate-400", human_confirmed: "bg-emerald-500" }[item.status] || "bg-slate-300";
+  return `
+    <div class="flex items-start gap-2.5 ${item.status === "fail" ? "" : "opacity-90"}">
+      <span class="mt-1.5 h-2 w-2 rounded-full shrink-0 ${dot}"></span>
+      <div class="min-w-0 flex-1">
+        <div class="flex items-start justify-between gap-2">
+          <p class="text-sm leading-snug ${item.kind === "human_only" ? "flex items-center gap-1" : ""}">${item.kind === "human_only" ? icon("pen", "w-3 h-3 inline text-muted") + " " : ""}${esc(label)}</p>
+          ${badge(statusChip[0], statusChip[1])}
+        </div>
+        ${item.detail ? `<p class="font-mono text-[10px] text-muted mt-0.5">${esc(item.detail)}</p>` : ""}
+        ${item.refs.length ? `<div class="mt-1 flex flex-wrap gap-1">${item.refs.map((x) => `<span class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-muted">${esc(x)}</span>`).join("")}</div>` : ""}
+      </div>
+    </div>`;
+}
+
+// The drawer's tier-2 read (Story 6.11): fold the journal-ready report of
+// the selected venue for the drawer's current scope.
+async function loadTierTwo(app) {
+  const venueId = app.state.readinessVenueId;
+  if (!venueId) return;
+  try {
+    app.data.tierTwo = await api.getJournalReadiness(
+      app.state.readinessMissionId || null,
+      venueId,
+    );
+  } catch (e) {
+    console.error(e);
+    app.data.tierTwo = null;
+  }
+  ctx.render();
 }
 
 function trailLabel(row) {
@@ -1101,13 +1191,41 @@ Object.assign(RC, {
     app.state.readinessMissionId = missionId || null;
     app.data.readiness = undefined;
     ctx.render();
-    try {
-      app.data.readiness = await api.getReadinessReport(missionId || null);
-    } catch (e) {
-      console.error(e);
-      app.data.readiness = null;
-    }
+    // the venue select's options (Story 6.11): the bundled dataset, loaded
+    // lazily the first time the drawer opens
+    const venuesLoaded = app.data.venues !== null && app.data.venues !== undefined;
+    const [report] = await Promise.all([
+      api.getReadinessReport(missionId || null).catch((e) => {
+        console.error(e);
+        return null;
+      }),
+      venuesLoaded ? Promise.resolve(null) : api.listVenues().then((vs) => {
+        app.data.venues = vs;
+      }).catch((e) => {
+        console.error(e);
+        app.data.venues = [];
+      }),
+    ]);
+    app.data.readiness = report;
+    if (app.state.readinessVenueId) await loadTierTwo(app);
+    else ctx.render();
+  },
+  // The Publication surface's affordance (Story 6.11): open the drawer with
+  // the venue preselected — the two-tier verdict in one move.
+  async openReadinessWithVenue(venueId) {
+    const app = ctx.app;
+    app.state.readinessVenueId = venueId || null;
+    await RC.openReadiness(app.state.boardMissionId || null);
+  },
+  // The drawer's venue select (Story 6.11, FR-19.1): selecting a venue
+  // folds the tier-2 report of the current scope for that venue.
+  async selectReadinessVenue(venueId) {
+    const app = ctx.app;
+    app.state.readinessVenueId = venueId || null;
+    app.data.tierTwo = undefined;
     ctx.render();
+    if (venueId) await loadTierTwo(app);
+    else ctx.render();
   },
   closeReadiness() {
     ctx.app.state.readinessOpen = false;

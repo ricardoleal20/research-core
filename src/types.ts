@@ -435,6 +435,25 @@ export interface ProposedPin {
   assessing_model: string;
 }
 
+// The intended submission payloads of a proposal (Stories 6.12/6.13,
+// FR-19.4) — snake_case on the wire (the log's payload convention):
+// proposing the venue's checklist (the Fit Finder's reviewable choice —
+// AD-12 terminators included, exactly as the direct creation carries
+// them) or one machine item's pre-check.
+export interface ProposedSubmission {
+  question: string;
+  stop_condition: string;
+  success_criterion: string;
+  venue_id: string;
+  source_mission_id: string | null;
+}
+export interface ProposedSubmissionItem {
+  mission_id: string;
+  venue_id: string;
+  item_id: string;
+  note: string | null;
+}
+
 export interface Proposal {
   id: string; // the proposal.created event id
   seq: number;
@@ -444,8 +463,8 @@ export interface Proposal {
   targetEntity: string; // the hypothesis the proposal intends to change
   targetLabel: string | null; // the hypothesis statement — the card's label
   targetSeq: number | null; // the H-n label seq
-  proposedKind: string; // "hypothesis.status_changed" | "evidence.pinned"
-  proposedPayload: ProposedTransition | ProposedPin; // discriminated by proposedKind
+  proposedKind: string; // "hypothesis.status_changed" | "evidence.pinned" | "submission.created" | …
+  proposedPayload: ProposedTransition | ProposedPin | ProposedSubmission | ProposedSubmissionItem; // discriminated by proposedKind
   basisSeq: number; // the seq of the entity state the proposal derives from (AD-13)
   basisStale: boolean; // pending: entity advanced past the basis (warning variant); merged: the forced-past-stale marker
   status: ProposalStatus;
@@ -1084,6 +1103,108 @@ export interface ReadinessReport {
   blockers: ReadinessItem[];
   infos: ReadinessItem[];
   trail: ReadinessTrailRow[];
+}
+
+// The bundled venue dataset (Story 6.11, FR-19.2): venue templates as
+// DATA — identity, scope tags, and the criteria (machine-checkable or
+// human-only). Ships with the app, fully local (NFR-1); community-
+// extensible by editing the dataset (NFR-7).
+export interface VenueCriterion {
+  id: string; // machine: the check code (param-qualified for statements); human: the dataset id
+  human: boolean; // true = human-only: never auto-passed, never agent-checkable
+  check: string | null; // the machine check's code (present iff !human)
+  detail: string | null; // the check's code-form param (limit, statement, style)
+  labelEn: string | null; // human-only: the bilingual labels (data-owned copy)
+  labelEs: string | null;
+}
+
+export interface VenueTemplate {
+  id: string;
+  name: string;
+  family: string;
+  scope: string[]; // the Fit Finder's matching vocabulary (Story 6.12)
+  descriptionEn: string;
+  descriptionEs: string;
+  criteria: VenueCriterion[];
+}
+
+// The tier-2 journal-ready report of one venue (Story 6.11, FR-19.1):
+// preprint-ready (tier 1) beside journal-ready (tier 2) — a pure derived
+// projection over the log + the venue template; no tier-2 state exists.
+export type TierTwoStatus = "pass" | "fail" | "human_pending" | "human_confirmed";
+
+export interface TierTwoItem {
+  criterionId: string;
+  kind: string; // the machine check's code, or "human_only"
+  status: TierTwoStatus;
+  detail: string | null; // code-form: "24/25", "no_manuscript", "data_availability"…
+  refs: string[]; // the board/manuscript objects: "CLAIMS-2", "main.tex:12", "cite:smith20"
+}
+
+export interface TierTwoReport {
+  scope: string | null;
+  venueId: string;
+  venueName: string;
+  tierOne: ReadinessVerdict; // the preprint verdict of the same scope
+  verdict: ReadinessVerdict; // journal-ready: tier-1 ready + checklist clean
+  items: TierTwoItem[];
+}
+
+// The submission checklist as a mission (Story 6.13, FR-19.4): choosing a
+// venue spawns a SUBMISSION MISSION whose items come from the venue
+// template (data). Item state is evented with audit stamps — agent vs
+// human is always visibly attributed.
+export interface CheckStamp {
+  seq: number;
+  ts: string;
+  actor: string; // "user" | "agent:<run-id>"
+  note: string | null; // the evidence (a machine pre-check's note)
+}
+
+export interface SubmissionItem {
+  itemId: string;
+  human: boolean; // true = human-only: never agent-checkable
+  kind: string; // the machine check's code, or "human_only"
+  checked: CheckStamp | null;
+}
+
+export interface SubmissionMission {
+  id: string; // the submission.created event id — the mission's identity
+  seq: number;
+  ts: string;
+  venueId: string;
+  venueName: string;
+  question: string;
+  stopCondition: string; // "submission-ready" (AD-12)
+  successCriterion: string;
+  sourceMissionId: string | null; // the research mission it derives from
+  status: string; // mission-status vocabulary (active | completed | stopped | …)
+  items: SubmissionItem[];
+}
+
+export interface SubmissionView {
+  submission: SubmissionMission;
+  readiness: TierTwoReport; // the "ready to submit?" verdict
+  allChecked: boolean; // AD-12: every item checked
+}
+
+// The Journal Fit Finder (Story 6.12, FR-19.3): the advisory ranking —
+// evented with provider + model attribution, rationale claims pinned to
+// board objects (unpinned references flagged), and the choice delivered
+// as a reviewable proposal (approving it creates the submission mission).
+export interface FitCandidate {
+  venueId: string;
+  score: number; // 0–100
+  rationale: string;
+  refs: string[]; // the board objects the rationale rests on ("H-4")
+  unverifiedRefs: string[]; // rationale references that resolve nowhere (flagged, FR-3.4)
+}
+
+export interface JournalFitResult {
+  candidates: FitCandidate[];
+  provider: string;
+  model: string;
+  proposal: Proposal | null; // the reviewable "choose the top venue" choice
 }
 
 // The dashboard's aggregated read (Story 5.10, FR-18.1): every widget's

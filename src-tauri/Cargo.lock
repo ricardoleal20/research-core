@@ -3424,6 +3424,7 @@ dependencies = [
  "tauri-plugin-shell",
  "thiserror 2.0.20",
  "tokio",
+ "toml 0.8.2",
  "tower",
  "tower-http",
  "uuid",

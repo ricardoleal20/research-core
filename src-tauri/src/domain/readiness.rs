@@ -781,6 +781,403 @@ pub fn readiness_report_with_manuscript(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Tier two — the journal-ready verdict (Story 6.11, FR-19.1/19.2)
+// ---------------------------------------------------------------------------
+
+/// One tier-2 item's state: the machine checks pass or fail; the
+/// human-only items are PENDING until the researcher confirms them and
+/// CONFIRMED after — never auto-passed, never silently skipped (FR-19.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TierTwoStatus {
+    Pass,
+    Fail,
+    HumanPending,
+    HumanConfirmed,
+}
+
+/// One tier-2 checklist item (camelCase on the wire, AD-8): the venue
+/// criterion it answers, its status, a code-form detail the UI renders
+/// mono (bilingual-safe by construction — the support `verdict_line`
+/// precedent), and the specific board/manuscript objects it references
+/// (FR-13.1 discipline: "CLAIMS-2", "H-4", "main.tex:12", "cite:smith20",
+/// "e-1042").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierTwoItem {
+    pub criterion_id: String,
+    /// The machine check's code (e.g. `abstract_within_words`) or
+    /// `human_only` — the UI renders labels from it + the venue's data.
+    pub kind: String,
+    pub status: TierTwoStatus,
+    /// Code-form detail: "24/25", "no_manuscript", "data_availability"…
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub refs: Vec<String>,
+}
+
+/// The tier-2 journal-ready report of one venue (FR-19.1): preprint-ready
+/// (tier 1) beside journal-ready (tier 2) — a PURE derived projection,
+/// computed from the SAME event slice as tier 1 plus the venue template
+/// (data) and the manuscript stats (pure inputs built at the command
+/// seam). No tier-2 state is written anywhere (FR-13.2, AD-1): asking
+/// again re-folds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierTwoReport {
+    pub scope: Option<Uuid>,
+    pub venue_id: String,
+    pub venue_name: String,
+    /// The tier-1 (preprint) verdict of the same scope — journal-ready
+    /// builds ON it: a not-preprint-ready board is never journal-ready.
+    pub tier_one: ReadinessVerdict,
+    /// The journal-ready verdict: tier-1 ready + every machine check
+    /// passed + every human-only item confirmed.
+    pub verdict: ReadinessVerdict,
+    pub items: Vec<TierTwoItem>,
+}
+
+/// Compute the tier-2 journal-ready report of one venue (Story 6.11,
+/// FR-19.1/19.2): tier-1 clean + the venue's checklist gate. Machine
+/// checks are computed where the venue template asks; human-only items
+/// render pending (or confirmed, when `human_confirmed` carries the
+/// criterion id — the submission checklist's evented human checks,
+/// Story 6.13). `stats` carries the manuscript-side counts (pure inputs,
+/// one per registered manuscript in scope — the LAST registration is the
+/// paper the venue would receive); `refs` carries the library read model
+/// for the references-resolved check. All derived, all replayable: the
+/// same log + the same files + the same template = the same report.
+pub fn tier_two_report(
+    events: &[StoredEvent],
+    scope: Option<Uuid>,
+    venue: &crate::domain::journals::VenueTemplate,
+    scans: &[ManuscriptScan],
+    stats: &[crate::domain::journals::ManuscriptVenueStats],
+    refs: &[crate::domain::library::LibraryRef],
+    human_confirmed: &[String],
+) -> Result<TierTwoReport, EventError> {
+    use crate::domain::journals::MachineCheck;
+
+    let tier_one_report = readiness_report_with_manuscript(events, scope, scans)?;
+    let cursor = FoldCursor::over(events);
+    let live = cursor.live_owned(events);
+
+    // The claims fold for the support-verified check (FR-23.3: tier-2
+    // requires support-verified load-bearing claims — the claims the
+    // paper rests on are the pinned ones; an unchecked, stale, partial or
+    // unsupported pin is not support-verified).
+    let claims = EvidenceProjection::fold(&live)?;
+    let hyps = HypothesesProjection::fold(&live)?;
+    let hyp_mission: std::collections::HashMap<Uuid, Uuid> =
+        hyps.iter().map(|h| (h.id, h.mission_id)).collect();
+    let pinned_in_scope: Vec<&Claim> = claims
+        .iter()
+        .filter(|c| {
+            c.pinned
+                && hyp_mission
+                    .get(&c.hypothesis_id)
+                    .is_some_and(|m| scope.is_none_or(|s| *m == s))
+        })
+        .collect();
+
+    // The paper the venue would receive: the LAST registered manuscript
+    // in scope (latest registration wins — the MissionsProjection rule).
+    let paper: Option<&crate::domain::journals::ManuscriptVenueStats> = stats
+        .iter()
+        .filter(|s| scope.is_none_or(|m| s.mission_id == m))
+        .last();
+
+    let mut items: Vec<TierTwoItem> = Vec::with_capacity(venue.criteria.len());
+    for criterion in &venue.criteria {
+        // Machine checks parse from the template's flat wire pair — the
+        // loader validated the dataset through the same edge, so a
+        // no-parse here is a corrupt template and fails loudly.
+        let Some(code) = criterion.check.as_deref() else {
+            // Human-only: pending until the researcher confirms it —
+            // never auto-passed, never silently skipped (FR-19.2).
+            items.push(TierTwoItem {
+                criterion_id: criterion.id.clone(),
+                kind: "human_only".into(),
+                status: if human_confirmed.contains(&criterion.id) {
+                    TierTwoStatus::HumanConfirmed
+                } else {
+                    TierTwoStatus::HumanPending
+                },
+                detail: None,
+                refs: Vec::new(),
+            });
+            continue;
+        };
+        let Some(check) = MachineCheck::parse_code(code, criterion.detail.as_deref()) else {
+            return Err(EventError::Invalid(format!(
+                "journals: venue `{}` criterion `{}` does not parse as a machine check — \
+                 the dataset is validated at load, so this is a corrupt template",
+                venue.id, criterion.id
+            )));
+        };
+        let (status, detail, refs) = match check {
+            MachineCheck::ManuscriptConsistency => {
+                // Tier-1's manuscript blockers ARE the consistency flags
+                // (FR-20.5): every one references its board object and
+                // its manuscript location.
+                let ms_blockers: Vec<&ReadinessItem> = tier_one_report
+                    .blockers
+                    .iter()
+                    .filter(|b| {
+                        matches!(
+                            b.kind,
+                            ReadinessItemKind::ManuscriptHypothesisUnresolved
+                                | ReadinessItemKind::ManuscriptHypothesisRefuted
+                                | ReadinessItemKind::ManuscriptClaimUnpinned
+                                | ReadinessItemKind::ManuscriptClaimUnlinked
+                        )
+                    })
+                    .collect();
+                if ms_blockers.is_empty() && paper.is_some() {
+                    (TierTwoStatus::Pass, None, Vec::new())
+                } else if paper.is_none() {
+                    (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new())
+                } else {
+                    let refs = ms_blockers
+                        .iter()
+                        .map(|b| {
+                            let mut chips = Vec::new();
+                            if let (Some(f), Some(l)) = (&b.manuscript_file, b.manuscript_line) {
+                                chips.push(format!("{f}:{l}"));
+                            }
+                            if let Some(h) = b.hypothesis_seq {
+                                chips.push(format!("H-{h}"));
+                            }
+                            if let Some(c) = b.claim_seq {
+                                chips.push(format!("CLAIMS-{c}"));
+                            }
+                            chips.join(" ")
+                        })
+                        .collect();
+                    (TierTwoStatus::Fail, None, refs)
+                }
+            }
+            MachineCheck::LoadBearingSupport => {
+                let unverified: Vec<&Claim> = pinned_in_scope
+                    .iter()
+                    .copied()
+                    .filter(|c| {
+                        c.pin.as_ref().and_then(|p| p.support.as_ref()).map(|s| s.status)
+                            != Some(crate::domain::support::SupportStatus::Supported)
+                    })
+                    .collect();
+                if unverified.is_empty() {
+                    (
+                        TierTwoStatus::Pass,
+                        Some(format!("{}/{} supported", pinned_in_scope.len(), pinned_in_scope.len())),
+                        Vec::new(),
+                    )
+                } else {
+                    (
+                        TierTwoStatus::Fail,
+                        Some(format!(
+                            "{}/{} supported",
+                            pinned_in_scope.len() - unverified.len(),
+                            pinned_in_scope.len()
+                        )),
+                        unverified
+                            .iter()
+                            .map(|c| format!("CLAIMS-{}", c.seq))
+                            .collect(),
+                    )
+                }
+            }
+            MachineCheck::ReferencesResolved => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => {
+                    let unresolved: Vec<&str> = p
+                        .cite_keys
+                        .iter()
+                        .filter(|key| {
+                            let Some(entry) = p
+                                .bib_entries
+                                .iter()
+                                .find(|e| e.key == **key)
+                            else {
+                                return true; // not even in the repo's .bib
+                            };
+                            let doi_in_library = entry
+                                .doi
+                                .as_deref()
+                                .map(str::trim)
+                                .is_some_and(|d| {
+                                    !d.is_empty()
+                                        && refs.iter().any(|r| {
+                                            !r.removed
+                                                && r.doi.trim().eq_ignore_ascii_case(d)
+                                        })
+                                });
+                            let arxiv_in_library = entry
+                                .arxiv
+                                .as_deref()
+                                .map(str::trim)
+                                .is_some_and(|a| {
+                                    !a.is_empty()
+                                        && refs.iter().any(|r| {
+                                            !r.removed
+                                                && r.arxiv_id
+                                                    .as_deref()
+                                                    .map(str::trim)
+                                                    .is_some_and(|x| x == a)
+                                        })
+                                });
+                            !(doi_in_library || arxiv_in_library)
+                        })
+                        .map(|k| k.as_str())
+                        .collect();
+                    if unresolved.is_empty() {
+                        (
+                            TierTwoStatus::Pass,
+                            Some(format!("{} refs", p.cite_keys.len())),
+                            Vec::new(),
+                        )
+                    } else if p.bib_entries.is_empty() {
+                        (
+                            TierTwoStatus::Fail,
+                            Some("no_bibliography".into()),
+                            unresolved.iter().map(|k| format!("cite:{k}")).collect(),
+                        )
+                    } else {
+                        (
+                            TierTwoStatus::Fail,
+                            Some(format!("{}/{} resolved", p.cite_keys.len() - unresolved.len(), p.cite_keys.len())),
+                            unresolved.iter().map(|k| format!("cite:{k}")).collect(),
+                        )
+                    }
+                }
+            },
+            MachineCheck::CompiledPdf => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => {
+                    match crate::domain::manuscript::last_compile(&live, p.mission_id) {
+                        Some(run) if run.outcome == crate::domain::manuscript::CompileOutcome::Ok => {
+                            (TierTwoStatus::Pass, None, vec![format!("e-{}", run.seq)])
+                        }
+                        Some(run) => (
+                            TierTwoStatus::Fail,
+                            Some("compile_error".into()),
+                            vec![format!("e-{}", run.seq)],
+                        ),
+                        None => (TierTwoStatus::Fail, Some("no_compile".into()), Vec::new()),
+                    }
+                }
+            },
+            MachineCheck::StatementPresent { statement } => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => {
+                    if p.error.is_some() {
+                        (TierTwoStatus::Fail, Some("unreadable_manuscript".into()), Vec::new())
+                    } else if p.statements.contains(&statement) {
+                        (TierTwoStatus::Pass, None, Vec::new())
+                    } else {
+                        (
+                            TierTwoStatus::Fail,
+                            Some(statement.as_str().to_string()),
+                            Vec::new(),
+                        )
+                    }
+                }
+            },
+            MachineCheck::AbstractWithinWords { max } => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => match p.abstract_words {
+                    Some(w) => (limit_status(w, max), Some(format!("{w}/{max}")), Vec::new()),
+                    None => (TierTwoStatus::Fail, Some("no_abstract".into()), Vec::new()),
+                },
+            },
+            MachineCheck::MainTextWithinWords { max } => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => (
+                    limit_status(p.words, max),
+                    Some(format!("{}/{}", p.words, max)),
+                    Vec::new(),
+                ),
+            },
+            MachineCheck::FiguresWithin { max } => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => (
+                    limit_status(p.figures, max),
+                    Some(format!("{}/{}", p.figures, max)),
+                    Vec::new(),
+                ),
+            },
+            MachineCheck::PagesWithin { max } => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => {
+                    let compile = crate::domain::manuscript::last_compile(&live, p.mission_id)
+                        .filter(|r| r.outcome == crate::domain::manuscript::CompileOutcome::Ok);
+                    match compile.as_ref().and_then(|r| crate::domain::journals::pdf_pages(&r.log_tail)) {
+                        Some(pages) => (
+                            limit_status(pages, max),
+                            Some(format!("{pages}/{max}")),
+                            compile.iter().map(|r| format!("e-{}", r.seq)).collect(),
+                        ),
+                        None => (TierTwoStatus::Fail, Some("pages_unknown".into()), Vec::new()),
+                    }
+                }
+            },
+            MachineCheck::ReferenceStyle { style } => match paper {
+                None => (TierTwoStatus::Fail, Some("no_manuscript".into()), Vec::new()),
+                Some(p) => match p.reference_style {
+                    Some(detected) => (
+                        if detected == style {
+                            TierTwoStatus::Pass
+                        } else {
+                            TierTwoStatus::Fail
+                        },
+                        Some(detected.as_str().to_string()),
+                        Vec::new(),
+                    ),
+                    None => (TierTwoStatus::Fail, Some("style_unknown".into()), Vec::new()),
+                },
+            },
+        };
+        items.push(TierTwoItem {
+            criterion_id: criterion.id.clone(),
+            kind: code.to_string(),
+            status,
+            detail,
+            refs,
+        });
+    }
+
+    let verdict = if tier_one_report.verdict == ReadinessVerdict::Ready
+        && items.iter().all(|i| {
+            matches!(
+                i.status,
+                TierTwoStatus::Pass | TierTwoStatus::HumanConfirmed
+            )
+        }) {
+        ReadinessVerdict::Ready
+    } else {
+        ReadinessVerdict::NotReady
+    };
+
+    Ok(TierTwoReport {
+        scope,
+        venue_id: venue.id.clone(),
+        venue_name: venue.name.clone(),
+        tier_one: tier_one_report.verdict,
+        verdict,
+        items,
+    })
+}
+
+/// A limit check's state: within = pass.
+fn limit_status(actual: u32, max: u32) -> TierTwoStatus {
+    if actual <= max {
+        TierTwoStatus::Pass
+    } else {
+        TierTwoStatus::Fail
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2141,5 +2538,459 @@ mod tests {
             Marker { kind: MarkerKind::Hyp, reference: "H-3".into(), line: 3 }
         );
         let _ = ScanFile { path: "main.tex".into(), markers };
+    }
+
+    // =====================================================================
+    // Tier two — the journal-ready verdict (Story 6.11, FR-19.1/19.2)
+    // =====================================================================
+
+    use crate::domain::journals::{self, MachineCheck, ManuscriptVenueStats};
+    use crate::domain::library::LibraryRef;
+    use crate::domain::manuscript::CompileOutcome;
+
+    fn library_ref(doi: &str, arxiv: Option<&str>) -> LibraryRef {
+        LibraryRef {
+            id: format!("ref-{doi}"),
+            project_id: "p".into(),
+            collection_id: None,
+            title: "The cited source".into(),
+            authors: "Smith, A.".into(),
+            year: Some(2020),
+            venue: "J. Source".into(),
+            doi: doi.into(),
+            url: String::new(),
+            isbn: String::new(),
+            attachment: None,
+            status: "ok".into(),
+            tags: String::new(),
+            used: 1,
+            citation_count: 0,
+            created_at: "2026-01-01".into(),
+            source: "manual".into(),
+            zotero_item_key: None,
+            arxiv_id: arxiv.map(str::to_string),
+            removed: false,
+            timeline: Vec::new(),
+        }
+    }
+
+    /// A venue-ready .tex repo: abstract within limits, data availability,
+    /// a clean marker pair, a numeric preamble, a cite key that resolves
+    /// through the .bib to the library, and a figure.
+    fn journal_tex_repo(h_seq: i64, claim_seq: i64) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("rc-tier2-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tex = format!(
+            "\\documentclass{{article}}\n\
+             \\usepackage{{natbib}}\n\
+             \\begin{{abstract}}\n\
+             We show the method converges.\n\
+             \\end{{abstract}}\n\
+             \\section*{{Data availability}}\n\
+             All data is available.\n\
+             \\section{{Results}}\n\
+             The gain holds \\hyp{{H-{h_seq}}} and the claim \\claim{{CLAIMS-{claim_seq}}}, \
+             as \\\\cite{{smith2020}} shows.\n\
+             \\begin{{figure}}\\includegraphics{{fig1}}\\end{{figure}}\n\
+             \\bibliographystyle{{siam}}\n"
+        );
+        std::fs::write(dir.join("main.tex"), tex).unwrap();
+        std::fs::write(
+            dir.join("refs.bib"),
+            "@article{smith2020,\n  doi = {10.1234/source},\n}\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    struct ReadyBoard {
+        mission: uuid::Uuid,
+        scans: Vec<ManuscriptScan>,
+        stats: Vec<ManuscriptVenueStats>,
+        refs: Vec<LibraryRef>,
+    }
+
+    /// A tier-1-clean board with a venue-ready manuscript: every claim
+    /// pinned AND support-verified, hypotheses resolved, a compiled PDF
+    /// with a parseable page count — everything but the human items.
+    fn seed_journal_ready_board(store: &EventStore<'_>) -> ReadyBoard {
+        let mission = seed_mission(store);
+        let h = seed_hypothesis(store, mission, "X holds under load.");
+        let claim = seed_claim(store, h, "X holds at 32k.");
+        let pin = seed_pin(store, &claim, h, "X holds at 32k, stated.");
+        // support-verified (tier-2's strictness): a SUPPORTED verdict from
+        // a DIFFERENT model than the pin's assessing model (NFR-3).
+        store
+            .append(
+                NewEvent::pin_support_checked(
+                    claim.id,
+                    h,
+                    pin.seq,
+                    crate::domain::support::SupportVerdict::Supported,
+                    0.9,
+                    "gpt-5.2",
+                    "GLM-5.3",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // the hypothesis resolves — nothing load-bearing stays open
+        for (from, to, basis) in [
+            (HypothesisStatus::Proposed, HypothesisStatus::Testing, "Trial ran."),
+            (HypothesisStatus::Testing, HypothesisStatus::Supported, "Held."),
+        ] {
+            store
+                .append(
+                    NewEvent::hypothesis_status_changed(from, to, basis)
+                        .unwrap()
+                        .with_causes(vec![h]),
+                )
+                .unwrap();
+        }
+        // the manuscript + a compile with a parseable page count
+        let events = store.events_all().unwrap();
+        let h_seq = events.iter().find(|e| e.id == h).unwrap().seq;
+        let claim_seq = events.iter().find(|e| e.id == claim.id).unwrap().seq;
+        let dir = journal_tex_repo(h_seq, claim_seq);
+        store
+            .append(
+                NewEvent::manuscript_registered(
+                    mission,
+                    &dir.display().to_string(),
+                    "main.tex",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .append(
+                NewEvent::manuscript_compiled(
+                    mission,
+                    CompileOutcome::Ok,
+                    Some("latexmk"),
+                    "Output written on main.pdf (12 pages, 250000 bytes).",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let events = store.events_all().unwrap();
+        let registered =
+            crate::domain::manuscript::ManuscriptsProjection::for_mission(&events, mission)
+                .unwrap()
+                .expect("registered");
+        let scans = vec![build_scan(&registered)];
+        let stats = vec![journals::build_venue_stats(&registered)];
+        ReadyBoard {
+            mission,
+            scans,
+            stats,
+            refs: vec![library_ref("10.1234/source", None)],
+        }
+    }
+
+    /// FR-13.2's invariant at tier 2 (the story's explicit test): the
+    /// journal-ready verdict is computed PURELY from replayed events plus
+    /// template data — the same log + the same files = the same report,
+    /// in a fresh store with fresh ids.
+    #[test]
+    fn tier_two_is_derived_purely_from_replayed_events_plus_template_data() {
+        let venue = journals::venue("siam-jsc").expect("seeded");
+        let first = with_store_value(|store| {
+            let board = seed_journal_ready_board(store);
+            tier_two_report(
+                &store.events_all().unwrap(),
+                None,
+                venue,
+                &board.scans,
+                &board.stats,
+                &board.refs,
+                &[],
+            )
+            .unwrap()
+        });
+        let second = with_store_value(|store| {
+            let board = seed_journal_ready_board(store);
+            tier_two_report(
+                &store.events_all().unwrap(),
+                None,
+                venue,
+                &board.scans,
+                &board.stats,
+                &board.refs,
+                &[],
+            )
+            .unwrap()
+        });
+        // Everything machine-checkable passed; the human items are the
+        // only thing between this board and journal-ready.
+        assert_eq!(first, second, "replayed events + template = same report");
+        assert_eq!(first.tier_one, ReadinessVerdict::Ready);
+        assert_eq!(first.verdict, ReadinessVerdict::NotReady, "human items pending");
+        assert!(first.items.iter().all(|i| i.status == TierTwoStatus::Pass
+            || i.status == TierTwoStatus::HumanPending));
+        // every machine criterion of the venue is answered
+        assert_eq!(
+            first.items.iter().filter(|i| i.kind != "human_only").count() as u32,
+            venue.machine_count()
+        );
+        assert_eq!(
+            first.items.iter().filter(|i| i.kind == "human_only").count() as u32,
+            venue.human_count()
+        );
+    }
+
+    /// The human items never auto-pass — and confirming them (the
+    /// submission checklist's evented human checks, Story 6.13) is what
+    /// completes the verdict.
+    #[test]
+    fn human_items_never_auto_pass_and_confirmation_completes_the_verdict() {
+        with_store(|store| {
+            let board = seed_journal_ready_board(store);
+            let venue = journals::venue("siam-jsc").unwrap();
+            let events = store.events_all().unwrap();
+            let pending = tier_two_report(
+                &events, None, venue, &board.scans, &board.stats, &board.refs, &[],
+            )
+            .unwrap();
+            assert_eq!(pending.verdict, ReadinessVerdict::NotReady);
+            let human: Vec<&TierTwoItem> = pending
+                .items
+                .iter()
+                .filter(|i| i.kind == "human_only")
+                .collect();
+            assert!(!human.is_empty());
+            assert!(human.iter().all(|i| i.status == TierTwoStatus::HumanPending));
+
+            let confirmed: Vec<String> =
+                human.iter().map(|i| i.criterion_id.clone()).collect();
+            let ready = tier_two_report(
+                &events, None, venue, &board.scans, &board.stats, &board.refs, &confirmed,
+            )
+            .unwrap();
+            assert_eq!(ready.verdict, ReadinessVerdict::Ready, "journal-ready");
+            assert!(ready
+                .items
+                .iter()
+                .filter(|i| i.kind == "human_only")
+                .all(|i| i.status == TierTwoStatus::HumanConfirmed));
+        });
+    }
+
+    /// A not-preprint-ready board is never journal-ready — tier 2 builds
+    /// ON tier 1 (FR-19.1), whatever the venue checklist says.
+    #[test]
+    fn a_not_preprint_ready_board_is_never_journal_ready() {
+        with_store(|store| {
+            let mission = seed_mission(store);
+            let h = seed_hypothesis(store, mission, "X holds under load.");
+            let _unpinned = seed_claim(store, h, "X holds at 32k."); // never pinned
+            let venue = journals::venue("siam-jsc").unwrap();
+            let report = tier_two_report(
+                &store.events_all().unwrap(),
+                None,
+                venue,
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(report.tier_one, ReadinessVerdict::NotReady);
+            assert_eq!(report.verdict, ReadinessVerdict::NotReady);
+            // the machine checks honestly report no manuscript, never
+            // silently skip
+            let no_ms: Vec<&TierTwoItem> = report
+                .items
+                .iter()
+                .filter(|i| i.detail.as_deref() == Some("no_manuscript"))
+                .collect();
+            assert!(!no_ms.is_empty());
+        });
+    }
+
+    /// Every machine check can fail, each referencing the specific board
+    /// or manuscript object that blocks it (FR-13.1 discipline at tier 2).
+    #[test]
+    fn every_failing_machine_check_references_its_objects() {
+        with_store(|store| {
+            let mission = seed_mission(store);
+            let h = seed_hypothesis(store, mission, "X holds under load.");
+            let claim = seed_claim(store, h, "X holds at 32k.");
+            let pin = seed_pin(store, &claim, h, "X holds at 32k, stated.");
+            // support never checked → not support-verified at tier 2
+            let _ = pin;
+            // h stays testing → the marker below flags, and the board is
+            // tier-1 dirty too
+            store
+                .append(
+                    NewEvent::hypothesis_status_changed(
+                        HypothesisStatus::Proposed,
+                        HypothesisStatus::Testing,
+                        "Trial running.",
+                    )
+                    .unwrap()
+                    .with_causes(vec![h]),
+                )
+                .unwrap();
+            let events = store.events_all().unwrap();
+            let h_seq = events.iter().find(|e| e.id == h).unwrap().seq;
+            let claim_seq = events.iter().find(|e| e.id == claim.id).unwrap().seq;
+            // a dirty manuscript: marker on a testing hypothesis, a cite
+            // key that resolves nowhere, no abstract, no statement, no
+            // compile
+            let dir = std::env::temp_dir()
+                .join(format!("rc-tier2-dirty-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("main.tex"),
+                format!(
+                    "\\documentclass{{article}}\n\
+                     The gain holds \\hyp{{H-{h_seq}}} and \\claim{{CLAIMS-{claim_seq}}} \
+                     per \\\\cite{{ghost2020}}.\n"
+                ),
+            )
+            .unwrap();
+            store
+                .append(
+                    NewEvent::manuscript_registered(
+                        mission,
+                        &dir.display().to_string(),
+                        "main.tex",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let events = store.events_all().unwrap();
+            let registered =
+                crate::domain::manuscript::ManuscriptsProjection::for_mission(&events, mission)
+                    .unwrap()
+                    .unwrap();
+            let scans = vec![build_scan(&registered)];
+            let stats = vec![journals::build_venue_stats(&registered)];
+            let report = tier_two_report(
+                &events,
+                None,
+                journals::venue("siam-jsc").unwrap(),
+                &scans,
+                &stats,
+                &[], // empty library — nothing resolves
+                &[],
+            )
+            .unwrap();
+            assert_eq!(report.verdict, ReadinessVerdict::NotReady);
+            let item = |id: &str| {
+                report
+                    .items
+                    .iter()
+                    .find(|i| i.criterion_id == id)
+                    .unwrap_or_else(|| panic!("no item {id}"))
+            };
+            // consistency: the marker on the testing hypothesis blocks,
+            // referencing H-n and the manuscript location
+            let ms = item("manuscript_consistency");
+            assert_eq!(ms.status, TierTwoStatus::Fail);
+            assert!(ms.refs.iter().any(|r| r.contains(&format!("H-{h_seq}"))));
+            assert!(ms.refs.iter().any(|r| r.contains("main.tex:")));
+            // support: the pinned claim was never support-verified
+            let support = item("load_bearing_support");
+            assert_eq!(support.status, TierTwoStatus::Fail);
+            assert!(support.refs.iter().any(|r| r.starts_with("CLAIMS-")));
+            // references: the ghost cite resolves nowhere
+            let refs_item = item("references_resolved");
+            assert_eq!(refs_item.status, TierTwoStatus::Fail);
+            assert!(refs_item.refs.contains(&"cite:ghost2020".to_string()));
+            // pdf, statement, abstract: absent, each failing honestly
+            assert_eq!(item("compiled_pdf").status, TierTwoStatus::Fail);
+            assert_eq!(item("compiled_pdf").detail.as_deref(), Some("no_compile"));
+            let statement = item("statement_present:data_availability");
+            assert_eq!(statement.status, TierTwoStatus::Fail);
+            assert_eq!(statement.detail.as_deref(), Some("data_availability"));
+            assert_eq!(item("abstract_within_words").status, TierTwoStatus::Fail);
+            assert_eq!(item("abstract_within_words").detail.as_deref(), Some("no_abstract"));
+            assert_eq!(item("pages_within").status, TierTwoStatus::Fail);
+            assert_eq!(item("pages_within").detail.as_deref(), Some("pages_unknown"));
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// The limit checks compare against the venue's numbers and the
+    /// reference-style check compares against the detected style — pass on
+    /// the ready board (the seed's 12-page compile, 1 figure, numeric
+    /// preamble) and flip when the numbers move.
+    #[test]
+    fn limit_checks_pass_on_the_ready_board() {
+        with_store(|store| {
+            let board = seed_journal_ready_board(store);
+            let report = tier_two_report(
+                &store.events_all().unwrap(),
+                None,
+                journals::venue("siam-jsc").unwrap(),
+                &board.scans,
+                &board.stats,
+                &board.refs,
+                &[],
+            )
+            .unwrap();
+            for id in [
+                "abstract_within_words",
+                "main_text_within_words",
+                "figures_within",
+                "pages_within",
+                "reference_style",
+                "statement_present:data_availability",
+                "references_resolved",
+                "compiled_pdf",
+            ] {
+                let item = report
+                    .items
+                    .iter()
+                    .find(|i| i.criterion_id == id)
+                    .unwrap_or_else(|| panic!("no item {id}"));
+                assert_eq!(item.status, TierTwoStatus::Pass, "{id} should pass");
+            }
+            let pages = report
+                .items
+                .iter()
+                .find(|i| i.criterion_id == "pages_within")
+                .unwrap();
+            assert_eq!(pages.detail.as_deref(), Some("12/25"));
+            let refs_item = report
+                .items
+                .iter()
+                .find(|i| i.criterion_id == "references_resolved")
+                .unwrap();
+            assert_eq!(refs_item.detail.as_deref(), Some("1 refs"));
+            // a stricter venue flips the page limit: physrev-e allows 15
+            // — still fine at 12; force the flip by exceeding words
+            let mut stats = board.stats.clone();
+            stats[0].words = 100_000;
+            let report = tier_two_report(
+                &store.events_all().unwrap(),
+                None,
+                journals::venue("siam-jsc").unwrap(),
+                &board.scans,
+                &stats,
+                &board.refs,
+                &[],
+            )
+            .unwrap();
+            let words = report
+                .items
+                .iter()
+                .find(|i| i.criterion_id == "main_text_within_words")
+                .unwrap();
+            assert_eq!(words.status, TierTwoStatus::Fail);
+            assert_eq!(words.detail.as_deref(), Some("100000/9000"));
+        });
+    }
+
+    /// `with_store` returning a value — the replay test needs the report
+    /// out of the closure.
+    fn with_store_value<T>(f: impl FnOnce(&EventStore<'_>) -> T) -> T {
+        let conn = Connection::open_in_memory().unwrap();
+        EventStore::init(&conn).unwrap();
+        let store = EventStore::new(&conn);
+        f(&store)
     }
 }

@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, SupportCheckRecord, SupportVerdict } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, VenueTemplate, VenueCriterion, ProposedSubmission, ProposedSubmissionItem, FitCandidate, JournalFitResult, TierTwoReport, TierTwoItem, SubmissionView, SubmissionMission, SubmissionItem, CheckStamp, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, SupportCheckRecord, SupportVerdict } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -815,6 +815,10 @@ function mockPropose(h: Hypothesis, to: HypothesisStatus, basis: string, runId: 
  *  the change (the fold's approval-order application, mirrored). A merged
  *  result pin (Story 3.4) pins its anchor claim — never the board. */
 function mockApply(p: Proposal, decidedSeq: number): void {
+  if (p.proposedKind.startsWith("submission.")) {
+    mockApplySubmission(p, decidedSeq);
+    return;
+  }
   const h = hypotheses.find((x) => x.id === p.targetEntity);
   if (!h) return;
   const pin = asPin(p);
@@ -845,6 +849,63 @@ function mockApply(p: Proposal, decidedSeq: number): void {
   if (!t) return;
   h.status = t.to;
   h.audit = { seq: decidedSeq, ts: nowISO(), actor: "agent", basis: t.basis };
+}
+
+/** Apply a merged submission proposal (Stories 6.12/6.13): the agent's
+ *  pre-check applies its intended item check (attributed to the agent);
+ *  the fit finder's venue choice spawns the submission mission (FR-19.4 —
+ *  no autonomous submission exists anywhere; the merge IS the human
+ *  choice). */
+function mockApplySubmission(p: Proposal, decidedSeq: number): void {
+  if (p.proposedKind === "submission.item_checked") {
+    const payload = p.proposedPayload as ProposedSubmissionItem;
+    const id = String(payload.mission_id || p.targetEntity);
+    if (foldMockSubmission(id)) {
+      if (!mockSubmissionChecks[id]) mockSubmissionChecks[id] = {};
+      const human = mockVenues
+        .find((v) => v.id === String(payload.venue_id))
+        ?.criteria.find((c) => c.id === String(payload.item_id))?.human;
+      // the proposal edge refuses human items structurally (FR-19.4) —
+      // guard the mock fold the same way
+      if (human) throw new Error(`proposal.target: the intended \`submission.item_checked\` names the human-only criterion \`${payload.item_id}\` — human items are never agent-checkable (FR-19.4)`);
+      mockSubmissionChecks[id][String(payload.item_id)] = {
+        seq: decidedSeq,
+        ts: nowISO(),
+        actor: `agent:${p.runId}`,
+        note: payload.note || null,
+      };
+    }
+    return;
+  }
+  if (p.proposedKind === "submission.created") {
+    // the fit finder's top venue becomes the submission mission — the
+    // reviewable choice, merged by the human
+    const payload = p.proposedPayload as ProposedSubmission & {
+      question: string; stop_condition: string; success_criterion: string; source_mission_id: string | null;
+    };
+    const venue = mockVenues.find((v) => v.id === String(payload.venue_id));
+    if (!venue) return;
+    mockSubmissionSeq += 1;
+    const id = `submission-${mockSubmissionSeq}`;
+    mockSubmissions.push({
+      id,
+      seq: mockSubmissionSeq,
+      ts: nowISO(),
+      venueId: venue.id,
+      venueName: venue.name,
+      question: String(payload.question || `Envío a ${venue.name}`),
+      stopCondition: String(payload.stop_condition || "submission-ready"),
+      successCriterion: String(payload.success_criterion || "todos los elementos del checklist marcados"),
+      sourceMissionId: payload.source_mission_id ?? null,
+      status: "active",
+      items: venue.criteria.map((c) => ({
+        itemId: c.id,
+        human: c.human,
+        kind: c.check || "human_only",
+        checked: null,
+      })),
+    });
+  }
 }
 
 /** Upsert a relation chip onto one endpoint (latest event per endpoint
@@ -1486,6 +1547,314 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
     scope: missionId,
     verdict: blockers.length === 0 ? "ready" : "not_ready",
     blockers, infos, trail,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Submission checklists (Story 6.13, FR-19.4): the mock's submission
+// missions + their evented item checks (stamps, attributed).
+// ---------------------------------------------------------------------------
+
+const mockSubmissions: SubmissionMission[] = [];
+let mockSubmissionSeq = 0;
+/** mission id → item id → check stamp (append-only — the last wins, like
+ *  the core's fold). */
+const mockSubmissionChecks: Record<string, Record<string, CheckStamp>> = {};
+
+/** Fold one submission mission's current state (mirrors the core fold). */
+function foldMockSubmission(id: string): SubmissionMission | undefined {
+  const s = mockSubmissions.find((x) => x.id === id);
+  if (!s) return undefined;
+  const stamps = mockSubmissionChecks[id] || {};
+  return {
+    ...s,
+    items: s.items.map((i) => ({
+      ...i,
+      checked: stamps[i.itemId] || null,
+    })),
+  };
+}
+
+function mockSubmissionView(id: string): SubmissionView {
+  const submission = foldMockSubmission(id);
+  if (!submission) throw new Error(`not_found: no submission mission with id \`${id}\``);
+  return {
+    submission,
+    allChecked: submission.items.every((i) => i.checked !== null),
+    readiness: mockJournalReadiness(submission.sourceMissionId || null, submission.venueId),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Journal targeting (Story 6.11, FR-19.1/19.2): the bundled venue dataset
+// mirrored for vite dev (the same seed list the core ships in
+// src-tauri/data/journals.toml) + the tier-2 fold mirrored.
+// ---------------------------------------------------------------------------
+
+/** One machine criterion (the dataset's wire pair: code + param). */
+const mc = (check: string, detail: string | null = null): VenueCriterion =>
+  ({ id: check.startsWith("statement_present") && detail ? `${check}:${detail}` : check, human: false, check, detail, labelEn: null, labelEs: null });
+
+/** One human-only criterion (never auto-passed, never agent-checkable). */
+const hc = (id: string, labelEn: string, labelEs: string): VenueCriterion =>
+  ({ id, human: true, check: null, detail: null, labelEn, labelEs });
+
+/** The core machine checklist every seeded venue carries. */
+const coreMachine = (limits: { abstract: number; words: number; figures: number; pages: number }): VenueCriterion[] => [
+  mc("manuscript_consistency"),
+  mc("load_bearing_support"),
+  mc("references_resolved"),
+  mc("compiled_pdf"),
+  mc("statement_present", "data_availability"),
+  mc("abstract_within_words", String(limits.abstract)),
+  mc("main_text_within_words", String(limits.words)),
+  mc("figures_within", String(limits.figures)),
+  mc("pages_within", String(limits.pages)),
+  mc("reference_style", "numeric"),
+];
+
+const humanCore: VenueCriterion[] = [
+  hc("co_author_signoffs", "Co-author sign-offs", "Aprobación de coautores"),
+  hc("novelty_fit", "Novelty fit for the venue", "Ajuste de novedad para la revista"),
+];
+
+/** The seeded venues — the same list the core bundles (journals.toml). */
+const mockVenues: VenueTemplate[] = [
+  {
+    id: "siam-jsc", name: "SIAM Journal on Scientific Computing", family: "SIAM",
+    scope: ["numerical-analysis", "scientific-computing", "hpc"],
+    descriptionEn: "Computational methods for the solution of scientific and engineering problems.",
+    descriptionEs: "Métodos computacionales para problemas científicos y de ingeniería.",
+    criteria: [...coreMachine({ abstract: 250, words: 9000, figures: 12, pages: 25 }), ...humanCore],
+  },
+  {
+    id: "siam-sinum", name: "SIAM Journal on Numerical Analysis", family: "SIAM",
+    scope: ["numerical-analysis", "approximation-theory", "odes-pdes"],
+    descriptionEn: "The development and analysis of numerical methods for continuous problems.",
+    descriptionEs: "Desarrollo y análisis de métodos numéricos para problemas continuos.",
+    criteria: [...coreMachine({ abstract: 250, words: 9000, figures: 10, pages: 25 }), ...humanCore],
+  },
+  {
+    id: "acm-toms", name: "ACM Transactions on Mathematical Software", family: "ACM",
+    scope: ["scientific-computing", "software", "algorithms"],
+    descriptionEn: "Computer algorithms for mathematical software and their practical implementation.",
+    descriptionEs: "Algoritmos para software matemático y su implementación práctica.",
+    criteria: [
+      ...coreMachine({ abstract: 250, words: 9000, figures: 10, pages: 25 }),
+      mc("statement_present", "code_availability"),
+      ...humanCore,
+    ],
+  },
+  {
+    id: "physrev-e", name: "Physical Review E", family: "PhysRev",
+    scope: ["statistical-physics", "nonlinear-dynamics", "complex-systems"],
+    descriptionEn: "Statistical, nonlinear, soft-matter and biological physics.",
+    descriptionEs: "Física estadística, no lineal, materia blanda y biológica.",
+    criteria: [...coreMachine({ abstract: 300, words: 6000, figures: 8, pages: 15 }), ...humanCore],
+  },
+  {
+    id: "jcp-chem", name: "The Journal of Chemical Physics", family: "AIP",
+    scope: ["chemical-physics", "molecular-simulation", "quantum-chemistry"],
+    descriptionEn: "Experimental and theoretical chemical physics, from molecules to materials.",
+    descriptionEs: "Física química experimental y teórica, de moléculas a materiales.",
+    criteria: [
+      ...coreMachine({ abstract: 250, words: 8000, figures: 10, pages: 20 }),
+      hc("ethics_approval", "Ethics approval (human or animal subjects)", "Aprobación ética (sujetos humanos o animales)"),
+      ...humanCore,
+    ],
+  },
+  {
+    id: "jcp-comp", name: "Journal of Computational Physics", family: "Elsevier",
+    scope: ["computational-physics", "cfd", "numerical-methods"],
+    descriptionEn: "Computational methods for physical problems and their numerical analysis.",
+    descriptionEs: "Métodos computacionales para problemas físicos y su análisis numérico.",
+    criteria: [...coreMachine({ abstract: 250, words: 10000, figures: 15, pages: 30 }), ...humanCore],
+  },
+];
+
+/** The mock venue stats (mirrors the core's deterministic .tex scans) of
+ *  the scope's paper — the last registered mock manuscript. */
+function mockVenueStats(missionId: string | null): {
+  ok: boolean; paperMission: string | null; words: number; abstractWords: number | null; figures: number;
+  citeKeys: string[]; statements: string[]; style: string | null; compile: CompileView | null;
+} {
+  const registered = missionId
+    ? mockManuscriptOf(missionId)
+    : mockManuscripts[mockManuscripts.length - 1];
+  if (!registered) {
+    return { ok: false, paperMission: null, words: 0, abstractWords: null, figures: 0, citeKeys: [], statements: [], style: null, compile: null };
+  }
+  const files = mockTexFiles[registered.missionId] ?? [];
+  const all = files.map((f) => f.content).join("\n");
+  const words = all.split(/\s+/).filter(Boolean).length;
+  const abstractMatch = /\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/.exec(all);
+  const abstractWords = abstractMatch ? abstractMatch[1].split(/\s+/).filter(Boolean).length : null;
+  const figures = (all.match(/\\includegraphics/g) ?? []).length;
+  const citeKeys = Array.from(new Set(
+    Array.from(all.matchAll(/\\cite[pt]?\{([^}]+)\}/g))
+      .flatMap((m) => m[1].split(",").map((k) => k.trim()).filter(Boolean)),
+  ));
+  const lower = all.toLowerCase();
+  const statements: string[] = [];
+  if (lower.includes("data availability") || lower.includes("availability of data")) statements.push("data_availability");
+  if (lower.includes("code availability") || lower.includes("software availability")) statements.push("code_availability");
+  const style = lower.includes("natbib")
+    ? (lower.includes("authoryear") ? "author_year" : "numeric")
+    : null;
+  const compile = mockManuscriptCompiles[registered.missionId] ?? null;
+  return { ok: true, paperMission: registered.missionId, words, abstractWords, figures, citeKeys, statements, style, compile };
+}
+
+/** The mock Fit Finder (Story 6.12, FR-19.3): a deterministic seeded
+ *  ranking in the strict code form (mirrors the simulated provider's
+ *  reply) + the reviewable "choose the top venue" proposal — advisory
+ *  end to end; approving spawns the checklist mission through the same
+ *  mock quarantine every proposal rides. */
+function mockRunJournalFit(missionId: string | null): JournalFitResult {
+  const seeds: [string, number, string][] = [
+    ["siam-jsc", 92, "encaja por numerical-analysis y hpc en el scope"],
+    ["physrev-e", 71, "statistical-physics en el scope"],
+    ["acm-toms", 64, "software y algorithms en el scope"],
+  ];
+  const candidates: FitCandidate[] = seeds.map(([venueId, score, rationale]) => ({
+    venueId,
+    score,
+    rationale,
+    refs: [],
+    unverifiedRefs: [],
+  }));
+  const top = candidates[0];
+  const venue = mockVenues.find((v) => v.id === top.venueId);
+  proposalSeq += 1;
+  mockEventSeq += 1;
+  const proposal: Proposal = {
+    id: "pr" + proposalSeq + "-" + Date.now(),
+    seq: mockEventSeq,
+    ts: nowISO(),
+    runId: "journal-fit-" + Date.now(),
+    missionId,
+    targetEntity: "fit-" + mockEventSeq,
+    targetLabel: `Fit — ${venue ? venue.name : top.venueId}`,
+    targetSeq: null,
+    proposedKind: "submission.created",
+    proposedPayload: {
+      question: `Envío a ${venue ? venue.name : top.venueId}`,
+      stop_condition: "submission-ready",
+      success_criterion: "todos los elementos del checklist marcados",
+      venue_id: top.venueId,
+      source_mission_id: missionId,
+    },
+    basisSeq: mockEventSeq,
+    basisStale: false,
+    status: "pending",
+    decided: null,
+    supersededBy: null,
+  };
+  proposals.push(proposal);
+  return { candidates, provider: "simulated", model: "simulated", proposal };
+}
+
+/** The mock tier-2 fold (mirrors the core's pure derivation): tier-1
+ *  verdict + the venue's machine checklist over the mock manuscript
+ *  stats; human items pending, never auto-passed. */
+function mockJournalReadiness(missionId: string | null, venueId: string): TierTwoReport {
+  const venue = mockVenues.find((v) => v.id === venueId);
+  if (!venue) throw new Error(`unknown_venue: \`${venueId}\` — the bundled dataset carries no such venue`);
+  const tierOne = mockReadinessReport(missionId);
+  const stats = mockVenueStats(missionId);
+  const pagesMatch = stats.compile
+    ? /Output written on [^(]*\((\d+) pages?/.exec(stats.compile.logTail)
+    : null;
+  const pages = pagesMatch ? Number(pagesMatch[1]) : null;
+  const items: TierTwoItem[] = venue.criteria.map((c) => {
+    if (c.human) {
+      return { criterionId: c.id, kind: "human_only", status: "human_pending" as const, detail: null, refs: [] };
+    }
+    const [check, param] = [c.check as string, c.detail];
+    const max = param !== null && /^\d+$/.test(param) ? Number(param) : null;
+    let status: TierTwoItem["status"] = "pass";
+    let detail: string | null = null;
+    let refs: string[] = [];
+    if (!stats.ok) {
+      status = "fail"; detail = "no_manuscript";
+    } else if (check === "manuscript_consistency") {
+      const flags = mockMsFlagOf(stats.paperMission as string).flags;
+      if (flags.length > 0) {
+        status = "fail";
+        refs = flags.map((f) => `${f.file}:${f.line}`);
+      }
+    } else if (check === "load_bearing_support") {
+      const hyps = [...seededReadinessHypotheses, ...hypotheses];
+      const allClaims = [...seededReadinessClaims, ...claims];
+      const inScope = allClaims.filter((c) => {
+        const h = hyps.find((x) => x.id === c.hypothesisId);
+        return h && (!missionId || h.missionId === missionId);
+      });
+      const unverified = inScope.filter((c) => c.pinned && c.pin?.support?.status !== "supported");
+      if (unverified.length > 0) {
+        status = "fail";
+        detail = `${inScope.filter((c) => c.pinned).length - unverified.length}/${inScope.filter((c) => c.pinned).length} supported`;
+        refs = unverified.map((c) => `CLAIMS-${c.seq}`);
+      } else {
+        detail = `${inScope.filter((c) => c.pinned).length}/${inScope.filter((c) => c.pinned).length} supported`;
+      }
+    } else if (check === "references_resolved") {
+      detail = `${stats.citeKeys.length} refs`;
+      if (stats.citeKeys.length > 0) {
+        status = "fail"; detail = "no_bibliography";
+        refs = stats.citeKeys.map((k) => `cite:${k}`);
+      }
+    } else if (check === "compiled_pdf") {
+      if (!stats.compile || stats.compile.outcome !== "ok") {
+        status = "fail"; detail = stats.compile ? "compile_error" : "no_compile";
+      } else {
+        refs = [`e-${stats.compile.seq}`];
+      }
+    } else if (check === "statement_present") {
+      if (!stats.statements.includes(param ?? "")) {
+        status = "fail"; detail = param;
+      }
+    } else if (check === "abstract_within_words") {
+      if (stats.abstractWords === null) {
+        status = "fail"; detail = "no_abstract";
+      } else {
+        detail = `${stats.abstractWords}/${max}`;
+        if (stats.abstractWords > (max ?? Infinity)) status = "fail";
+      }
+    } else if (check === "main_text_within_words") {
+      detail = `${stats.words}/${max}`;
+      if (stats.words > (max ?? Infinity)) status = "fail";
+    } else if (check === "figures_within") {
+      detail = `${stats.figures}/${max}`;
+      if (stats.figures > (max ?? Infinity)) status = "fail";
+    } else if (check === "pages_within") {
+      if (pages === null) {
+        status = "fail"; detail = "pages_unknown";
+      } else {
+        detail = `${pages}/${max}`;
+        if (pages > (max ?? Infinity)) status = "fail";
+      }
+    } else if (check === "reference_style") {
+      if (stats.style === null) {
+        status = "fail"; detail = "style_unknown";
+      } else {
+        detail = stats.style;
+        if (stats.style !== param) status = "fail";
+      }
+    }
+    return { criterionId: c.id, kind: check, status, detail, refs };
+  });
+  const verdict =
+    tierOne.verdict === "ready" && items.every((i) => i.status === "pass" || i.status === "human_confirmed")
+      ? "ready"
+      : "not_ready";
+  return {
+    scope: missionId,
+    venueId: venue.id,
+    venueName: venue.name,
+    tierOne: tierOne.verdict,
+    verdict,
+    items,
   };
 }
 
@@ -2925,6 +3294,160 @@ export const mockApi = {
   getReadinessReport: async (missionId: string | null): Promise<ReadinessReport> => {
     await delay();
     return mockReadinessReport(missionId);
+  },
+  // Journal targeting (Story 6.11, FR-19.1/19.2): the seeded venue
+  // templates (the same list the core bundles) + the tier-2 fold mirrored
+  // — deterministic, fully local, asking again re-folds.
+  listVenues: async (): Promise<VenueTemplate[]> => {
+    await delay();
+    return mockVenues.map((v) => ({ ...v, criteria: [...v.criteria] }));
+  },
+  getJournalReadiness: async (missionId: string | null, venueId: string): Promise<TierTwoReport> => {
+    await delay();
+    return mockJournalReadiness(missionId, venueId);
+  },
+  // The Journal Fit Finder (Story 6.12, FR-19.3): the mock answers a
+  // deterministic seeded ranking (the same list the simulated provider
+  // serves) and proposes the top venue — nothing auto-applied.
+  runJournalFit: async (missionId: string | null): Promise<JournalFitResult> => {
+    await delay(160);
+    if (missionId && !missions.some((m) => m.id === missionId)) {
+      return Promise.reject(new Error(`invalid_mission_id: \`${missionId}\``));
+    }
+    return mockRunJournalFit(missionId);
+  },
+  // Submission checklist (Story 6.13, FR-19.4): the mock's submission
+  // missions, item checks, agent pre-checks (quarantined proposals), and
+  // the AD-12 completion gate — mirrored.
+  createSubmissionMission: async (missionId: string | null, venueId: string): Promise<SubmissionView> => {
+    await delay();
+    const venue = mockVenues.find((v) => v.id === venueId);
+    if (!venue) throw new Error(`unknown_venue: \`${venueId}\` — the bundled dataset carries no such venue`);
+    mockSubmissionSeq += 1;
+    const id = `submission-${mockSubmissionSeq}`;
+    const submission: SubmissionMission = {
+      id,
+      seq: mockSubmissionSeq,
+      ts: nowISO(),
+      venueId: venue.id,
+      venueName: venue.name,
+      question: `Envío a ${venue.name}`,
+      stopCondition: "submission-ready",
+      successCriterion: "todos los elementos del checklist marcados",
+      sourceMissionId: missionId,
+      status: "active",
+      items: venue.criteria.map((c) => ({
+        itemId: c.id,
+        human: c.human,
+        kind: c.check || "human_only",
+        checked: null,
+      })),
+    };
+    mockSubmissions.push(submission);
+    return mockSubmissionView(id);
+  },
+  listSubmissions: async (): Promise<SubmissionMission[]> => {
+    await delay();
+    return mockSubmissions.map((s) => {
+      const folded = foldMockSubmission(s.id);
+      return folded ? { ...folded } : s;
+    });
+  },
+  getSubmission: async (submissionId: string): Promise<SubmissionView> => {
+    await delay();
+    return mockSubmissionView(submissionId);
+  },
+  checkSubmissionItem: async (submissionId: string, itemId: string, note: string | null): Promise<SubmissionView> => {
+    await delay();
+    const s = foldMockSubmission(submissionId);
+    if (!s) throw new Error(`not_found: no submission mission with id \`${submissionId}\``);
+    if (!s.items.some((i) => i.itemId === itemId)) {
+      throw new Error(`unknown_item: \`${itemId}\` is not a criterion of venue \`${s.venueId}\``);
+    }
+    mockEventSeq += 1;
+    if (!mockSubmissionChecks[submissionId]) mockSubmissionChecks[submissionId] = {};
+    mockSubmissionChecks[submissionId][itemId] = {
+      seq: mockEventSeq,
+      ts: nowISO(),
+      actor: "user",
+      note: note || null,
+    };
+    return mockSubmissionView(submissionId);
+  },
+  uncheckSubmissionItem: async (submissionId: string, itemId: string): Promise<SubmissionView> => {
+    await delay();
+    const s = foldMockSubmission(submissionId);
+    if (!s) throw new Error(`not_found: no submission mission with id \`${submissionId}\``);
+    if (mockSubmissionChecks[submissionId]) delete mockSubmissionChecks[submissionId][itemId];
+    return mockSubmissionView(submissionId);
+  },
+  // The agent pre-check (AD-3): propose the check of every PASSING
+  // machine item, each with its evidence — nothing checks itself
+  // silently; the owner merges.
+  precheckSubmissionItems: async (submissionId: string): Promise<Proposal[]> => {
+    await delay(120);
+    const s = foldMockSubmission(submissionId);
+    if (!s) throw new Error(`not_found: no submission mission with id \`${submissionId}\``);
+    const report = mockJournalReadiness(s.sourceMissionId || null, s.venueId);
+    const passing = report.items.filter(
+      (i) => i.kind !== "human_only" && i.status === "pass",
+    );
+    const runId = `submission-precheck-${Date.now()}`;
+    const out: Proposal[] = [];
+    for (const item of passing) {
+      if (s.items.some((x) => x.itemId === item.criterionId && x.checked !== null)) continue;
+      proposalSeq += 1;
+      mockEventSeq += 1;
+      const p: Proposal = {
+        id: "pr" + proposalSeq + "-" + Date.now(),
+        seq: mockEventSeq,
+        ts: nowISO(),
+        runId,
+        missionId: submissionId,
+        targetEntity: submissionId,
+        targetLabel: `Checklist — ${s.venueName}`,
+        targetSeq: null,
+        proposedKind: "submission.item_checked",
+        proposedPayload: {
+          mission_id: submissionId,
+          venue_id: s.venueId,
+          item_id: item.criterionId,
+          note: `machine check passed: ${item.kind}${item.detail ? ` (${item.detail})` : ""}`,
+        },
+        basisSeq: mockEventSeq,
+        basisStale: false,
+        status: "pending",
+        decided: null,
+        supersededBy: null,
+      };
+      proposals.push(p);
+      out.push(p);
+    }
+    return out;
+  },
+  completeSubmissionMission: async (submissionId: string): Promise<SubmissionView> => {
+    await delay();
+    const s = foldMockSubmission(submissionId);
+    if (!s) throw new Error(`not_found: no submission mission with id \`${submissionId}\``);
+    if (s.status !== "active") {
+      throw new Error(`not_active: the submission mission is \`${s.status}\` — a decided mission never decides again (AD-12)`);
+    }
+    const unchecked = s.items.filter((i) => i.checked === null).length;
+    if (unchecked > 0) {
+      throw new Error(`items_pending: ${unchecked} checklist items unchecked — a submission mission completes when every item is checked (AD-12)`);
+    }
+    const idx = mockSubmissions.findIndex((x) => x.id === submissionId);
+    mockSubmissions[idx] = { ...mockSubmissions[idx], status: "completed" };
+    return mockSubmissionView(submissionId);
+  },
+  stopSubmissionMission: async (submissionId: string, reason: string): Promise<SubmissionView> => {
+    await delay();
+    const s = foldMockSubmission(submissionId);
+    if (!s) throw new Error(`not_found: no submission mission with id \`${submissionId}\``);
+    if (!reason.trim()) throw new Error("stop_reason_required: stopping a mission records its reason (AD-12)");
+    const idx = mockSubmissions.findIndex((x) => x.id === submissionId);
+    mockSubmissions[idx] = { ...mockSubmissions[idx], status: "stopped" };
+    return mockSubmissionView(submissionId);
   },
   // agent steps (Story 2.1): one role step through the mock provider — the
   // dev browser answers with the simulated voice, no spend. Story 2.2: the
