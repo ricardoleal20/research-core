@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use crate::db::Db;
 use crate::domain::manuscript::{
-    self, detect_toolchain, last_compile, scan_manuscript, CompileOutcome, CompiledRun,
-    Manuscript, ManuscriptsProjection, TexFileScan,
+    self, detect_toolchain, diff_basis_stale, last_compile, scan_manuscript, CompileOutcome,
+    CompiledRun, DiffProposal, Manuscript, ManuscriptsProjection, TexFileScan,
 };
 use crate::eventstore::{EventStore, NewEvent};
 use crate::AppPaths;
@@ -374,4 +374,119 @@ pub async fn compile_manuscript(
     let events = store.events_all().map_err(err)?;
     let compiled = last_compile(&events, mission_id).expect("the compile just appended");
     Ok(compile_view(&compiled, &paths.data_dir))
+}
+
+// ---------------------------------------------------------------------------
+// Quarantined LaTeX diffs (Story 6.7, FR-20.3, AD-3/AD-13)
+// ---------------------------------------------------------------------------
+
+/// The diffs of one mission with the derived pending basis-staleness (the
+/// review card's warning variant) — the read the surface and the server
+/// route share.
+pub(crate) fn list_manuscript_diffs_inner(
+    conn: &rusqlite::Connection,
+    mission_id: Uuid,
+) -> Result<Vec<DiffProposal>, String> {
+    let events = EventStore::new(conn).events_all().map_err(err)?;
+    let ms = ManuscriptsProjection::for_mission(&events, mission_id)
+        .map_err(err)?
+        .ok_or_else(|| manuscript::ManuscriptError::NotRegistered(mission_id).to_string())?;
+    let root = PathBuf::from(&ms.dir);
+    let mut diffs = manuscript::DiffProjection::fold_for(&events, mission_id).map_err(err)?;
+    for diff in diffs.iter_mut().filter(|d| d.status == manuscript::DiffStatus::Pending) {
+        diff.basis_stale = diff_basis_stale(&root, diff);
+    }
+    Ok(diffs)
+}
+
+/// The quarantined agent diffs of one mission (decided ones included —
+/// history is honest).
+#[tauri::command]
+pub async fn list_manuscript_diffs(
+    db: State<'_, Db>,
+    mission_id: String,
+) -> Result<Vec<DiffProposal>, String> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|e| format!("invalid mission id `{mission_id}`: {e}"))?;
+    let c = db.0.lock().await;
+    list_manuscript_diffs_inner(&c, mission_id)
+}
+
+/// The agent seam (FR-20.3, AD-3): an agent run's manuscript edit lands
+/// as a quarantined diff — the hunks and the basis digest are derived in
+/// the core (the digest is computed at proposal time, never sent), the
+/// file is untouched until a human merges. `run_id` names the proposing
+/// agent run (the skills/roles surface passes it).
+#[tauri::command]
+pub async fn propose_manuscript_diff(
+    db: State<'_, Db>,
+    mission_id: String,
+    file: String,
+    hunks: Vec<manuscript::ManuscriptDiffHunk>,
+    note: String,
+    run_id: String,
+) -> Result<DiffProposal, String> {
+    let mission_id: Uuid = mission_id
+        .parse()
+        .map_err(|e| format!("invalid mission id `{mission_id}`: {e}"))?;
+    let c = db.0.lock().await;
+    let store = EventStore::new(&c);
+    let events = store.events_all().map_err(err)?;
+    let ms = ManuscriptsProjection::for_mission(&events, mission_id)
+        .map_err(err)?
+        .ok_or_else(|| manuscript::ManuscriptError::NotRegistered(mission_id).to_string())?;
+    let root = PathBuf::from(&ms.dir);
+    manuscript::propose_diff(&store, &run_id, mission_id, &root, &file, &hunks, &note)
+        .map_err(err)
+}
+
+/// Merge (approve) a diff (AD-13): validated against the CURRENT file —
+/// a stale basis refuses with `basis_stale:` unless forced (the marker is
+/// recorded and surfaced); a hunk that cannot apply cleanly refuses with
+/// `hunk_mismatch:` (force does not help). Before applying, the merge
+/// takes its checkpoint: a log checkpoint event + a file-level backup
+/// outside the repo (app data), recorded on the merged event.
+#[tauri::command]
+pub async fn approve_manuscript_diff(
+    db: State<'_, Db>,
+    paths: State<'_, AppPaths>,
+    proposal_id: String,
+    force: bool,
+) -> Result<manuscript::MergeDiffOutcome, String> {
+    let proposal_id: Uuid = proposal_id
+        .parse()
+        .map_err(|e| format!("invalid proposal id `{proposal_id}`: {e}"))?;
+    let c = db.0.lock().await;
+    let store = EventStore::new(&c);
+    let events = store.events_all().map_err(err)?;
+    // the diff's manuscript (its dir is the merge root)
+    let diffs = manuscript::DiffProjection::fold(&events).map_err(err)?;
+    let diff = diffs
+        .iter()
+        .find(|d| d.id == proposal_id)
+        .ok_or_else(|| manuscript::DiffError::NotFound(proposal_id).to_string())?;
+    let ms = ManuscriptsProjection::for_mission(&events, diff.mission_id)
+        .map_err(err)?
+        .ok_or_else(|| {
+            manuscript::ManuscriptError::NotRegistered(diff.mission_id).to_string()
+        })?;
+    let root = PathBuf::from(&ms.dir);
+    let backup_dir = paths.data_dir.join("manuscript-backups");
+    manuscript::merge_diff(&store, &root, &backup_dir, proposal_id, force).map_err(err)
+}
+
+/// Reject a pending diff — the change never applies, the file is
+/// untouched, the rejection stays in the log with its receipt.
+#[tauri::command]
+pub async fn reject_manuscript_diff(
+    db: State<'_, Db>,
+    proposal_id: String,
+) -> Result<DiffProposal, String> {
+    let proposal_id: Uuid = proposal_id
+        .parse()
+        .map_err(|e| format!("invalid proposal id `{proposal_id}`: {e}"))?;
+    let c = db.0.lock().await;
+    let store = EventStore::new(&c);
+    manuscript::reject_diff(&store, proposal_id).map_err(err)
 }

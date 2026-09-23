@@ -258,6 +258,13 @@ pub fn run() {
             manuscript_commands::read_manuscript_file,
             manuscript_commands::write_manuscript_file,
             manuscript_commands::compile_manuscript,
+            // quarantined LaTeX diffs (Story 6.7, FR-20.3): the agent seam
+            // proposes, the human merges/rejects — the basis is validated
+            // at merge time (AD-13), the merge checkpoints before applying.
+            manuscript_commands::list_manuscript_diffs,
+            manuscript_commands::propose_manuscript_diff,
+            manuscript_commands::approve_manuscript_diff,
+            manuscript_commands::reject_manuscript_diff,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

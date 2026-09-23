@@ -368,7 +368,10 @@ function renderMsDiffs(app, missionId) {
       ${pending.length ? pending.map((d) => renderMsDiffCard(d)).join("") : `<p class="text-sm text-muted py-2 text-center">${t("ms.diffs.empty")}</p>`}
       ${decided.length ? `
       <div class="pt-3 border-t border-border">
-        <p class="caption text-muted mb-1.5">${t("ms.diffs.history")}</p>
+        <div class="flex items-center justify-between mb-1.5">
+          <p class="caption text-muted">${t("ms.diffs.history")}</p>
+          ${decided.some((d) => d.status === "merged") ? btn({ label: t("ms.diffs.compileCheck"), variant: "outline", size: "sm", iconName: "bolt", onClick: `RC.msCompile('${esc(missionId)}')` }) : ""}
+        </div>
         <div class="space-y-1">
           ${decided.slice(-6).reverse().map((d) => `
             <div class="flex items-center justify-between gap-2 text-xs">

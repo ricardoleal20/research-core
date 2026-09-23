@@ -30,10 +30,14 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::domain::checkpoints::FoldCursor;
-use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
+use crate::domain::evidence::excerpt_digest;
+use crate::eventstore::{Actor, EventError, EventStore, NewEvent, StoredEvent};
 
 pub const MANUSCRIPT_REGISTERED: &str = "manuscript.registered";
 pub const MANUSCRIPT_COMPILED: &str = "manuscript.compiled";
+pub const MANUSCRIPT_DIFF_PROPOSED: &str = "manuscript.diff_proposed";
+pub const MANUSCRIPT_DIFF_MERGED: &str = "manuscript.diff_merged";
+pub const MANUSCRIPT_DIFF_REJECTED: &str = "manuscript.diff_rejected";
 
 /// The default toolchain search order (FR-20.2): first found wins. The
 /// `tex_compiler` setting may override with any name in `TEX_TOOLCHAINS`.
@@ -574,6 +578,611 @@ pub fn run_compile(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Agent edits as quarantined LaTeX diffs (Story 6.7, FR-20.3, AD-3/AD-13)
+//
+// No agent ever writes a .tex file directly. An agent run's manuscript
+// edit lands as a `manuscript.diff_proposed` event (actor=agent) carrying
+// BEFORE/AFTER HUNKS — the exact text replaced and the text replacing it,
+// never a freeform overwrite — plus the basis it derived from: the file's
+// sha-256 content digest and the log seq at proposal time. The proposal is
+// EXCLUDED from the manuscript until the human merges it; rejecting leaves
+// the files untouched.
+//
+// The merge (AD-13): validated against the CURRENT file — if the file
+// advanced past the proposal's digest basis the merge is refused with
+// `basis_stale:` unless force-approved (the forced merge records the
+// basis_stale marker the UI surfaces). Before applying, the merge takes a
+// checkpoint (AD-1/AD-10): a log checkpoint event AND a file-level backup
+// outside the repo — the .tex files are not event-sourced, so FoldCursor
+// cannot return them; the backup (recorded on the merged event) is the
+// file-level rollback, and the repo itself stays source-control friendly
+// (no backup noise inside it). A hunk whose `before` text is not present
+// exactly once cannot apply cleanly — `hunk_mismatch:`, force does not
+// help (like a tampered pin: this is a corrupt patch, not a stale basis).
+// ---------------------------------------------------------------------------
+
+/// One before/after hunk: the exact text replaced and the text replacing
+/// it. `before` must be non-empty (a patch anchors on existing content);
+/// `after` may be empty (a deletion).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManuscriptDiffHunk {
+    pub before: String,
+    pub after: String,
+}
+
+/// The `manuscript.diff_proposed` payload: the mission + repo-relative
+/// file, the hunks, the basis (the file's sha-256 digest + the log seq the
+/// proposal derived from), the cause event, and the agent's note.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManuscriptDiffProposedPayload {
+    pub mission_id: Uuid,
+    pub file: String,
+    pub hunks: Vec<ManuscriptDiffHunk>,
+    pub basis_digest: String,
+    pub basis_seq: i64,
+    pub cause: Uuid,
+    pub note: String,
+}
+
+/// The `manuscript.diff_merged` payload: which proposal, whether the human
+/// forced past a stale basis, the recorded marker, and the pre-merge file
+/// backup path (the file-level rollback).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManuscriptDiffMergedPayload {
+    pub proposal_id: Uuid,
+    pub force: bool,
+    pub basis_stale: bool,
+    pub backup_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManuscriptDiffRejectedPayload {
+    pub proposal_id: Uuid,
+}
+
+impl NewEvent {
+    /// Typed constructor (AD-15): the one way an agent's manuscript edit
+    /// becomes a proposal. Actor is ALWAYS the proposing agent run (AD-3 —
+    /// the user path edits files directly, never through here). The hunks
+    /// must be real (non-empty, each `before` non-empty, before ≠ after)
+    /// and the basis must name a real seq.
+    pub fn manuscript_diff_proposed(
+        run_id: &str,
+        mission_id: Uuid,
+        file: &str,
+        hunks: &[ManuscriptDiffHunk],
+        basis_digest: &str,
+        basis_seq: i64,
+        cause: Uuid,
+        note: &str,
+    ) -> Result<Self, EventError> {
+        let run_id = run_id.trim();
+        if run_id.is_empty() {
+            return Err(EventError::Invalid(
+                "manuscript.diff run_id must not be empty — a proposal names its proposing run"
+                    .into(),
+            ));
+        }
+        if mission_id.is_nil() {
+            return Err(EventError::Invalid(
+                "manuscript.diff mission_id must not be nil".into(),
+            ));
+        }
+        let file = file.trim();
+        if file.is_empty() || file.starts_with('/') || file.split(['/', '\\']).any(|c| c == "..")
+        {
+            return Err(EventError::Invalid(format!(
+                "manuscript.diff file `{file}` must be a relative path inside the manuscript \
+                 directory"
+            )));
+        }
+        if hunks.is_empty() {
+            return Err(EventError::Invalid(
+                "manuscript.diff hunks must not be empty — a diff carries at least one hunk"
+                    .into(),
+            ));
+        }
+        for hunk in hunks {
+            if hunk.before.trim().is_empty() {
+                return Err(EventError::Invalid(
+                    "manuscript.diff hunk.before must not be empty — a patch anchors on existing \
+                     content"
+                        .into(),
+                ));
+            }
+            if hunk.before == hunk.after {
+                return Err(EventError::Invalid(
+                    "manuscript.diff hunk.before must differ from hunk.after — a no-op hunk is \
+                     not a change"
+                        .into(),
+                ));
+            }
+        }
+        if basis_digest.trim().is_empty() {
+            return Err(EventError::Invalid(
+                "manuscript.diff basis_digest must not be empty — a diff names the file content \
+                     it derived from (AD-13)"
+                    .into(),
+            ));
+        }
+        if basis_seq < 1 {
+            return Err(EventError::Invalid(
+                "manuscript.diff basis_seq must name the log seq the proposal derived from — \
+                 blind proposals are non-compliant (AD-13)"
+                    .into(),
+            ));
+        }
+        if cause.is_nil() {
+            return Err(EventError::Invalid(
+                "manuscript.diff cause must not be nil — a proposal builds on a real event (AD-2)"
+                    .into(),
+            ));
+        }
+        let payload = ManuscriptDiffProposedPayload {
+            mission_id,
+            file: file.to_string(),
+            hunks: hunks.to_vec(),
+            basis_digest: basis_digest.trim().to_string(),
+            basis_seq,
+            cause,
+            note: note.trim().to_string(),
+        };
+        Ok(Self::new(
+            MANUSCRIPT_DIFF_PROPOSED,
+            Actor::Agent {
+                run_id: run_id.to_string(),
+            },
+            serde_json::to_value(&payload)?,
+        )?
+        .with_causes(vec![cause, mission_id]))
+    }
+
+    /// The ONLY construction site for `manuscript.diff_merged` is
+    /// `merge_diff` below — crate-private by design (AD-13): no path
+    /// appends a merge that bypassed the basis validation.
+    pub(crate) fn manuscript_diff_merged(
+        proposal_id: Uuid,
+        force: bool,
+        basis_stale: bool,
+        backup_path: &str,
+    ) -> Result<Self, EventError> {
+        let payload = ManuscriptDiffMergedPayload {
+            proposal_id,
+            force,
+            basis_stale,
+            backup_path: backup_path.to_string(),
+        };
+        Ok(Self::new(
+            MANUSCRIPT_DIFF_MERGED,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )?
+        .with_causes(vec![proposal_id]))
+    }
+
+    pub(crate) fn manuscript_diff_rejected(proposal_id: Uuid) -> Result<Self, EventError> {
+        let payload = ManuscriptDiffRejectedPayload { proposal_id };
+        Ok(Self::new(
+            MANUSCRIPT_DIFF_REJECTED,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )?
+        .with_causes(vec![proposal_id]))
+    }
+}
+
+/// A diff proposal's lifecycle (AD-13): pending → merged | rejected. A
+/// decided proposal can never be decided again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffStatus {
+    Pending,
+    Merged,
+    Rejected,
+}
+
+impl DiffStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Merged => "merged",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+impl std::fmt::Display for DiffStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One quarantined LaTeX diff as the review surface renders it (camelCase
+/// on the wire, AD-8). `basis_stale` is derived at read time (the file's
+/// current digest vs. the proposal's basis) — pending cards render the
+/// warning variant from it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffProposal {
+    pub id: Uuid,
+    pub seq: i64,
+    pub ts: chrono::DateTime<chrono::Utc>,
+    pub run_id: String,
+    pub mission_id: Uuid,
+    pub file: String,
+    pub hunks: Vec<ManuscriptDiffHunk>,
+    pub basis_digest: String,
+    pub basis_seq: i64,
+    pub basis_stale: bool,
+    pub status: DiffStatus,
+    pub decided: Option<crate::domain::proposals::DecisionStamp>,
+    /// The pre-merge file backup (merge safety, AD-10) — set on merge.
+    pub backup_path: Option<String>,
+    pub note: String,
+}
+
+/// Everything that can go wrong proposing, merging, or rejecting a diff —
+/// typed, stable codes first (`basis_stale:`, `hunk_mismatch:`,
+/// `not_pending:`, `not_found:`), never translated (EXPERIENCE.md).
+#[derive(Debug, thiserror::Error)]
+pub enum DiffError {
+    #[error("not_found: no diff proposal with id `{0}`")]
+    NotFound(Uuid),
+    #[error("not_pending: diff proposal `{proposal_id}` is `{status}`, not pending — a decided proposal can never be merged again (AD-13)")]
+    NotPending {
+        proposal_id: Uuid,
+        status: DiffStatus,
+    },
+    #[error("basis_stale: diff proposal `{proposal_id}` was derived from file digest `{basis_digest}` but `{file}` has advanced to `{current_digest}` — force-approve (force: true) to merge past it; the basis-stale marker will be recorded and surfaced")]
+    BasisStale {
+        proposal_id: Uuid,
+        file: String,
+        basis_digest: String,
+        current_digest: String,
+    },
+    #[error("hunk_mismatch: diff proposal `{0}` carries a hunk whose `before` text is not present exactly once in the current file — the patch cannot apply cleanly; force does not help")]
+    HunkMismatch(Uuid),
+    #[error(transparent)]
+    Manuscript(#[from] ManuscriptError),
+    #[error(transparent)]
+    Store(#[from] EventError),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Pure fold of the log into the quarantined-diff read model (AD-8). A
+/// deciding event on an already-decided diff means the log contradicts
+/// itself — the fold fails loudly. Deciding events referencing unknown
+/// proposals are skipped (mirroring the proposals fold).
+pub struct DiffProjection;
+
+impl DiffProjection {
+    pub fn fold(events: &[StoredEvent]) -> Result<Vec<DiffProposal>, EventError> {
+        let cursor = FoldCursor::over(events);
+        let live = cursor.live_owned(events);
+        let mut diffs: Vec<DiffProposal> = Vec::new();
+        let mut index: std::collections::HashMap<Uuid, usize> = Default::default();
+        for event in &live {
+            match event.kind.as_str() {
+                MANUSCRIPT_DIFF_PROPOSED => {
+                    let payload: ManuscriptDiffProposedPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|e| {
+                            EventError::Invalid(format!(
+                                "corrupt {MANUSCRIPT_DIFF_PROPOSED} payload at seq {}: {e}",
+                                event.seq
+                            ))
+                        })?;
+                    // AD-3: an agent-actor event, always — anything else is
+                    // corrupt.
+                    let Actor::Agent { run_id } = &event.actor else {
+                        return Err(EventError::Invalid(format!(
+                            "corrupt {MANUSCRIPT_DIFF_PROPOSED} at seq {}: a diff proposal is an \
+                             agent-actor event — the user path edits files directly, never \
+                             through here",
+                            event.seq
+                        )));
+                    };
+                    index.insert(event.id, diffs.len());
+                    diffs.push(DiffProposal {
+                        id: event.id,
+                        seq: event.seq,
+                        ts: event.ts,
+                        run_id: run_id.clone(),
+                        mission_id: payload.mission_id,
+                        file: payload.file,
+                        hunks: payload.hunks,
+                        basis_digest: payload.basis_digest,
+                        basis_seq: payload.basis_seq,
+                        basis_stale: false, // derived at read time by the shell
+                        status: DiffStatus::Pending,
+                        decided: None,
+                        backup_path: None,
+                        note: payload.note,
+                    });
+                }
+                MANUSCRIPT_DIFF_MERGED => {
+                    let payload: ManuscriptDiffMergedPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|e| {
+                            EventError::Invalid(format!(
+                                "corrupt {MANUSCRIPT_DIFF_MERGED} payload at seq {}: {e}",
+                                event.seq
+                            ))
+                        })?;
+                    let Some(&i) = index.get(&payload.proposal_id) else {
+                        continue; // references no known proposal — skipped
+                    };
+                    decide_diff(
+                        &mut diffs[i],
+                        DiffStatus::Merged,
+                        event,
+                        format!(
+                            "diff proposal `{}` is already decided — a second merge contradicts \
+                             the log",
+                            payload.proposal_id
+                        ),
+                    )?;
+                    if payload.basis_stale {
+                        diffs[i].basis_stale = true; // the recorded marker (UI surfaces it)
+                    }
+                    diffs[i].backup_path = Some(payload.backup_path);
+                }
+                MANUSCRIPT_DIFF_REJECTED => {
+                    let payload: ManuscriptDiffRejectedPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|e| {
+                            EventError::Invalid(format!(
+                                "corrupt {MANUSCRIPT_DIFF_REJECTED} payload at seq {}: {e}",
+                                event.seq
+                            ))
+                        })?;
+                    let Some(&i) = index.get(&payload.proposal_id) else {
+                        continue;
+                    };
+                    decide_diff(
+                        &mut diffs[i],
+                        DiffStatus::Rejected,
+                        event,
+                        format!(
+                            "diff proposal `{}` is already decided — a second decision \
+                             contradicts the log",
+                            payload.proposal_id
+                        ),
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        Ok(diffs)
+    }
+
+    /// The diffs of one mission, in creation `seq` order.
+    pub fn fold_for(
+        events: &[StoredEvent],
+        mission_id: Uuid,
+    ) -> Result<Vec<DiffProposal>, EventError> {
+        Ok(Self::fold(events)?
+            .into_iter()
+            .filter(|d| d.mission_id == mission_id)
+            .collect())
+    }
+}
+
+/// Move a pending diff to its decided state, or fail loudly.
+fn decide_diff(
+    diff: &mut DiffProposal,
+    to: DiffStatus,
+    event: &StoredEvent,
+    corrupt: String,
+) -> Result<(), EventError> {
+    if diff.status != DiffStatus::Pending {
+        return Err(EventError::Invalid(format!(
+            "corrupt {} at seq {}: {}",
+            event.kind, event.seq, corrupt
+        )));
+    }
+    diff.status = to;
+    diff.decided = Some(crate::domain::proposals::DecisionStamp {
+        seq: event.seq,
+        ts: event.ts,
+        actor: match &event.actor {
+            Actor::User => "user".into(),
+            Actor::Agent { run_id } => format!("agent:{run_id}"),
+            Actor::System { component } => {
+                format!("system:{}", format!("{component:?}").to_lowercase())
+            }
+        },
+    });
+    Ok(())
+}
+
+/// The pending basis-staleness read (AD-13): true when the file's current
+/// content no longer matches the digest the proposal derived from.
+pub fn diff_basis_stale(root: &Path, diff: &DiffProposal) -> bool {
+    match read_tex_file(root, &diff.file) {
+        Ok(content) => excerpt_digest(&content) != diff.basis_digest,
+        Err(_) => true, // a vanished file is the stalest basis there is
+    }
+}
+
+/// Apply hunks to content, exactly: each hunk's `before` must be present
+/// EXACTLY ONCE (a patch that would apply to the wrong place, or nowhere,
+/// is refused — `hunk_mismatch:`). Hunks apply in order.
+pub fn apply_hunks(
+    content: &str,
+    hunks: &[ManuscriptDiffHunk],
+) -> Result<String, ManuscriptDiffHunk> {
+    let mut out = content.to_string();
+    for hunk in hunks {
+        let count = out.matches(hunk.before.as_str()).count();
+        if count != 1 {
+            return Err(hunk.clone());
+        }
+        out = out.replacen(&hunk.before, &hunk.after, 1);
+    }
+    Ok(out)
+}
+
+/// Propose a diff (the agent seam, AD-3): derive the basis from the
+/// CURRENT file content (the sha-256 is computed here, at proposal time —
+/// never trusted from a caller) and the CURRENT log head, cause-link to
+/// the manuscript's registration event, and append the
+/// `manuscript.diff_proposed` event (actor = the proposing agent run).
+/// The file is untouched: the proposed change stays excluded until a
+/// merge.
+pub fn propose_diff(
+    store: &EventStore<'_>,
+    run_id: &str,
+    mission_id: Uuid,
+    root: &Path,
+    file: &str,
+    hunks: &[ManuscriptDiffHunk],
+    note: &str,
+) -> Result<DiffProposal, DiffError> {
+    let events = store.events_all()?;
+    let ms = ManuscriptsProjection::for_mission(&events, mission_id)?
+        .ok_or(ManuscriptError::NotRegistered(mission_id))?;
+    // the basis digest: computed here, from the file on disk
+    let content = read_tex_file(root, file)?;
+    let basis_digest = excerpt_digest(&content);
+    // the basis seq: the log head the proposal derives from
+    let basis_seq = store.head_seq()?;
+    // the cause: the registration event (the manuscript this diff edits)
+    let cause = events
+        .iter()
+        .find(|e| e.kind == MANUSCRIPT_REGISTERED && e.seq == ms.seq)
+        .map(|e| e.id)
+        .unwrap_or(mission_id);
+    let event = NewEvent::manuscript_diff_proposed(
+        run_id,
+        mission_id,
+        file,
+        hunks,
+        &basis_digest,
+        basis_seq,
+        cause,
+        note,
+    )?;
+    let stored = store.append(event)?;
+    let after = DiffProjection::fold(&store.events_all()?)?;
+    Ok(after
+        .into_iter()
+        .find(|d| d.id == stored.id)
+        .expect("the diff was just appended"))
+}
+
+/// What a merge produced: the merged diff's read model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeDiffOutcome {
+    pub diff: DiffProposal,
+}
+
+/// Merge (approve) a diff proposal (AD-13) — the ONLY path to a
+/// `manuscript.diff_merged` event. Validates the proposal is pending and
+/// its basis against the CURRENT file: a file that advanced past the
+/// proposal's digest is refused with `basis_stale:` unless `force` (the
+/// forced merge records the marker). Before applying, the merge takes its
+/// checkpoint (AD-1/AD-10): a log checkpoint event + a file-level backup
+/// OUTSIDE the repo (the .tex files are not event-sourced — FoldCursor
+/// cannot return them; the backup, recorded on the merged event, is the
+/// rollback). Then the hunks apply exactly — `hunk_mismatch:` refuses a
+/// patch that cannot apply cleanly, force does not help.
+pub fn merge_diff(
+    store: &EventStore<'_>,
+    root: &Path,
+    backup_dir: &Path,
+    proposal_id: Uuid,
+    force: bool,
+) -> Result<MergeDiffOutcome, DiffError> {
+    let events = store.events_all()?;
+    let diffs = DiffProjection::fold(&events)?;
+    let diff = diffs
+        .iter()
+        .find(|d| d.id == proposal_id)
+        .ok_or(DiffError::NotFound(proposal_id))?
+        .clone();
+    if diff.status != DiffStatus::Pending {
+        return Err(DiffError::NotPending {
+            proposal_id,
+            status: diff.status,
+        });
+    }
+    // the basis check: the file's CURRENT content vs. the proposal's digest
+    let current = read_tex_file(root, &diff.file)?;
+    let current_digest = excerpt_digest(&current);
+    let stale = current_digest != diff.basis_digest;
+    if stale && !force {
+        return Err(DiffError::BasisStale {
+            proposal_id,
+            file: diff.file.clone(),
+            basis_digest: diff.basis_digest.clone(),
+            current_digest,
+        });
+    }
+    // the patch must apply exactly — before anything is written
+    let patched = apply_hunks(&current, &diff.hunks)
+        .map_err(|_| DiffError::HunkMismatch(proposal_id))?;
+    // the checkpoint (AD-1/AD-10): a log checkpoint + a file-level backup
+    // outside the repo — nothing is destroyed silently, and the repo stays
+    // source-control friendly
+    let backup_path = backup_dir.join(format!(
+        "{}.{proposal_id}.tex.bak",
+        Path::new(&diff.file)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".into())
+    ));
+    if let Some(parent) = backup_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&backup_path, &current)?;
+    store.append(NewEvent::checkpoint_created(
+        &format!("pre-diff-merge pr-{}", diff.seq),
+        store.head_seq()?,
+    )?)?;
+    // the patch lands on the user's file — the repo IS the manuscript
+    write_tex_file(root, &diff.file, &patched)?;
+    // the merge — the only construction site (crate-private ctor above)
+    store.append(NewEvent::manuscript_diff_merged(
+        proposal_id,
+        force,
+        stale,
+        &backup_path.display().to_string(),
+    )?)?;
+    let after = DiffProjection::fold(&store.events_all()?)?;
+    let merged = after
+        .into_iter()
+        .find(|d| d.id == proposal_id)
+        .expect("the diff was just merged");
+    Ok(MergeDiffOutcome { diff: merged })
+}
+
+/// Reject a pending diff — the change never applies, the file is
+/// untouched, the rejection stays in the log with its receipt.
+pub fn reject_diff(
+    store: &EventStore<'_>,
+    proposal_id: Uuid,
+) -> Result<DiffProposal, DiffError> {
+    let events = store.events_all()?;
+    let diffs = DiffProjection::fold(&events)?;
+    let diff = diffs
+        .iter()
+        .find(|d| d.id == proposal_id)
+        .ok_or(DiffError::NotFound(proposal_id))?;
+    if diff.status != DiffStatus::Pending {
+        return Err(DiffError::NotPending {
+            proposal_id,
+            status: diff.status,
+        });
+    }
+    store.append(NewEvent::manuscript_diff_rejected(proposal_id)?)?;
+    let after = DiffProjection::fold(&store.events_all()?)?;
+    Ok(after
+        .into_iter()
+        .find(|d| d.id == proposal_id)
+        .expect("the diff was just rejected"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,5 +1446,344 @@ mod tests {
         // another mission's compiles never leak in
         let m2 = seed_mission(&store);
         assert!(last_compile(&store.events_all().unwrap(), m2).is_none());
+    }
+
+    // ---------- quarantined LaTeX diffs (Story 6.7, FR-20.3) ----------
+
+    use crate::domain::manuscript::ManuscriptDiffHunk;
+
+    /// A temp .tex repo: the files on disk ARE the manuscript.
+    fn tex_workdir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rc-ms-diff-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nThe gain is small.\n\\end{document}\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn register(store: &EventStore, mission_id: Uuid, dir: &Path) {
+        store
+            .append(NewEvent::manuscript_registered(
+                mission_id,
+                &dir.display().to_string(),
+                "main.tex",
+            )
+            .unwrap())
+            .unwrap();
+    }
+
+    fn read_main(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("main.tex")).unwrap()
+    }
+
+    #[test]
+    fn propose_diff_derives_the_basis_and_leaves_the_file_untouched() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let dir = tex_workdir();
+        register(&store, m, &dir);
+        let head = store.head_seq().unwrap();
+        let diff = propose_diff(
+            &store,
+            "run-7",
+            m,
+            &dir,
+            "main.tex",
+            &[ManuscriptDiffHunk {
+                before: "The gain is small.".into(),
+                after: "The gain is robust \\hyp{H-1}.".into(),
+            }],
+            "tighten the claim and link it to the board",
+        )
+        .unwrap();
+        assert_eq!(diff.status, DiffStatus::Pending);
+        assert_eq!(diff.run_id, "run-7");
+        assert_eq!(diff.file, "main.tex");
+        assert_eq!(diff.mission_id, m);
+        assert_eq!(diff.basis_seq, head, "the basis seq = the log head at proposal");
+        assert_eq!(diff.basis_digest, excerpt_digest(&read_main(&dir)));
+        assert_eq!(diff.hunks.len(), 1);
+        // AD-3: excluded until merged — the file is untouched
+        assert!(read_main(&dir).contains("The gain is small."));
+        // the constructor's edges: empty run id, empty/non-relative file,
+        // empty hunks, no-op hunk, blind basis
+        assert!(NewEvent::manuscript_diff_proposed(
+            " ", m, "main.tex", &[ManuscriptDiffHunk {
+                before: "a".into(), after: "b".into(),
+            }], "d", 1, Uuid::new_v4(), "n").is_err());
+        assert!(NewEvent::manuscript_diff_proposed(
+            "run", m, "../up.tex", &[ManuscriptDiffHunk {
+                before: "a".into(), after: "b".into(),
+            }], "d", 1, Uuid::new_v4(), "n").is_err());
+        assert!(NewEvent::manuscript_diff_proposed(
+            "run", m, "main.tex", &[], "d", 1, Uuid::new_v4(), "n").is_err());
+        assert!(NewEvent::manuscript_diff_proposed(
+            "run", m, "main.tex", &[ManuscriptDiffHunk {
+                before: "a".into(), after: "a".into(),
+            }], "d", 1, Uuid::new_v4(), "n").is_err());
+        assert!(NewEvent::manuscript_diff_proposed(
+            "run", m, "main.tex", &[ManuscriptDiffHunk {
+                before: "a".into(), after: "b".into(),
+            }], "d", 0, Uuid::new_v4(), "n").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_applies_exactly_the_hunks_with_a_checkpoint_and_backup() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let dir = tex_workdir();
+        register(&store, m, &dir);
+        let backup_dir = std::env::temp_dir().join(format!("rc-ms-bak-{}", Uuid::new_v4()));
+        let diff = propose_diff(
+            &store,
+            "run-7",
+            m,
+            &dir,
+            "main.tex",
+            &[
+                ManuscriptDiffHunk {
+                    before: "The gain is small.".into(),
+                    after: "The gain is robust \\hyp{H-1}.".into(),
+                },
+                ManuscriptDiffHunk {
+                    before: "\\end{document}".into(),
+                    after: "% tightened by run-7\n\\end{document}".into(),
+                },
+            ],
+            "two hunks, applied in order",
+        )
+        .unwrap();
+        let out = merge_diff(&store, &dir, &backup_dir, diff.id, false).unwrap();
+        assert_eq!(out.diff.status, DiffStatus::Merged);
+        assert!(!out.diff.basis_stale, "a clean merge records no marker");
+        assert!(out.diff.decided.is_some());
+        // the patch applied EXACTLY the hunks, in order, to the user's file
+        let after = read_main(&dir);
+        assert!(after.contains("The gain is robust \\hyp{H-1}."));
+        assert!(after.contains("% tightened by run-7\n\\end{document}"));
+        assert!(!after.contains("The gain is small."));
+        // the merge safety (AD-1/AD-10): a log checkpoint + a file backup
+        // outside the repo, recorded on the merged event
+        let events = store.events_all().unwrap();
+        assert!(events.iter().any(|e| e.kind == "checkpoint.created"));
+        let backup = out.diff.backup_path.as_deref().expect("the backup path");
+        assert!(Path::new(backup).is_file(), "the pre-merge backup exists");
+        assert_eq!(
+            std::fs::read_to_string(backup).unwrap(),
+            "\\documentclass{article}\n\\begin{document}\nThe gain is small.\n\\end{document}\n",
+            "the backup holds the pre-merge content"
+        );
+        // a second merge attempt fails loudly, changing nothing
+        let head = store.head_seq().unwrap();
+        let err = merge_diff(&store, &dir, &backup_dir, diff.id, false).unwrap_err();
+        assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
+        assert_eq!(store.head_seq().unwrap(), head);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn reject_changes_nothing() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let dir = tex_workdir();
+        register(&store, m, &dir);
+        let before = read_main(&dir);
+        let diff = propose_diff(
+            &store,
+            "run-7",
+            m,
+            &dir,
+            "main.tex",
+            &[ManuscriptDiffHunk {
+                before: "The gain is small.".into(),
+                after: "The gain is robust.".into(),
+            }],
+            "will be rejected",
+        )
+        .unwrap();
+        let rejected = reject_diff(&store, diff.id).unwrap();
+        assert_eq!(rejected.status, DiffStatus::Rejected);
+        assert!(rejected.decided.is_some());
+        // the file is untouched — a rejection never writes
+        assert_eq!(read_main(&dir), before);
+        // and a rejected diff can never merge
+        let err = merge_diff(&store, &dir, &tex_workdir(), diff.id, false).unwrap_err();
+        assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
+        assert!(err.to_string().contains("rejected"), "names the status: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AD-13 on diffs: a file that advanced past the proposal's digest
+    /// basis refuses the merge with `basis_stale:` (a dry run — nothing
+    /// appended, nothing written) unless forced — and a forced merge
+    /// records the marker the UI surfaces.
+    #[test]
+    fn a_stale_basis_refuses_with_basis_stale_and_force_records_the_marker() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let dir = tex_workdir();
+        register(&store, m, &dir);
+        let backup_dir = std::env::temp_dir().join(format!("rc-ms-bak-{}", Uuid::new_v4()));
+        let diff = propose_diff(
+            &store,
+            "run-7",
+            m,
+            &dir,
+            "main.tex",
+            &[ManuscriptDiffHunk {
+                before: "The gain is small.".into(),
+                after: "The gain is robust.".into(),
+            }],
+            "stale-able",
+        )
+        .unwrap();
+        // the file advances past the proposal's basis (an external edit —
+        // the repo is the manuscript, the app is not its only writer). The
+        // edit touches a DIFFERENT part: the digest advances (the stale
+        // basis) while the hunk's anchor text still applies.
+        std::fs::write(
+            dir.join("main.tex"),
+            "\\documentclass{article}\n\\begin{document}\nThe gain is small.\n% external note\n\\end{document}\n",
+        )
+        .unwrap();
+        // the pending read model derives the stale flag
+        assert!(diff_basis_stale(&dir, &diff));
+        // the refusal: a dry run
+        let head = store.head_seq().unwrap();
+        let err = merge_diff(&store, &dir, &backup_dir, diff.id, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("basis_stale"), "unexpected: {msg}");
+        assert!(msg.contains(&diff.basis_digest), "carries the basis digest: {msg}");
+        assert_eq!(store.head_seq().unwrap(), head, "nothing was appended");
+        assert!(
+            read_main(&dir).contains("% external note"),
+            "the file is untouched by the refusal"
+        );
+        // forced: the marker is recorded and surfaced, the patch applies
+        let out = merge_diff(&store, &dir, &backup_dir, diff.id, true).unwrap();
+        assert_eq!(out.diff.status, DiffStatus::Merged);
+        assert!(out.diff.basis_stale, "the marker the UI must surface");
+        assert!(read_main(&dir).contains("The gain is robust."));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&backup_dir);
+    }
+
+    /// A hunk that cannot apply cleanly (its `before` text is not present
+    /// exactly once) is refused with `hunk_mismatch:` — force does not
+    /// help. Only a hand-built payload can reach this with a matching
+    /// basis digest; the constructor cannot (the basis is derived from the
+    /// same file the hunks must patch).
+    #[test]
+    fn a_hunk_that_cannot_apply_cleanly_is_refused() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let dir = tex_workdir();
+        register(&store, m, &dir);
+        let backup_dir = std::env::temp_dir().join(format!("rc-ms-bak-{}", Uuid::new_v4()));
+        let content = read_main(&dir);
+        // a hand-built proposal: correct basis digest, ghost hunk text
+        let payload = ManuscriptDiffProposedPayload {
+            mission_id: m,
+            file: "main.tex".into(),
+            hunks: vec![ManuscriptDiffHunk {
+                before: "THIS TEXT IS NOT IN THE FILE".into(),
+                after: "anything".into(),
+            }],
+            basis_digest: excerpt_digest(&content),
+            basis_seq: store.head_seq().unwrap(),
+            cause: Uuid::new_v4(),
+            note: "tampered".into(),
+        };
+        let stored = store
+            .append(NewEvent::manuscript_diff_proposed(
+                "run-7",
+                m,
+                "main.tex",
+                &payload.hunks,
+                &payload.basis_digest,
+                payload.basis_seq,
+                payload.cause,
+                &payload.note,
+            )
+            .unwrap())
+            .unwrap();
+        let err = merge_diff(&store, &dir, &backup_dir, stored.id, false).unwrap_err();
+        assert!(err.to_string().contains("hunk_mismatch"), "unexpected: {err}");
+        // force does not help — a corrupt patch never merges
+        let err = merge_diff(&store, &dir, &backup_dir, stored.id, true).unwrap_err();
+        assert!(err.to_string().contains("hunk_mismatch"), "unexpected: {err}");
+        assert_eq!(read_main(&dir), content, "the file is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn the_diff_fold_fails_loudly_on_corruption() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let dir = tex_workdir();
+        register(&store, m, &dir);
+        let diff = propose_diff(
+            &store,
+            "run-7",
+            m,
+            &dir,
+            "main.tex",
+            &[ManuscriptDiffHunk {
+                before: "The gain is small.".into(),
+                after: "The gain is robust.".into(),
+            }],
+            "n",
+        )
+        .unwrap();
+        merge_diff(&store, &dir, &tex_workdir(), diff.id, false).unwrap();
+        // a second merge appended by hand — the fold must fail loudly
+        store
+            .append(NewEvent::manuscript_diff_merged(diff.id, false, false, "x").unwrap())
+            .unwrap();
+        let err = DiffProjection::fold(&store.events_all().unwrap())
+            .expect_err("a double decide contradicts the log");
+        assert!(err.to_string().contains("contradicts the log"), "unexpected: {err}");
+        // a user-actor diff proposal contradicts AD-3 — the fold fails
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let m = seed_mission(&store);
+        let payload = ManuscriptDiffProposedPayload {
+            mission_id: m,
+            file: "main.tex".into(),
+            hunks: vec![ManuscriptDiffHunk {
+                before: "a".into(),
+                after: "b".into(),
+            }],
+            basis_digest: "d".into(),
+            basis_seq: 1,
+            cause: Uuid::new_v4(),
+            note: String::new(),
+        };
+        store
+            .append(
+                NewEvent::new(
+                    MANUSCRIPT_DIFF_PROPOSED,
+                    Actor::User,
+                    serde_json::to_value(&payload).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let err = DiffProjection::fold(&store.events_all().unwrap())
+            .expect_err("a user-actor diff contradicts AD-3");
+        assert!(err.to_string().contains("agent-actor"), "unexpected: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
