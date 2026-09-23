@@ -136,6 +136,29 @@ const browserApi = {
     }
     return mockApi.useCliBridge(_cli);
   },
+  // Switch onto the LOCAL provider (Story 6.1, FR-24.1): settings only —
+  // the base URL is not a secret (no keychain), no key at all. A mutation:
+  // the served read-only view refuses it.
+  useLocalProvider: async (_baseUrl: string, _model: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — configure providers from the desktop app / " +
+          "Vista de solo lectura — configura proveedores desde la app de escritorio",
+      );
+    }
+    return mockApi.useLocalProvider(_baseUrl, _model);
+  },
+  // The local endpoint's test/refresh run (Story 6.1): GET /api/tags
+  // through the provider layer — a success doubles as the live model list.
+  testLocalProvider: async (_baseUrl: string): Promise<AiConnectionTest> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — test connections from the desktop app / " +
+          "Vista de solo lectura — prueba conexiones desde la app de escritorio",
+      );
+    }
+    return mockApi.testLocalProvider(_baseUrl);
+  },
   testProviderConnection: async (): Promise<AiConnectionTest> => {
     if (await servedByCore) {
       throw new Error(
@@ -748,6 +771,10 @@ export const api = mockActive ? browserApi : {
   configureAiProvider: (provider: string, baseUrl: string, model: string, apiKey: string) =>
     invoke<AiConfig>("configure_ai_provider", { provider, baseUrl, model, apiKey }),
   useCliBridge: (cli: string) => invoke<AiConfig>("use_cli_bridge", { cli }),
+  useLocalProvider: (baseUrl: string, model: string) =>
+    invoke<AiConfig>("use_local_provider", { baseUrl, model }),
+  testLocalProvider: (baseUrl: string) =>
+    invoke<AiConnectionTest>("test_local_provider", { baseUrl }),
   testProviderConnection: () =>
     invoke<AiConnectionTest>("test_provider_connection"),
   listProviderModels: (provider: string) =>

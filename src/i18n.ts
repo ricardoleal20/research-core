@@ -1508,6 +1508,40 @@ const DICT: Record<string, Record<Lang, string>> = {
     pt: "Nenhum fornecedor configurado — o assistente está em pausa.",
     fr: "Aucun fournisseur configuré — l'assistant est en pause.",
   },
+  // The local provider row (Story 6.1, FR-24): Ollama (or equivalent) as a
+  // first-class provider — no key, localhost-only, honest detection, $0.
+  "prov.localSection": { es: "Local", en: "Local", pt: "Local", fr: "Local" },
+  "prov.localDesc": {
+    es: "Ollama u otro runtime local — sin clave, solo localhost, costo $0. Cualquier endpoint local compatible con OpenAI también registra vía URL personalizada.",
+    en: "Ollama or another local runtime — no key, localhost-only, $0 cost. Any OpenAI-compatible local endpoint also registers via a custom URL.",
+    pt: "Ollama ou outro runtime local — sem chave, só localhost, custo $0. Qualquer endpoint local compatível com OpenAI também registra via URL personalizada.",
+    fr: "Ollama ou autre runtime local — sans clé, localhost uniquement, coût 0 $. Tout endpoint local compatible OpenAI s'enregistre aussi via une URL personnalisée.",
+  },
+  "prov.localUse": { es: "Usar local", en: "Use local", pt: "Usar local", fr: "Utiliser en local" },
+  "prov.localReachable": {
+    es: "disponible",
+    en: "available",
+    pt: "disponível",
+    fr: "disponible",
+  },
+  "prov.localUnreachable": {
+    es: "inalcanzable",
+    en: "unreachable",
+    pt: "inalcançável",
+    fr: "inaccessible",
+  },
+  "prov.localModels": {
+    es: "{n} modelos",
+    en: "{n} models",
+    pt: "{n} modelos",
+    fr: "{n} modèles",
+  },
+  "prov.localPickModel": {
+    es: "Elige un modelo:",
+    en: "Pick a model:",
+    pt: "Escolhe um modelo:",
+    fr: "Choisir un modèle :",
+  },
   "rc.cmd.placeholder": { es: "Escribe un comando o busca...", en: "Type a command or search...", pt: "Escreve um comando ou pesquisa...", fr: "Tapez une commande ou recherchez..." },
   "rc.cmd.views": { es: "Vistas", en: "Views", pt: "Vistas", fr: "Vues" },
   "rc.project.empty": { es: "Aún no hay proyectos", en: "No projects yet", pt: "Ainda não há projetos", fr: "Aucun projet pour l'instant" },
