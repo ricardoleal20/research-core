@@ -620,6 +620,7 @@ mod tests {
             base_url: "http://localhost:9".into(),
             api_key: "sk-test".into(),
             model: "judge-model".into(),
+            local_base_url: String::new(),
             cli: String::new(),
             cli_model: String::new(),
         }

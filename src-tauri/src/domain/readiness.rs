@@ -286,6 +286,9 @@ impl ReadinessItem {
             claim_ties: Vec::new(),
             relation_ties: Vec::new(),
             pending_count: 0,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
         }
     }
 
