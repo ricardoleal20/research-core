@@ -1112,9 +1112,123 @@ const seededReadinessClaims: Claim[] = [
     sourceMessageId: null, pinned: true, pin: verifiedPin(61, "cl42-seed", "h33-seed", "ref-sparse", "Memory grows linearly, not quadratically, with context length.") },
 ];
 
+// The mock manuscript-consistency scan (Story 6.8, FR-20.4): mirrors the
+// core's deterministic, non-LLM marker resolution — `\hyp{…}` / `\claim{…}`
+// resolved against the mock board, flags carrying the manuscript location.
+interface MockMsFlag {
+  kind: "manuscript_hypothesis_unresolved" | "manuscript_hypothesis_refuted" |
+    "manuscript_claim_unpinned" | "manuscript_claim_unlinked";
+  marker: string;
+  file: string;
+  line: number;
+  hypothesisId: string | null;
+  hypothesisSeq: number | null;
+  hypothesisStatus: HypothesisStatus | null;
+  claimId: string | null;
+  claimSeq: number | null;
+}
+
+function mockMsFlagOf(missionId: string): { flags: MockMsFlag[]; total: number } {
+  const flags: MockMsFlag[] = [];
+  let total = 0;
+  const ms = mockManuscriptOf(missionId);
+  if (!ms) return { flags, total };
+  const allHyps = [...seededReadinessHypotheses, ...hypotheses].filter(
+    (h) => h.missionId === missionId,
+  );
+  const allClaims = [...seededReadinessClaims, ...claims].filter(
+    (c) => allHyps.some((h) => h.id === c.hypothesisId),
+  );
+  const resolveHyp = (ref: string) => {
+    const byId = allHyps.find((h) => h.id === ref);
+    if (byId) return byId;
+    const n = /^H-(\d+)$/.exec(ref);
+    return allHyps.find((h) => h.seq === (n ? Number(n[1]) : Number(ref)));
+  };
+  const resolveClaim = (ref: string) => {
+    const byId = allClaims.find((c) => c.id === ref);
+    if (byId) return byId;
+    const n = /^CLAIMS-(\d+)$/.exec(ref);
+    return allClaims.find((c) => c.seq === (n ? Number(n[1]) : Number(ref)));
+  };
+  for (const f of mockTexFiles[missionId] ?? []) {
+    f.content.split("\n").forEach((line, i) => {
+      const lineNo = i + 1;
+      for (const m of line.matchAll(/\\hyp\{([^}]+)\}/g)) {
+        total += 1;
+        const ref = m[1];
+        const h = resolveHyp(ref);
+        if (!h) {
+          flags.push({
+            kind: "manuscript_claim_unlinked", marker: `\\hyp{${ref}}`,
+            file: f.path, line: lineNo, hypothesisId: null, hypothesisSeq: null,
+            hypothesisStatus: null, claimId: null, claimSeq: null,
+          });
+        } else if (h.status === "proposed" || h.status === "testing" || h.status === "revised") {
+          if (h.status !== "revised") {
+            flags.push({
+              kind: "manuscript_hypothesis_unresolved", marker: `\\hyp{${ref}}`,
+              file: f.path, line: lineNo, hypothesisId: h.id, hypothesisSeq: h.seq,
+              hypothesisStatus: h.status, claimId: null, claimSeq: null,
+            });
+          }
+        } else if (h.status === "refuted") {
+          flags.push({
+            kind: "manuscript_hypothesis_refuted", marker: `\\hyp{${ref}}`,
+            file: f.path, line: lineNo, hypothesisId: h.id, hypothesisSeq: h.seq,
+            hypothesisStatus: h.status, claimId: null, claimSeq: null,
+          });
+        }
+      }
+      for (const m of line.matchAll(/\\claim\{([^}]+)\}/g)) {
+        total += 1;
+        const ref = m[1];
+        const c = resolveClaim(ref);
+        if (!c) {
+          flags.push({
+            kind: "manuscript_claim_unlinked", marker: `\\claim{${ref}}`,
+            file: f.path, line: lineNo, hypothesisId: null, hypothesisSeq: null,
+            hypothesisStatus: null, claimId: null, claimSeq: null,
+          });
+        } else {
+          if (!c.pinned) {
+            flags.push({
+              kind: "manuscript_claim_unpinned", marker: `\\claim{${ref}}`,
+              file: f.path, line: lineNo, hypothesisId: c.hypothesisId,
+              hypothesisSeq: null, hypothesisStatus: null, claimId: c.id, claimSeq: c.seq,
+            });
+          }
+          const h = allHyps.find((x) => x.id === c.hypothesisId);
+          if (h && (h.status === "proposed" || h.status === "testing")) {
+            flags.push({
+              kind: "manuscript_hypothesis_unresolved", marker: `\\claim{${ref}}`,
+              file: f.path, line: lineNo, hypothesisId: h.id, hypothesisSeq: h.seq,
+              hypothesisStatus: h.status, claimId: c.id, claimSeq: c.seq,
+            });
+          }
+        }
+      }
+    });
+  }
+  return { flags, total };
+}
+
+// Convert one mock manuscript flag into the gate's ReadinessItem shape.
+function mockMsItem(missionId: string, flag: MockMsFlag): ReadinessItem {
+  return {
+    kind: flag.kind as ReadinessItemKind,
+    claimId: flag.claimId, claimSeq: flag.claimSeq,
+    hypothesisId: flag.hypothesisId, hypothesisSeq: flag.hypothesisSeq,
+    hypothesisStatus: flag.hypothesisStatus, searchSeq: null, missionId,
+    claimTies: [], relationTies: [], pendingCount: 0,
+    manuscriptFile: flag.file, manuscriptLine: flag.line, marker: flag.marker,
+  };
+}
+
 /** The mock readiness fold (mirrors the core's pure derivation): blockers
  *  each referencing their specific board object, verified-failed pins and
- *  merge-queue pending as info rows (never blockers), the four-row trail. */
+ *  merge-queue pending as info rows (never blockers), the four-row trail —
+ *  plus the manuscript scope (Story 6.8) when manuscripts are registered. */
 function mockReadinessReport(missionId: string | null): ReadinessReport {
   const hyps = [...seededReadinessHypotheses, ...hypotheses];
   const allClaims = [...seededReadinessClaims, ...claims];
@@ -1203,6 +1317,23 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
     });
   }
 
+  // 4. The manuscript scope (Story 6.8, FR-20.5): the deterministic
+  //    marker scan lands as blockers referencing the board AND the
+  //    manuscript location — mirrored exactly like the core's fold.
+  const msScans = mockManuscripts.filter((ms) => !missionId || ms.missionId === missionId);
+  let msMarkersTotal = 0;
+  const msFlaggedLocs = new Set<string>();
+  for (const ms of msScans) {
+    // an unreadable dir is info — the check could not run (mirror of the
+    // core's ManuscriptUnreadable info row)
+    const { flags, total } = mockMsFlagOf(ms.missionId);
+    msMarkersTotal += total;
+    for (const flag of flags) {
+      msFlaggedLocs.add(flag.file + ":" + flag.line);
+      blockers.push(mockMsItem(ms.missionId, flag));
+    }
+  }
+
   // the trail: what was checked, the counts, the objects
   const pinnedClaims = inScopeClaims.filter((c) => c.pinned);
   const resolvedHyps = inScopeHyps.filter((h) => h.status === "supported" || h.status === "refuted");
@@ -1231,6 +1362,29 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
         : decided.slice(0, 1).map((p) => `pr-${p.seq}`),
     },
   ];
+  // Story 6.8: the manuscript trail row — N/N markers linked clean — only
+  // when a manuscript is registered (progressive disclosure, mirrored).
+  if (msScans.length > 0) {
+    const cleanRefs: string[] = [];
+    for (const ms of msScans) {
+      const { flags, total } = mockMsFlagOf(ms.missionId);
+      void total;
+      const flagged = new Set(flags.map((f) => f.file + ":" + f.line));
+      for (const f of mockTexFiles[ms.missionId] ?? []) {
+        f.content.split("\n").forEach((line, i) => {
+          for (const m of line.matchAll(/\\hyp\{([^}]+)\}|\\claim\{([^}]+)\}/g)) {
+            void m;
+            if (!flagged.has(f.path + ":" + (i + 1))) cleanRefs.push(f.path + ":" + (i + 1));
+          }
+        });
+      }
+    }
+    trail.push({
+      kind: "manuscript_consistency", total: msMarkersTotal,
+      clean: msMarkersTotal - msFlaggedLocs.size,
+      verified: 0, pending: 0, refs: Array.from(new Set(cleanRefs)),
+    });
+  }
 
   return {
     scope: missionId,

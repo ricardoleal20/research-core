@@ -1183,6 +1183,298 @@ pub fn reject_diff(
         .expect("the diff was just rejected"))
 }
 
+// ---------------------------------------------------------------------------
+// Manuscript-board consistency (Story 6.8, FR-20.4/20.5)
+//
+// A DETERMINISTIC, non-LLM check linking the paper's claims to the board
+// through the marker convention agent diffs insert (FR-20.4):
+//
+// - `\hyp{…}` — a manuscript claim citing a hypothesis card. The
+//   reference resolves by hypothesis id (uuid), `H-{seq}` label, or bare
+//   seq.
+// - `\claim{…}` — a manuscript claim citing a board claim. The reference
+//   resolves by claim id (uuid), `CLAIMS-{seq}` label, or bare seq.
+//
+// The markers work as LaTeX macros or comments (a `% \hyp{H-3}` comment
+// links too — the scanner reads the raw text). The check flags:
+//
+// - HYPOTHESIS UNRESOLVED / REFUTED — a cited hypothesis still
+//   proposed/testing (or refuted): the paper asserts what the board has
+//   not answered (a resolved \claim inherits its hypothesis's status —
+//   a paper claim citing a claim of a testing hypothesis is the same
+//   outrun).
+// - CLAIM UNPINNED — a cited board claim with no evidence.pinned event:
+//   the paper would cite an assertion with nothing behind it.
+// - CLAIM UNLINKED — a marker that resolves to NO board object: the
+//   paper's claim is not linked to the board at all.
+//
+// Each flag references the specific board object (FR-13.1 discipline)
+// AND the manuscript location (file + 1-based line + the raw marker).
+// The whole check is a pure function of the log + a scan of the files on
+// disk — a derived view, no new store (FR-13.2, AD-1).
+// ---------------------------------------------------------------------------
+
+/// Which marker convention a manuscript location carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerKind {
+    Hyp,
+    Claim,
+}
+
+/// One board-link marker found in a .tex source: its kind, the raw
+/// reference inside the braces, and its 1-based line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Marker {
+    pub kind: MarkerKind,
+    pub reference: String,
+    pub line: u32,
+}
+
+/// Scan one .tex source's markers (pure): every `\hyp{…}` and `\claim{…}`
+/// occurrence, macro or comment, with its line. A reference runs to the
+/// first closing brace (nested braces are not part of the convention).
+pub fn scan_markers(content: &str) -> Vec<Marker> {
+    let mut markers = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        for (needle, kind) in [("\\hyp{", MarkerKind::Hyp), ("\\claim{", MarkerKind::Claim)] {
+            let mut from = 0usize;
+            while let Some(found) = line[from..].find(needle) {
+                let start = from + found + needle.len();
+                let end = line[start..].find('}').map(|e| start + e);
+                if let Some(end) = end {
+                    let reference = line[start..end].trim().to_string();
+                    if !reference.is_empty() {
+                        markers.push(Marker {
+                            kind,
+                            reference,
+                            line: (idx + 1) as u32,
+                        });
+                    }
+                    from = end + 1;
+                } else {
+                    break; // an unterminated marker is not a marker
+                }
+            }
+        }
+    }
+    markers
+}
+
+/// One scanned .tex source for the consistency check: its repo-relative
+/// path and its markers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanFile {
+    pub path: String,
+    pub markers: Vec<Marker>,
+}
+
+/// A manuscript scan: the mission it belongs to, its dir, the scanned
+/// files with their markers — and the honest error when the dir could not
+/// be read (the gate surfaces that as info, never a silent skip).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManuscriptScan {
+    pub mission_id: Uuid,
+    pub dir: String,
+    pub files: Vec<ScanFile>,
+    pub error: Option<String>,
+}
+
+/// Build a manuscript's consistency scan from the files on disk (the
+/// builder is the only place the check touches the filesystem; the check
+/// itself is pure). An unreadable dir is carried honestly as `error`.
+pub fn build_scan(ms: &Manuscript) -> ManuscriptScan {
+    let root = Path::new(&ms.dir);
+    match scan_manuscript(root) {
+        Ok(scans) => {
+            let mut files = Vec::new();
+            for scan in scans {
+                let content = read_tex_file(root, &scan.path)
+                    .unwrap_or_default();
+                files.push(ScanFile {
+                    path: scan.path,
+                    markers: scan_markers(&content),
+                });
+            }
+            ManuscriptScan {
+                mission_id: ms.mission_id,
+                dir: ms.dir.clone(),
+                files,
+                error: None,
+            }
+        }
+        Err(e) => ManuscriptScan {
+            mission_id: ms.mission_id,
+            dir: ms.dir.clone(),
+            files: Vec::new(),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// One consistency flag: the kind, the manuscript location (file + line +
+/// the raw marker), the mission, and the specific board object(s) it
+/// references (FR-13.1 discipline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManuscriptFlagKind {
+    HypothesisUnresolved,
+    HypothesisRefuted,
+    ClaimUnpinned,
+    ClaimUnlinked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManuscriptFlag {
+    pub kind: ManuscriptFlagKind,
+    pub marker: String,
+    pub file: String,
+    pub line: u32,
+    pub mission_id: Uuid,
+    pub hypothesis_id: Option<Uuid>,
+    pub hypothesis_seq: Option<i64>,
+    pub hypothesis_status: Option<crate::domain::hypotheses::HypothesisStatus>,
+    pub claim_id: Option<Uuid>,
+    pub claim_seq: Option<i64>,
+}
+
+/// Does a `\hyp` reference resolve to this hypothesis? By uuid, `H-{seq}`
+/// label, or bare seq.
+fn hyp_reference_matches(reference: &str, hyp: &crate::domain::hypotheses::Hypothesis) -> bool {
+    reference == hyp.id.to_string()
+        || reference == format!("H-{}", hyp.seq)
+        || reference.parse::<i64>().map(|n| n == hyp.seq).unwrap_or(false)
+}
+
+/// Does a `\claim` reference resolve to this claim? By uuid,
+/// `CLAIMS-{seq}` label, or bare seq.
+fn claim_reference_matches(reference: &str, claim: &crate::domain::evidence::Claim) -> bool {
+    reference == claim.id.to_string()
+        || reference == format!("CLAIMS-{}", claim.seq)
+        || reference.parse::<i64>().map(|n| n == claim.seq).unwrap_or(false)
+}
+
+/// The consistency check (FR-20.4): a PURE fold of the log plus the
+/// manuscript scan — every marker resolved against the board, every
+/// violation flagged with its board object AND its manuscript location.
+/// Deterministic and non-LLM by construction: same log + same files,
+/// same flags (the FR-13.2 invariant).
+pub fn manuscript_consistency(
+    events: &[StoredEvent],
+    scan: &ManuscriptScan,
+) -> Result<Vec<ManuscriptFlag>, EventError> {
+    let cursor = FoldCursor::over(events);
+    let live = cursor.live_owned(events);
+    let hyps = crate::domain::hypotheses::HypothesesProjection::fold(&live)?;
+    let claims = crate::domain::evidence::EvidenceProjection::fold(&live)?;
+    let hyps_in_mission: Vec<_> = hyps
+        .iter()
+        .filter(|h| h.mission_id == scan.mission_id)
+        .collect();
+    let hyp_ids: std::collections::HashSet<Uuid> =
+        hyps_in_mission.iter().map(|h| h.id).collect();
+    let claims_in_mission: Vec<_> = claims
+        .iter()
+        .filter(|c| hyp_ids.contains(&c.hypothesis_id))
+        .collect();
+
+    let mut flags: Vec<ManuscriptFlag> = Vec::new();
+    for file in &scan.files {
+        for marker in &file.markers {
+            let raw = format!(
+                "\\{}{{{}}}",
+                match marker.kind {
+                    MarkerKind::Hyp => "hyp",
+                    MarkerKind::Claim => "claim",
+                },
+                marker.reference
+            );
+            let mut flag = |kind: ManuscriptFlagKind,
+                            hyp: Option<&crate::domain::hypotheses::Hypothesis>,
+                            claim: Option<&crate::domain::evidence::Claim>| {
+                flags.push(ManuscriptFlag {
+                    kind,
+                    marker: raw.clone(),
+                    file: file.path.clone(),
+                    line: marker.line,
+                    mission_id: scan.mission_id,
+                    hypothesis_id: hyp.map(|h| h.id),
+                    hypothesis_seq: hyp.map(|h| h.seq),
+                    hypothesis_status: hyp.map(|h| h.status),
+                    claim_id: claim.map(|c| c.id),
+                    claim_seq: claim.map(|c| c.seq),
+                });
+            };
+            match marker.kind {
+                MarkerKind::Hyp => {
+                    let resolved = hyps_in_mission
+                        .iter()
+                        .find(|h| hyp_reference_matches(&marker.reference, h));
+                    match resolved {
+                        None => flag(ManuscriptFlagKind::ClaimUnlinked, None, None),
+                        Some(h) => match h.status {
+                            crate::domain::hypotheses::HypothesisStatus::Proposed
+                            | crate::domain::hypotheses::HypothesisStatus::Testing => {
+                                flag(ManuscriptFlagKind::HypothesisUnresolved, Some(h), None)
+                            }
+                            crate::domain::hypotheses::HypothesisStatus::Refuted => {
+                                flag(ManuscriptFlagKind::HypothesisRefuted, Some(h), None)
+                            }
+                            // supported (an answer) and revised (mid-rework,
+                            // same rule as the gate's board scope) are clean
+                            _ => {}
+                        },
+                    }
+                }
+                MarkerKind::Claim => {
+                    let resolved = claims_in_mission
+                        .iter()
+                        .find(|c| claim_reference_matches(&marker.reference, c));
+                    match resolved {
+                        None => flag(ManuscriptFlagKind::ClaimUnlinked, None, None),
+                        Some(c) => {
+                            if !c.pinned {
+                                flag(ManuscriptFlagKind::ClaimUnpinned, None, Some(c));
+                            }
+                            // a paper claim citing a claim of an unresolved /
+                            // refuted hypothesis is the same outrun — the
+                            // hypothesis card is referenced too
+                            if let Some(h) = hyps_in_mission
+                                .iter()
+                                .find(|h| h.id == c.hypothesis_id)
+                            {
+                                match h.status {
+                                    crate::domain::hypotheses::HypothesisStatus::Proposed
+                                    | crate::domain::hypotheses::HypothesisStatus::Testing => {
+                                        flag(
+                                            ManuscriptFlagKind::HypothesisUnresolved,
+                                            Some(h),
+                                            Some(c),
+                                        );
+                                    }
+                                    crate::domain::hypotheses::HypothesisStatus::Refuted => {
+                                        flag(
+                                            ManuscriptFlagKind::HypothesisRefuted,
+                                            Some(h),
+                                            Some(c),
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(flags)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

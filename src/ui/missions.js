@@ -813,6 +813,9 @@ function renderReadinessItem(b, blocking) {
   } else if (b.kind === "manuscript_claim_unlinked") {
     title = t("rd.b.msClaimUnlinked");
     chips = objChip(b.marker) + msLoc;
+  } else if (b.kind === "manuscript_unreadable") {
+    title = t("rd.i.manuscriptUnreadable");
+    chips = objChip(b.manuscriptFile || "");
   }
   return `
     <div class="flex items-start gap-2.5 ${blocking ? "" : "opacity-80"}">

@@ -71,6 +71,7 @@ use crate::domain::hypotheses::{
     Hypothesis, HypothesesProjection, HypothesisStatus, RelationChip, RelationDirection,
     RelationKind,
 };
+use crate::domain::manuscript::{self, ManuscriptFlag, ManuscriptFlagKind, ManuscriptScan};
 use crate::domain::proposals::{ProposalStatus, ProposalsProjection};
 use crate::domain::search::search_disclosure;
 use crate::eventstore::{EventError, StoredEvent};
@@ -107,6 +108,21 @@ pub enum ReadinessItemKind {
     /// INFO: pending quarantine proposals — not board state (AD-3), so not a
     /// blocker; surfaced so a non-empty queue is never a surprise.
     MergeQueuePending,
+    // The manuscript scope (Story 6.8, FR-20.4/20.5): the paper cannot
+    // quietly outrun the evidence — each flag references the specific
+    // hypothesis card / claim AND the manuscript location (FR-13.1).
+    /// A `\hyp`/`\claim` marker citing a hypothesis still proposed/testing.
+    ManuscriptHypothesisUnresolved,
+    /// A marker citing a refuted hypothesis.
+    ManuscriptHypothesisRefuted,
+    /// A `\claim` marker citing a board claim with no evidence pin.
+    ManuscriptClaimUnpinned,
+    /// A marker that resolves to no board object — an unlinked claim.
+    ManuscriptClaimUnlinked,
+    /// INFO: a registered manuscript whose directory could not be read —
+    /// the consistency check could not run, and that is surfaced, never
+    /// silently skipped.
+    ManuscriptUnreadable,
 }
 
 /// One typed relation tie on a load-blocking hypothesis: the relation kind,
@@ -145,6 +161,11 @@ pub struct ReadinessItem {
     pub relation_ties: Vec<ReadinessRelationTie>,
     /// The merge-queue info row's pending count.
     pub pending_count: u32,
+    // The manuscript scope (Story 6.8): the flag's manuscript location —
+    // the repo-relative file, the 1-based line, and the raw marker.
+    pub manuscript_file: Option<String>,
+    pub manuscript_line: Option<u32>,
+    pub marker: Option<String>,
 }
 
 impl ReadinessItem {
@@ -161,6 +182,9 @@ impl ReadinessItem {
             claim_ties: Vec::new(),
             relation_ties: Vec::new(),
             pending_count: 0,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
         }
     }
 
@@ -182,6 +206,9 @@ impl ReadinessItem {
             claim_ties,
             relation_ties,
             pending_count: 0,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
         }
     }
 
@@ -198,6 +225,9 @@ impl ReadinessItem {
             claim_ties: Vec::new(),
             relation_ties: Vec::new(),
             pending_count: 0,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
         }
     }
 
@@ -214,6 +244,9 @@ impl ReadinessItem {
             claim_ties: Vec::new(),
             relation_ties: Vec::new(),
             pending_count: 0,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
         }
     }
 
@@ -230,6 +263,60 @@ impl ReadinessItem {
             claim_ties: Vec::new(),
             relation_ties: Vec::new(),
             pending_count,
+            manuscript_file: None,
+            manuscript_line: None,
+            marker: None,
+        }
+    }
+
+    /// One manuscript consistency flag (Story 6.8, FR-20.5): a blocker
+    /// referencing the board object AND the manuscript location.
+    fn manuscript(flag: &ManuscriptFlag) -> Self {
+        Self {
+            kind: match flag.kind {
+                ManuscriptFlagKind::HypothesisUnresolved => {
+                    ReadinessItemKind::ManuscriptHypothesisUnresolved
+                }
+                ManuscriptFlagKind::HypothesisRefuted => {
+                    ReadinessItemKind::ManuscriptHypothesisRefuted
+                }
+                ManuscriptFlagKind::ClaimUnpinned => ReadinessItemKind::ManuscriptClaimUnpinned,
+                ManuscriptFlagKind::ClaimUnlinked => ReadinessItemKind::ManuscriptClaimUnlinked,
+            },
+            claim_id: flag.claim_id,
+            claim_seq: flag.claim_seq,
+            hypothesis_id: flag.hypothesis_id,
+            hypothesis_seq: flag.hypothesis_seq,
+            hypothesis_status: flag.hypothesis_status,
+            search_seq: None,
+            mission_id: Some(flag.mission_id),
+            claim_ties: Vec::new(),
+            relation_ties: Vec::new(),
+            pending_count: 0,
+            manuscript_file: Some(flag.file.clone()),
+            manuscript_line: Some(flag.line),
+            marker: Some(flag.marker.clone()),
+        }
+    }
+
+    /// INFO: a registered manuscript whose dir could not be read — the
+    /// consistency check could not run; surfaced, never silently skipped.
+    fn manuscript_unreadable(scan: &ManuscriptScan) -> Self {
+        Self {
+            kind: ReadinessItemKind::ManuscriptUnreadable,
+            claim_id: None,
+            claim_seq: None,
+            hypothesis_id: None,
+            hypothesis_seq: None,
+            hypothesis_status: None,
+            search_seq: None,
+            mission_id: Some(scan.mission_id),
+            claim_ties: Vec::new(),
+            relation_ties: Vec::new(),
+            pending_count: 0,
+            manuscript_file: Some(scan.dir.clone()),
+            manuscript_line: None,
+            marker: None,
         }
     }
 }
@@ -250,6 +337,10 @@ pub enum ReadinessTrailKind {
     /// The merge queue: pending count (0 = empty), citing the last decided
     /// proposal when clean.
     MergeQueue,
+    /// The manuscript scope (Story 6.8, FR-20.5): N/N board markers linked
+    /// clean. Present ONLY when a manuscript is registered (progressive
+    /// disclosure — the row never renders uninvited).
+    ManuscriptConsistency,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,10 +403,28 @@ fn is_resolved(status: HypothesisStatus) -> bool {
 /// live view — an orphaned pin never happened for this report). No readiness
 /// state is written anywhere: asking again re-folds, replaying the same
 /// events yields the same report (the FR-13.2 invariant the test below
-/// proves).
+/// proves). The board-only report: no manuscript registered, no manuscript
+/// scope (progressive disclosure).
 pub fn readiness_report(
     events: &[StoredEvent],
     scope: Option<Uuid>,
+) -> Result<ReadinessReport, EventError> {
+    readiness_report_with_manuscript(events, scope, &[])
+}
+
+/// The report with the manuscript scope extended (Story 6.8, FR-20.5): the
+/// same pure board fold plus a scan of the registered manuscripts — the
+/// consistency flags land as BLOCKING items referencing the board object
+/// AND the manuscript location; an unreadable manuscript dir is an INFO
+/// row (the check could not run — surfaced, never silently skipped); a
+/// clean manuscript adds its trail row. The scan is computed by the caller
+/// (the command seam reads the disk); the report itself stays a pure
+/// function of the log + the scan (FR-13.2: same log + same files, same
+/// report).
+pub fn readiness_report_with_manuscript(
+    events: &[StoredEvent],
+    scope: Option<Uuid>,
+    scans: &[ManuscriptScan],
 ) -> Result<ReadinessReport, EventError> {
     // The shared fold cursor (AD-1, Story 2.6) applied ONCE here: the live
     // slice feeds every sub-fold. The evidence/hypotheses/proposals folds
@@ -434,6 +543,40 @@ pub fn readiness_report(
         ));
     }
 
+    // --- The manuscript scope (Story 6.8, FR-20.5): the paper cannot
+    // quietly outrun the evidence. The consistency flags land as BLOCKERS
+    // referencing the board object AND the manuscript location; an
+    // unreadable dir is INFO (the check could not run — surfaced, never
+    // silently skipped); the trail row appears only when a manuscript was
+    // actually checked (progressive disclosure). ---
+    let mut ms_markers_total: u32 = 0;
+    let mut ms_flagged_locations: u32 = 0;
+    let mut ms_clean_refs: Vec<String> = Vec::new();
+    let mut ms_checked = false;
+    for scan in scans.iter().filter(|s| scope.is_none_or(|m| s.mission_id == m)) {
+        if scan.error.is_some() {
+            infos.push(ReadinessItem::manuscript_unreadable(scan));
+            continue;
+        }
+        ms_checked = true;
+        let flags = manuscript::manuscript_consistency(events, scan)?;
+        let total: u32 = scan.files.iter().map(|f| f.markers.len() as u32).sum();
+        let flagged: std::collections::HashSet<(String, u32)> =
+            flags.iter().map(|f| (f.file.clone(), f.line)).collect();
+        ms_markers_total += total;
+        ms_flagged_locations += flagged.len() as u32;
+        for file in &scan.files {
+            for marker in &file.markers {
+                if !flagged.contains(&(file.path.clone(), marker.line)) {
+                    ms_clean_refs.push(format!("{}:{}", file.path, marker.line));
+                }
+            }
+        }
+        for flag in &flags {
+            blockers.push(ReadinessItem::manuscript(flag));
+        }
+    }
+
     // --- The trail: what was checked, the counts, the objects (always
     // honest — a not-ready board still sees its own counts). ---
     let pinned_claims: Vec<&Claim> =
@@ -456,7 +599,7 @@ pub fn readiness_report(
         .map(|r| r.seq)
         .collect();
 
-    let trail = vec![
+    let mut trail = vec![
         ReadinessTrailRow {
             kind: ReadinessTrailKind::ClaimsPinned,
             total: claims_in_scope.len() as u32,
@@ -509,6 +652,18 @@ pub fn readiness_report(
             },
         },
     ];
+    // The manuscript trail row (Story 6.8): N/N markers linked clean —
+    // present only when a manuscript was actually checked.
+    if ms_checked {
+        trail.push(ReadinessTrailRow {
+            kind: ReadinessTrailKind::ManuscriptConsistency,
+            total: ms_markers_total,
+            clean: ms_markers_total - ms_flagged_locations,
+            verified: 0,
+            pending: 0,
+            refs: ms_clean_refs,
+        });
+    }
 
     Ok(ReadinessReport {
         scope,
@@ -1240,5 +1395,430 @@ mod tests {
             let err = readiness_report(&events, None);
             assert!(err.is_err(), "a tampered pin never folds into a readiness report");
         });
+    }
+
+    // ---------- the manuscript scope (Story 6.8, FR-20.4/20.5) ----------
+
+    use crate::domain::manuscript::{
+        build_scan, ManuscriptScan, ScanFile, Marker, MarkerKind,
+    };
+
+    /// A temp .tex repo whose main.tex carries the marker convention.
+    fn tex_repo(lines: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rc-rd-ms-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut tex = String::from("\\documentclass{article}\n\\begin{document}\n");
+        for line in lines {
+            tex.push_str(line);
+            tex.push('\n');
+        }
+        tex.push_str("\\end{document}\n");
+        std::fs::write(dir.join("main.tex"), tex).unwrap();
+        dir
+    }
+
+    /// The seeded board for the manuscript tests: h1 (testing) with an
+    /// unpinned claim, h2 (supported) with a pinned claim — both creation
+    /// seqs and claim seqs captured (the markers label real H-{seq} /
+    /// CLAIMS-{seq} chips, which follow the log's seqs).
+    struct MsBoard {
+        mission: uuid::Uuid,
+        h1: uuid::Uuid,
+        h2: uuid::Uuid,
+        h1_seq: i64,
+        h2_seq: i64,
+        unpinned: uuid::Uuid,
+        pinned: uuid::Uuid,
+        unpinned_seq: i64,
+        pinned_seq: i64,
+    }
+
+    fn seed_manuscript_board(store: &EventStore<'_>) -> MsBoard {
+        let mission = seed_mission(store);
+        let h1 = seed_hypothesis(store, mission, "X holds under load.");
+        let h2 = seed_hypothesis(store, mission, "Y holds under load.");
+        let unpinned = seed_claim(store, h1, "X holds at 32k.");
+        let pinned = seed_claim(store, h2, "Y holds at 32k.");
+        seed_pin(store, &pinned, h2, "Y holds at 32k, stated.");
+        for (h, from, to, basis) in [
+            (h1, HypothesisStatus::Proposed, HypothesisStatus::Testing, "Trial running."),
+            (h2, HypothesisStatus::Proposed, HypothesisStatus::Testing, "Trial ran."),
+            (h2, HypothesisStatus::Testing, HypothesisStatus::Supported, "Evidence held."),
+        ] {
+            store
+                .append(
+                    NewEvent::hypothesis_status_changed(from, to, basis)
+                        .unwrap()
+                        .with_causes(vec![h]),
+                )
+                .unwrap();
+        }
+        let events = store.events_all().unwrap();
+        let seq_of = |id: uuid::Uuid| {
+            events.iter().find(|e| e.id == id).expect("seeded").seq
+        };
+        MsBoard {
+            mission,
+            h1,
+            h2,
+            h1_seq: seq_of(h1),
+            h2_seq: seq_of(h2),
+            unpinned: unpinned.id,
+            pinned: pinned.id,
+            unpinned_seq: seq_of(unpinned.id),
+            pinned_seq: seq_of(pinned.id),
+        }
+    }
+
+    fn register_and_scan(
+        store: &EventStore<'_>,
+        mission: uuid::Uuid,
+        dir: &std::path::Path,
+    ) -> ManuscriptScan {
+        let ms = store
+            .append(
+                NewEvent::manuscript_registered(
+                    mission,
+                    &dir.display().to_string(),
+                    "main.tex",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let events = store.events_all().unwrap();
+        let registered = crate::domain::manuscript::ManuscriptsProjection::for_mission(
+            &events,
+            mission,
+        )
+        .unwrap()
+        .expect("registered");
+        assert_eq!(registered.seq, ms.seq);
+        build_scan(&registered)
+    }
+
+    /// Every flag class blocks the gate, each referencing its board object
+    /// AND its manuscript location (FR-20.4/20.5, FR-13.1 discipline). The
+    /// markers carry the REAL H-{seq}/CLAIMS-{seq} labels — the log's
+    /// creation seqs, exactly as the board renders them.
+    #[test]
+    fn manuscript_flags_block_the_gate_referencing_card_and_location() {
+        with_store(|store| {
+            let b = seed_manuscript_board(store);
+            // the manuscript: 5 markers — 3 flag-bearing, 2 clean
+            let dir = tex_repo(&[
+                &format!("The gain holds \\hyp{{H-{}}}.", b.h1_seq), // testing → unresolved
+                &format!("Secondary \\hyp{{H-{}}}.", b.h2_seq),      // supported → clean
+                "A ghost \\hyp{H-99} claim.",                        // no object → unlinked
+                &format!("We assert \\claim{{CLAIMS-{}}}.", b.unpinned_seq), // unpinned → flagged
+                &format!("Cite \\claim{{CLAIMS-{}}}.", b.pinned_seq),        // pinned → clean
+            ]);
+            let scan = register_and_scan(store, b.mission, &dir);
+            assert_eq!(scan.error, None);
+            assert_eq!(scan.files.len(), 1);
+            assert_eq!(scan.files[0].markers.len(), 5);
+
+            let report =
+                readiness_report_with_manuscript(&store.events_all().unwrap(), None, &[scan])
+                    .unwrap();
+            assert_eq!(report.verdict, ReadinessVerdict::NotReady);
+
+            // \hyp{H-h1} on line 3: hypothesis unresolved, referenced by
+            // seq + status + marker + file:line. A second unresolved flag
+            // rides the unpinned claim's marker (its hypothesis is still
+            // testing — the paper claim cites a testing hypothesis).
+            let hyp_items: Vec<_> = report
+                .blockers
+                .iter()
+                .filter(|b| b.kind == ReadinessItemKind::ManuscriptHypothesisUnresolved)
+                .collect();
+            assert_eq!(hyp_items.len(), 2, "the \\hyp marker + the \\claim's hypothesis");
+            let hyp_item = hyp_items
+                .iter()
+                .find(|b| b.manuscript_line == Some(3))
+                .expect("the \\hyp{{H-h1}} flag at line 3");
+            assert_eq!(hyp_item.hypothesis_seq, Some(b.h1_seq));
+            assert_eq!(hyp_item.hypothesis_status, Some(HypothesisStatus::Testing));
+            assert_eq!(hyp_item.manuscript_file.as_deref(), Some("main.tex"));
+            assert_eq!(
+                hyp_item.marker.as_deref(),
+                Some(format!("\\hyp{{H-{}}}", b.h1_seq).as_str())
+            );
+
+            // \hyp{H-99} on line 5: unlinked — the marker resolves to nothing
+            let [unlinked] = report
+                .blockers
+                .iter()
+                .filter(|b| b.kind == ReadinessItemKind::ManuscriptClaimUnlinked)
+                .cloned()
+                .collect::<Vec<_>>()
+                .try_into()
+                .ok()
+                .expect("exactly one unlinked flag");
+            assert_eq!(unlinked.marker.as_deref(), Some("\\hyp{H-99}"));
+            assert_eq!(unlinked.manuscript_line, Some(5));
+
+            // \claim{CLAIMS-{unpinned}} on line 6: the unpinned claim,
+            // referenced by seq (the stable chip) + the manuscript location
+            let [unpinned_item] = report
+                .blockers
+                .iter()
+                .filter(|b| b.kind == ReadinessItemKind::ManuscriptClaimUnpinned)
+                .cloned()
+                .collect::<Vec<_>>()
+                .try_into()
+                .ok()
+                .expect("exactly one unpinned-claim flag");
+            assert_eq!(unpinned_item.claim_seq, Some(b.unpinned_seq));
+            assert_eq!(unpinned_item.manuscript_line, Some(6));
+            assert_eq!(
+                unpinned_item.marker.as_deref(),
+                Some(format!("\\claim{{CLAIMS-{}}}", b.unpinned_seq).as_str())
+            );
+
+            // the trail: five rows now, the manuscript row 5 markers / 2 clean
+            assert_eq!(report.trail.len(), 5, "the board's four + the manuscript row");
+            let ms_row = &report.trail[4];
+            assert_eq!(ms_row.kind, ReadinessTrailKind::ManuscriptConsistency);
+            assert_eq!((ms_row.total, ms_row.clean), (5, 2));
+            assert!(ms_row.refs.contains(&"main.tex:4".to_string()));
+            assert!(ms_row.refs.contains(&"main.tex:7".to_string()));
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// A clean manuscript reports ready with its trail row; an unreadable
+    /// dir is an INFO row (the check could not run — surfaced, never
+    /// silently skipped) and adds no trail row.
+    #[test]
+    fn a_clean_manuscript_extends_the_trail_and_an_unreadable_dir_is_info() {
+        with_store(|store| {
+            let b = seed_manuscript_board(store);
+            // a CLEAN board: pin the unpinned claim, resolve h1
+            let claim = store
+                .events_all()
+                .unwrap()
+                .iter()
+                .find(|e| e.id == b.unpinned)
+                .unwrap()
+                .clone();
+            seed_pin(store, &claim, b.h1, "X holds at 32k, stated.");
+            store
+                .append(
+                    NewEvent::hypothesis_status_changed(
+                        HypothesisStatus::Testing,
+                        HypothesisStatus::Supported,
+                        "Held.",
+                    )
+                    .unwrap()
+                    .with_causes(vec![b.h1]),
+                )
+                .unwrap();
+            // the clean manuscript: every marker resolves to an answer
+            let dir = tex_repo(&[
+                &format!("The gain holds \\hyp{{H-{}}}.", b.h1_seq),
+                &format!(
+                    "Cite \\claim{{CLAIMS-{}}} plus \\claim{{CLAIMS-{}}}.",
+                    b.unpinned_seq, b.pinned_seq
+                ),
+            ]);
+            let scan = register_and_scan(store, b.mission, &dir);
+            let report =
+                readiness_report_with_manuscript(&store.events_all().unwrap(), None, &[scan])
+                    .unwrap();
+            assert_eq!(report.verdict, ReadinessVerdict::Ready, "board + manuscript clean");
+            assert!(report.blockers.is_empty());
+            assert_eq!(report.trail.len(), 5);
+            let ms_row = &report.trail[4];
+            assert_eq!((ms_row.total, ms_row.clean), (3, 3));
+
+            // an unreadable dir: INFO, no trail row, never a silent skip
+            let unreadable = ManuscriptScan {
+                mission_id: b.mission,
+                dir: "/nonexistent/manuscript".into(),
+                files: Vec::new(),
+                error: Some("invalid_dir: `/nonexistent/manuscript`".into()),
+            };
+            let report = readiness_report_with_manuscript(
+                &store.events_all().unwrap(),
+                None,
+                &[unreadable],
+            )
+            .unwrap();
+            assert_eq!(report.verdict, ReadinessVerdict::Ready, "info never blocks");
+            assert_eq!(report.infos.len(), 1);
+            assert_eq!(report.infos[0].kind, ReadinessItemKind::ManuscriptUnreadable);
+            assert_eq!(report.trail.len(), 4, "no manuscript was checked — no row");
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// The scope governs the manuscript flags too: a mission-scoped report
+    /// sees only its own manuscript's flags — a marker-rich manuscript of
+    /// another mission never leaks in.
+    #[test]
+    fn the_scope_governs_the_manuscript_flags() {
+        with_store(|store| {
+            let b = seed_manuscript_board(store);
+            let other = seed_mission(store);
+            let dirty_dir = tex_repo(&["A ghost \\hyp{H-99} claim."]);
+            let dirty = register_and_scan(store, b.mission, &dirty_dir);
+            // the other mission's manuscript: ZERO markers — nothing to
+            // check, no flags (a marker-free repo is clean for this check)
+            let clean_dir = tex_repo(&["% no board links here yet."]);
+            store
+                .append(
+                    NewEvent::manuscript_registered(
+                        other,
+                        &clean_dir.display().to_string(),
+                        "main.tex",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let events = store.events_all().unwrap();
+            let other_registered =
+                crate::domain::manuscript::ManuscriptsProjection::for_mission(&events, other)
+                    .unwrap()
+                    .unwrap();
+            let clean = build_scan(&other_registered);
+            // workspace: the dirty manuscript's flag blocks
+            let workspace =
+                readiness_report_with_manuscript(&events, None, &[dirty.clone(), clean.clone()])
+                    .unwrap();
+            assert!(workspace
+                .blockers
+                .iter()
+                .any(|b| b.kind == ReadinessItemKind::ManuscriptClaimUnlinked));
+            // the dirty mission's scope: its flag
+            let scoped =
+                readiness_report_with_manuscript(&events, Some(b.mission), &[dirty, clean.clone()])
+                    .unwrap();
+            assert!(scoped
+                .blockers
+                .iter()
+                .any(|b| b.kind == ReadinessItemKind::ManuscriptClaimUnlinked));
+            // the clean mission's scope: no manuscript flag (its own scan
+            // has none, and the dirty mission's scan is out of scope)
+            let other_scoped = readiness_report_with_manuscript(
+                &store.events_all().unwrap(),
+                Some(other),
+                &[clean],
+            )
+            .unwrap();
+            assert!(other_scoped
+                .blockers
+                .iter()
+                .all(|b| !matches!(
+                    b.kind,
+                    ReadinessItemKind::ManuscriptHypothesisUnresolved
+                        | ReadinessItemKind::ManuscriptHypothesisRefuted
+                        | ReadinessItemKind::ManuscriptClaimUnpinned
+                        | ReadinessItemKind::ManuscriptClaimUnlinked
+                )));
+            let _ = std::fs::remove_dir_all(&dirty_dir);
+            let _ = std::fs::remove_dir_all(&clean_dir);
+        });
+    }
+
+    /// The FR-13.2 invariant for the manuscript scope: replaying the same
+    /// events into a fresh log against the SAME files yields the same
+    /// manuscript report — kinds, seq-based references, locations, counts.
+    /// The replay mints fresh event ids; everything DERIVED is equal.
+    #[test]
+    fn replaying_events_and_files_yields_the_same_manuscript_report() {
+        fn build(store: &EventStore<'_>, b: &MsBoard, dir: &std::path::Path) -> ReadinessReport {
+            let scan = register_and_scan(store, b.mission, dir);
+            readiness_report_with_manuscript(&store.events_all().unwrap(), None, &[scan])
+                .unwrap()
+        }
+        let dir = tex_repo(&[
+            "The gain holds \\hyp{H-1}.",
+            "A ghost \\hyp{H-99} claim.",
+            "We assert \\claim{CLAIMS-2}.",
+        ]);
+        // The labels are REAL chips of the log (H-{seq} / CLAIMS-{seq}):
+        // both seeds are byte-identical, so one repo — written from the
+        // first seed's seqs — names the same objects for both stores.
+        fn write_repo(dir: &std::path::Path, b: &MsBoard) {
+            std::fs::write(
+                dir.join("main.tex"),
+                format!(
+                    "\\documentclass{{article}}\n\\begin{{document}}\n\
+                     The gain holds \\hyp{{H-{}}}.\n\
+                     A ghost \\hyp{{H-99}} claim.\n\
+                     We assert \\claim{{CLAIMS-{}}}.\n\
+                     \\end{{document}}\n",
+                    b.h1_seq, b.unpinned_seq
+                ),
+            )
+            .unwrap();
+        }
+
+        let conn_a = Connection::open_in_memory().unwrap();
+        EventStore::init(&conn_a).unwrap();
+        let store_a = EventStore::new(&conn_a);
+        let b_a = seed_manuscript_board(&store_a);
+        write_repo(&dir, &b_a);
+        let report_a = build(&store_a, &b_a, &dir);
+
+        let conn_b = Connection::open_in_memory().unwrap();
+        EventStore::init(&conn_b).unwrap();
+        let store_b = EventStore::new(&conn_b);
+        let b_b = seed_manuscript_board(&store_b);
+        let report_b = build(&store_b, &b_b, &dir);
+
+        assert_eq!(report_a.verdict, report_b.verdict);
+        assert_eq!(report_a.blockers.len(), report_b.blockers.len());
+        for (a, b) in report_a.blockers.iter().zip(report_b.blockers.iter()) {
+            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.claim_seq, b.claim_seq);
+            assert_eq!(a.hypothesis_seq, b.hypothesis_seq);
+            assert_eq!(a.hypothesis_status, b.hypothesis_status);
+            assert_eq!(a.manuscript_file, b.manuscript_file);
+            assert_eq!(a.manuscript_line, b.manuscript_line);
+            assert_eq!(a.marker, b.marker);
+            if let (Some(a_id), Some(b_id)) = (a.claim_id, b.claim_id) {
+                assert_ne!(a_id, b_id, "fresh log, fresh ids — everything derived is equal");
+            }
+        }
+        assert_eq!(
+            report_a
+                .trail
+                .iter()
+                .map(|r| (r.kind, r.total, r.clean, r.refs.clone()))
+                .collect::<Vec<_>>(),
+            report_b
+                .trail
+                .iter()
+                .map(|r| (r.kind, r.total, r.clean, r.refs.clone()))
+                .collect::<Vec<_>>(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The marker scanner (FR-20.4): macros and comments, several per line,
+    /// 1-based lines, unterminated braces are not markers.
+    #[test]
+    fn scan_markers_reads_the_convention() {
+        let tex = "\\documentclass{article}\n\
+                   The gain holds \\hyp{H-1} and \\claim{CLAIMS-2}.\n\
+                   % a comment link: \\hyp{H-3}\n\
+                   broken \\hyp{H-4\n\
+                   done\n";
+        let markers = crate::domain::manuscript::scan_markers(tex);
+        assert_eq!(markers.len(), 3, "unterminated braces are not markers");
+        assert_eq!(
+            markers[0],
+            Marker { kind: MarkerKind::Hyp, reference: "H-1".into(), line: 2 }
+        );
+        assert_eq!(
+            markers[1],
+            Marker { kind: MarkerKind::Claim, reference: "CLAIMS-2".into(), line: 2 }
+        );
+        assert_eq!(
+            markers[2],
+            Marker { kind: MarkerKind::Hyp, reference: "H-3".into(), line: 3 }
+        );
+        let _ = ScanFile { path: "main.tex".into(), markers };
     }
 }

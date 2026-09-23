@@ -967,7 +967,8 @@ export type ReadinessItemKind =
   | "manuscript_hypothesis_unresolved" // \hyp cites a testing/proposed hypothesis
   | "manuscript_hypothesis_refuted" // \hyp cites a refuted hypothesis
   | "manuscript_claim_unpinned" // \claim cites a claim without an evidence pin
-  | "manuscript_claim_unlinked"; // a marker that resolves to no board object
+  | "manuscript_claim_unlinked" // a marker that resolves to no board object
+  | "manuscript_unreadable"; // INFO: the manuscript dir could not be read (the check could not run)
 
 // One typed relation tie on a load-blocking hypothesis: the kind, the other
 // endpoint's H-{n}, and whether it reads incoming ("contradicted-by H-3")

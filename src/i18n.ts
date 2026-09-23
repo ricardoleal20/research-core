@@ -1847,6 +1847,12 @@ const DICT: Record<string, Record<Lang, string>> = {
     pt: "Consistência manuscrito-quadro: {clean}/{total} marcadores limpos",
     fr: "Cohérence manuscrit-tableau : {clean}/{total} marqueurs propres",
   },
+  "rd.i.manuscriptUnreadable": {
+    es: "La carpeta del manuscrito no pudo leerse — la comprobación no pudo ejecutarse.",
+    en: "The manuscript folder could not be read — the check could not run.",
+    pt: "A pasta do manuscrito não pôde ser lida — a verificação não pôde ser executada.",
+    fr: "Le dossier du manuscrit n'a pas pu être lu — la vérification n'a pas pu s'exécuter.",
+  },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];
