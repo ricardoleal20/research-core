@@ -16,10 +16,12 @@
 // too (it ENCODES the validated argv — see ssh.rs for why that is not a
 // freeform path).
 
+pub mod chopflow;
 pub mod kubernetes;
 pub mod scheduler;
 pub mod ssh;
 
+pub use chopflow::ChopFlow;
 pub use kubernetes::Kubernetes;
 pub use scheduler::Scheduler;
 pub use ssh::Ssh;
@@ -193,14 +195,16 @@ pub struct TargetRegistry {
 impl TargetRegistry {
     /// The first-party registry: `local` (argv-direct), `ssh`
     /// (allowlisted remote hosts, Story 3.3), `scheduler` (SLURM/PBS-
-    /// style clusters, Story 6.2), and `kubernetes` (Job targets on an
-    /// allowlisted context, Story 6.3) registered.
+    /// style clusters, Story 6.2), `kubernetes` (Job targets on an
+    /// allowlisted context, Story 6.3), and `chopflow` (a ChopFlow
+    /// queue endpoint, Story 6.4) registered.
     pub fn v1() -> Self {
         let mut registry = Self::empty();
         registry.register(Arc::new(Local));
         registry.register(Arc::new(Ssh::new()));
         registry.register(Arc::new(Scheduler::new()));
         registry.register(Arc::new(Kubernetes::new()));
+        registry.register(Arc::new(ChopFlow::new()));
         registry
     }
 
@@ -508,7 +512,10 @@ mod tests {
     #[test]
     fn the_registry_resolves_by_kind_with_a_typed_unknown() {
         let registry = TargetRegistry::v1();
-        assert_eq!(registry.kinds(), vec!["kubernetes", "local", "scheduler", "ssh"]);
+        assert_eq!(
+            registry.kinds(),
+            vec!["chopflow", "kubernetes", "local", "scheduler", "ssh"]
+        );
         for kind in registry.kinds() {
             assert_eq!(registry.adapter(kind).unwrap().kind(), kind);
         }

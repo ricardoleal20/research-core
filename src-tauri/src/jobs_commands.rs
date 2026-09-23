@@ -950,6 +950,10 @@ pub async fn probe_compute_target(
             .probe(&info)
             .map(|detail| TargetProbeView { status: "ok".into(), detail })
             .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
+        "chopflow" => crate::adapters::targets::ChopFlow::new()
+            .probe(&info)
+            .map(|detail| TargetProbeView { status: "ok".into(), detail })
+            .unwrap_or_else(|e| TargetProbeView { status: "unreachable".into(), detail: e.to_string() }),
         other => TargetProbeView {
             status: "unsupported".into(),
             detail: format!("no probe for kind `{other}`"),
@@ -1263,6 +1267,88 @@ mod tests {
             config.insert(key.to_string(), path.to_string_lossy().into_owned());
         }
         config
+    }
+
+    // ---- chopflow targets: first-class optional + spend (Story 6.4) ----
+
+    #[tokio::test]
+    async fn a_chopflow_target_records_its_spend_and_down_states_never_crash() {
+        let queue = crate::adapters::targets::chopflow::test_harness::spawn_fake_queue();
+        let db = test_db();
+        let mission = create_mission(&db).await;
+        let config = BTreeMap::from([
+            ("endpoint".to_string(), queue.endpoint.clone()),
+            ("queue".to_string(), "gpu-queue".to_string()),
+        ]);
+        declare_compute_target_inner(&db, "queue-1", "chopflow", None, &config)
+            .await
+            .unwrap();
+        // the declared target lists its kind and config
+        {
+            let conn = db.0.lock().await;
+            let events = EventStore::new(&conn).events_all().unwrap();
+            let targets = list_targets_inner(&events).unwrap();
+            let target = targets.iter().find(|t| t.name == "queue-1").unwrap();
+            assert_eq!(target.kind, "chopflow");
+            assert_eq!(target.config.get("endpoint").map(String::as_str), Some(queue.endpoint.as_str()));
+            assert_eq!(target.allowlisted, None, "no gate — the endpoint is the config");
+        }
+        // the queue goes down MID-FLIGHT: an accepted job keeps its last
+        // observed state (typed error, the poll skips, nothing crashes)
+        let job = submit_job_initiated(
+            &db,
+            mission,
+            "queue-1",
+            spec("python3", &["train.py"]),
+            Initiator::User,
+        )
+        .await
+        .unwrap();
+        assert_eq!(job.target, "queue-1");
+        poll_live_jobs(&db, Some(mission)).await.unwrap();
+        *queue.state.lock().unwrap() = r#"{"state":"finished"}"#.into();
+        let jobs = poll_until_finished(&db, mission, job.id).await;
+        assert_eq!(jobs[0].phase, JobPhase::Finished);
+        // usage attributed to the chopflow target like any other (AD-10)
+        let all = events(&db).await;
+        assert!(
+            all.iter().any(|e| {
+                e.kind == TARGET_SPEND_RECORDED
+                    && e.payload["target"] == serde_json::json!("queue-1")
+            }),
+            "the chopflow job's spend landed"
+        );
+        // an unreachable endpoint on a NEW submit is a typed error and
+        // nothing lands in the log (first-class optional, never a crash)
+        let dead = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+            drop(listener);
+            endpoint
+        };
+        let config = BTreeMap::from([("endpoint".to_string(), dead)]);
+        declare_compute_target_inner(&db, "queue-down", "chopflow", None, &config)
+            .await
+            .unwrap();
+        let head = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).head_seq().unwrap()
+        };
+        let err = submit_job_initiated(
+            &db,
+            mission,
+            "queue-down",
+            spec("python3", &[]),
+            Initiator::User,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("endpoint_unreachable:"), "unexpected: {err}");
+        let head_after = {
+            let conn = db.0.lock().await;
+            EventStore::new(&conn).head_seq().unwrap()
+        };
+        assert_eq!(head_after, head, "a refused submit lands nothing");
     }
 
     // ---- kubernetes targets: the context gate + lifecycle + spend (Story 6.3) ----
