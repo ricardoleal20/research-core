@@ -892,9 +892,10 @@ const seededRows: DigestRow[] = [
     // one-line verdict, its results waiting in quarantine.
     jobsFinished: 1, jobsFailed: 0,
     jobVerdict: { target: "cluster-1", jobId: "3f2a91c4-77b1-4c5e-9a20-8d41c2b6a0f3", failed: false, reason: null },
-    // Story 6.10: the overnight sweep judged cl41 / cl42 on m24 — one
-    // unsupported, one supported; this seed row carries the honest rollup.
-    supportChecks: 2, supportUnsupported: 1,
+    // Story 6.10: the m21 sweep never judged its only pinned claim
+    // (cl12-seed, support null) — three sweeps seeded past the threshold,
+    // so the readiness "support_unchecked" info renders. No checks yet.
+    supportChecks: 0, supportUnsupported: 0,
   },
   {
     missionId: "m22-seed", missionSeq: 22,
@@ -912,7 +913,10 @@ const seededRows: DigestRow[] = [
     ceilingReached: false, proposalsPending: 0, spendCents: 31, ceilingCents: 100,
     receiptSeq: 103, runId: "nightshift-24", lastRunTs: "2026-09-19T01:44:00Z",
     jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
-    supportChecks: 0, supportUnsupported: 0,
+    // Story 6.10: the overnight sweep judged cl41 / cl42 — one unsupported
+    // (the honest three-signal combination), one supported — this row
+    // carries the rollup, unsupported count never buried.
+    supportChecks: 2, supportUnsupported: 1,
   },
   {
     missionId: "m26-seed", missionSeq: 26,
