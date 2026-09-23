@@ -933,6 +933,48 @@ function autonomyDial(id, mode) {
     </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Compute targets (Stories 3.3 + 6.2–6.5): the declare form, the
+// allowlist editor, the per-row probe state, and the autonomy dials —
+// the settings row for every registered kind.
+// ---------------------------------------------------------------------------
+
+/// The config fields each first-party kind declares (key → i18n label).
+const TARGET_CONFIG_FIELDS = {
+  scheduler: ["flavor", "submitPrefix", "pollPrefix", "acctPrefix"],
+  kubernetes: ["context", "namespace", "image", "kubectlPrefix"],
+  chopflow: ["endpoint", "queue"],
+};
+
+function targetKindChip(app, adapter) {
+  const form = app.state.targetForm;
+  const selected = form && form.kind === adapter.kind;
+  return `<button type="button" onclick="RC.setTargetKind('${esc(adapter.kind)}')" class="rounded-full border px-2.5 py-1 text-[11px] font-medium font-mono transition ${selected ? "border-primary/30 bg-primary/5 text-primary" : "border-border bg-white text-muted hover:text-foreground"}">${esc(adapter.kind)}</button>`;
+}
+
+function configFieldsFor(app, kind) {
+  const form = app.state.targetForm;
+  const fields = TARGET_CONFIG_FIELDS[kind];
+  if (!fields || !fields.length) return "";
+  return `
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+      ${fields.map((key) => {
+        const value = (form.config && form.config[key]) || "";
+        const required = (kind === "kubernetes" && (key === "context" || key === "image")) || (kind === "chopflow" && key === "endpoint");
+        return `<div><label class="block text-[11px] text-muted mb-1 font-mono">${esc(key)}${required ? " *" : ""}</label>
+        <input id="tgt-cfg-${esc(key)}" value="${esc(value)}" placeholder="${esc(key)}" class="w-full rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>`;
+      }).join("")}
+    </div>`;
+}
+
+function probeChip(probe) {
+  if (!probe || probe.status === "probing") {
+    return `<span class="text-[11px] text-muted font-mono">${probe ? "…" : ""}</span>`;
+  }
+  const tone = probe.status === "ok" ? "text-emerald-700" : probe.status === "unreachable" ? "text-amber-700" : "text-muted";
+  return `<span class="text-[11px] font-mono ${tone}" title="${esc(probe.detail)}">${esc(probe.status)}<span class="text-muted">${probe.detail ? " · " + esc(probe.detail.slice(0, 48)) : ""}</span></span>`;
+}
+
 function renderTrustCenter(app) {
   const trust = app.data.trust;
   if (!trust) return `<p class="text-sm text-muted py-8 text-center">${t("rc.common.loading")}</p>`;
@@ -997,18 +1039,62 @@ function renderTrustCenter(app) {
       </div>
       <div class="space-y-3">
         <p class="text-sm font-semibold">${t("trust.targets")}</p>
+        ${(() => {
+          const form = (app.state.targetForm ??= { kind: "ssh", name: "", host: "", config: {}, error: null });
+          const hasDeclareFields = form.kind !== "local";
+          return `
+          <div class="rounded-xl border border-border p-4 space-y-3 bg-white">
+            <p class="text-xs font-medium">${t("trust.declare")}</p>
+            <div class="flex flex-wrap gap-1.5">
+              ${(app.data.adapters || []).map((a) => targetKindChip(app, a)).join("")}
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[11px] text-muted mb-1">${t("trust.targetName")} *</label>
+                <input id="tgt-name" value="${esc(form.name)}" placeholder="cluster-1" class="w-full rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+              </div>
+              ${form.kind === "ssh" || form.kind === "scheduler" ? `
+              <div>
+                <label class="block text-[11px] text-muted mb-1">${t("trust.host")}${form.kind === "ssh" ? " *" : ""}</label>
+                <input id="tgt-host" value="${esc(form.host)}" placeholder="login.hpc.edu" class="w-full rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+              </div>` : ""}
+            </div>
+            ${hasDeclareFields ? configFieldsFor(app, form.kind) : ""}
+            ${form.kind && form.kind !== "local" && !TARGET_CONFIG_FIELDS[form.kind] ? `<p class="text-[11px] text-muted">${t("trust.noConfigFields")} <span class="font-mono">${esc(form.kind)}</span></p>` : ""}
+            ${form.error ? `<p class="text-xs text-rose-600">${esc(form.error)}</p>` : ""}
+            <div class="flex items-center gap-2">
+              ${btn({ label: t("trust.add"), variant: "default", size: "sm", iconName: "plus", onClick: "RC.declareTarget()" })}
+              ${btn({ label: t("trust.cancel"), variant: "ghost", size: "sm", onClick: "RC.resetTargetForm()" })}
+            </div>
+          </div>
+          <div class="rounded-xl border border-border p-4 space-y-2 bg-white">
+            <div class="flex items-center justify-between">
+              <p class="text-xs font-medium">${t("trust.hostAllowlist")}</p>
+              ${btn({ label: t("trust.hostAllowlistSave"), variant: "secondary", size: "sm", onClick: "RC.saveAllowlist()" })}
+            </div>
+            <p class="text-[11px] text-muted">${t("trust.hostAllowlistHint")}</p>
+            <textarea id="tgt-allowlist" rows="3" placeholder="gpu-01.lab, lab-gpu, login.hpc.edu" class="w-full rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">${esc((app.data.allowlist || []).join(", "))}</textarea>
+          </div>`;
+        })()}
         <div class="rounded-xl border border-border divide-y divide-border overflow-hidden">
           ${(app.data.targets || []).map((tg) => `
           <div class="px-4 py-3 flex items-center justify-between gap-4 bg-white">
             <div class="min-w-0">
               <p class="text-sm font-medium font-mono">${esc(tg.name)} <span class="text-[10px] text-muted font-sans">${esc(tg.kind)}${tg.host ? " · " + esc(tg.host) : ""}</span></p>
+              <p class="text-[11px] font-mono text-muted mt-0.5">${
+                tg.config ? Object.entries(tg.config).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(" ") : "—"
+              }</p>
               ${tg.allowlisted === false ? `<p class="text-[11px] text-amber-700 mt-0.5">${t("trust.notAllowlisted")}</p>` : ""}
+              ${probeChip(app.state.targetProbes && app.state.targetProbes[tg.name])}
             </div>
-            ${(() => {
+            <div class="flex items-center gap-2 shrink-0">
+              ${btn({ label: t("trust.probe"), variant: "ghost", size: "sm", iconName: "activity", onClick: `RC.probeTarget('${esc(tg.name)}')` })}
+              ${(() => {
               const tm = (trust.targets || []).find((x) => x.target === tg.name);
               if (!tm) return `<span class="text-xs text-muted">${t("trust.unset")}</span>`;
               return `<div class="w-56 shrink-0">${autonomyDial({ scope: "target", scopeId: tg.name }, tm.dial || "watch")}</div>`;
             })()}
+            </div>
           </div>`).join("") || `<p class="px-4 py-6 text-sm text-muted text-center">${t("trust.noSshTargets")}</p>`}
         </div>
         <p class="text-[11px] text-muted">${t("trust.targetsFootnote")}</p>
@@ -1560,5 +1646,65 @@ Object.assign(RC, {
     } catch (e) {
       alert(t("trust.saveError") + (e?.message || e));
     }
+  },
+  // ---- compute targets (Stories 6.2–6.5) ----
+  setTargetKind(kind) {
+    const app = ctx.app;
+    const form = (app.state.targetForm ??= { kind: "ssh", name: "", host: "", config: {}, error: null });
+    form.kind = kind;
+    form.error = null;
+    ctx.renderMainOnly();
+  },
+  resetTargetForm() {
+    const app = ctx.app;
+    app.state.targetForm = { kind: "ssh", name: "", host: "", config: {}, error: null };
+    ctx.renderMainOnly();
+  },
+  async declareTarget() {
+    const app = ctx.app;
+    const form = (app.state.targetForm ??= { kind: "ssh", name: "", host: "", config: {}, error: null });
+    const name = (document.getElementById("tgt-name")?.value || "").trim();
+    const host = (document.getElementById("tgt-host")?.value || "").trim();
+    const config = {};
+    for (const key of (TARGET_CONFIG_FIELDS[form.kind] || [])) {
+      const v = (document.getElementById(`tgt-cfg-${key}`)?.value || "").trim();
+      if (v) config[key] = v;
+    }
+    try {
+      await api.declareComputeTarget(name, form.kind, host || null, config);
+      form.name = "";
+      form.host = "";
+      form.config = {};
+      form.error = null;
+      app.data.targets = await api.listComputeTargets();
+      ctx.renderMainOnly();
+    } catch (e) {
+      form.error = (e?.message || String(e));
+      ctx.renderMainOnly();
+    }
+  },
+  async saveAllowlist() {
+    const app = ctx.app;
+    const raw = (document.getElementById("tgt-allowlist")?.value || "");
+    const hosts = raw.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean);
+    try {
+      app.data.allowlist = await api.setHostAllowlist(hosts);
+      app.data.targets = await api.listComputeTargets();
+      ctx.renderMainOnly();
+    } catch (e) {
+      alert(t("trust.saveError") + (e?.message || e));
+    }
+  },
+  async probeTarget(name) {
+    const app = ctx.app;
+    (app.state.targetProbes ??= {})[name] = { status: "probing", detail: "" };
+    ctx.renderMainOnly();
+    try {
+      const probe = await api.probeComputeTarget(name);
+      app.state.targetProbes[name] = probe;
+    } catch (e) {
+      app.state.targetProbes[name] = { status: "unreachable", detail: (e?.message || String(e)) };
+    }
+    ctx.renderMainOnly();
   },
 });

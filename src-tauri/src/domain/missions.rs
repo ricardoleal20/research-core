@@ -374,6 +374,12 @@ pub struct MissionRun {
     /// receipt drill-down opens this run's receipt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// A one-line detail the run row renders (Stories 6.2–6.4, AD-12):
+    /// the `reason` a `job.failed` event carries — so a job row shows its
+    /// terminal reason right in the runs drill-down, never a "failed"
+    /// with no explanation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 fn actor_label(actor: &Actor) -> String {
@@ -498,6 +504,18 @@ impl MissionsProjection {
                         Actor::Agent { run_id } => Some(run_id.clone()),
                         _ => None,
                     }),
+                // The terminal reason a failed job row renders (Stories
+                // 6.2–6.4, AD-12): a failed job's reason is the row's
+                // detail — never a bare "job.failed".
+                detail: if event.kind == crate::domain::jobs::JOB_FAILED {
+                    event
+                        .payload
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                },
             })
             .collect()
     }
@@ -534,6 +552,46 @@ mod tests {
     use crate::eventstore::EventStore;
     use rusqlite::Connection;
     use serde_json::json;
+
+    #[test]
+    fn a_failed_job_run_carries_its_reason_as_the_detail() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let created = store.append(NewEvent::mission_created(payload()).unwrap()).unwrap();
+        let submitted = store
+            .append(NewEvent::job_submitted(crate::domain::jobs::JobSubmittedPayload {
+                mission_id: created.id,
+                target: "cluster-1".into(),
+                handle: "h-1".into(),
+                spec: crate::domain::jobs::JobSpec {
+                    cmd: "python3".into(),
+                    args: vec![],
+                    env: Default::default(),
+                    resources: None,
+                    workdir: None,
+                },
+            })
+            .unwrap())
+            .unwrap();
+        store
+            .append(
+                NewEvent::job_failed(crate::domain::jobs::JobLifecyclePayload {
+                    mission_id: created.id,
+                    job_id: submitted.id,
+                    target: "cluster-1".into(),
+                    code: Some(3),
+                    reason: Some("exit_code_3".into()),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let runs = MissionsProjection::runs_for(&store.events_all().unwrap(), created.id);
+        let failed =
+            runs.iter().find(|r| r.kind == "job.failed").expect("the job.failed run exists");
+        assert_eq!(failed.detail.as_deref(), Some("exit_code_3"));
+        // other run rows carry no detail (the runs-for test's own rows)
+        assert!(runs.iter().filter(|r| r.kind != "job.failed").all(|r| r.detail.is_none()));
+    }
 
     fn payload() -> MissionCreatedPayload {
         MissionCreatedPayload {
@@ -976,6 +1034,7 @@ mod tests {
                     // the agent actor's run id (Story 2.5): the receipt
                     // drill-down's target
                     run_id: Some("r1".into()),
+                    detail: None,
                 },
                 MissionRun {
                     seq: spend_event.seq,
@@ -985,6 +1044,7 @@ mod tests {
                     actor: "system:telemetry".into(),
                     role: Some("critic".into()),
                     run_id: None,
+                    detail: None,
                 },
             ]
         );

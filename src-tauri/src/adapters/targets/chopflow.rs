@@ -376,9 +376,9 @@ impl ComputeTarget for ChopFlow {
             },
         };
         let mut phase = lock(&entry.phase);
-        let Phase::Queued { terminal, .. } = &mut *phase else {
-            return Ok(TargetJobStatus::Running);
-        };
+        // The only phase is Queued — the binding cannot fail (the next
+        // monitor tells the story if a future revision adds phases).
+        let Phase::Queued { terminal, .. } = &mut *phase;
         match resolved {
             QueueState::Alive => Ok(TargetJobStatus::Running),
             QueueState::Terminal { code, reason } => {

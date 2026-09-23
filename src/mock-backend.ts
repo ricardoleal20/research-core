@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, ZoteroImportResult, DashboardSummary } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -196,6 +196,60 @@ const mockTargets: ComputeTargetView[] = [
     seq: 1,
     ts: new Date().toISOString(),
   },
+  // seeded v0.2.0 kinds (Stories 6.2–6.4): the settings row renders the
+  // new chips + their config fields with data to show
+  {
+    name: "slurm-1",
+    kind: "scheduler",
+    host: "login.hpc.edu",
+    allowlisted: false,
+    config: { flavor: "slurm", submitPrefix: "sbatch" },
+    builtin: false,
+    seq: 2,
+    ts: new Date().toISOString(),
+  },
+  {
+    name: "k8s-lab",
+    kind: "kubernetes",
+    host: null,
+    allowlisted: false,
+    config: { context: "lab-gpu", namespace: "research", image: "ghcr.io/lab/trainer:latest" },
+    builtin: false,
+    seq: 3,
+    ts: new Date().toISOString(),
+  },
+  {
+    name: "queue-1",
+    kind: "chopflow",
+    host: null,
+    allowlisted: null,
+    config: { endpoint: "https://queue.chopflow.dev", queue: "gpu-queue" },
+    builtin: false,
+    seq: 4,
+    ts: new Date().toISOString(),
+  },
+];
+
+/// The mock allowlist's gate value for a target (mirrors the command
+// layer's gate_value): the host ssh/scheduler targets connect to, the
+// context a kubernetes target runs on; `None` for kinds with no gate.
+function mockGateValue(t: ComputeTargetView): string | null {
+  if (t.kind === "ssh" || t.kind === "scheduler") return t.host ?? null;
+  if (t.kind === "kubernetes") return t.config?.context ?? null;
+  return null;
+}
+
+function mockAllowlistedFor(t: ComputeTargetView): boolean | null {
+  const gate = mockGateValue(t);
+  return gate === null ? null : mockHostAllowlist.includes(gate);
+}
+
+const mockRegisteredAdapters: RegisteredAdapter[] = [
+  ...["local", "ssh", "scheduler", "kubernetes", "chopflow"].map((kind) => ({
+    kind,
+    contractVersion: "1",
+    builtin: true,
+  })),
 ];
 // The mock host allowlist (Story 3.3): hosts ssh targets may connect to;
 // hosts outside it are refused before any connection (mirrored).
@@ -208,6 +262,61 @@ let mockJobEventSeq = 0;
 // lifecycle advances with elapsed time, like the real poll loop.
 const realNowISO = () => new Date().toISOString();
 const MOCK_SHELL_METACHARS = [";", "&", "|", "`", "<", ">", "$", "\n", "\r"];
+
+/// Mirrors the domain's validate_target_config (Stories 6.2–6.4):
+/// one-token values, unknown keys refused for the first-party kinds, the
+/// required keys present, flavor values validated, endpoints http(s).
+function mockValidateConfig(
+  kind: string,
+  config: Record<string, string>,
+  host: string,
+): void {
+  const allowed: Record<string, string[]> = {
+    local: [],
+    ssh: [],
+    scheduler: ["flavor", "submitPrefix", "pollPrefix", "acctPrefix"],
+    kubernetes: ["context", "namespace", "image", "kubectlPrefix"],
+    chopflow: ["endpoint", "queue"],
+  };
+  for (const key of Object.keys(config)) {
+    if (allowed[kind] && !allowed[kind].includes(key)) {
+      throw new Error(
+        `invalid_config: \`${key}\` — kind \`${kind}\` accepts ${allowed[kind].length ? allowed[kind].map((k) => `\`${k}\``).join(" | ") : "no config keys"} (or none)`,
+      );
+    }
+  }
+  for (const [key, value] of Object.entries(config)) {
+    if (!value.trim() || /\s/.test(value) || value.startsWith("-") || [...value].some((c) => MOCK_SHELL_METACHARS.includes(c))) {
+      throw new Error(
+        `invalid_config: \`${key}\` — config values are one token each (they become argv elements, never shell strings)`,
+      );
+    }
+  }
+  if (kind === "scheduler" && config.flavor && config.flavor !== "slurm" && config.flavor !== "pbs") {
+    throw new Error(`invalid_config: \`flavor\` is \`slurm\` or \`pbs\` — got \`${config.flavor}\``);
+  }
+  if (kind === "kubernetes") {
+    for (const required of ["context", "image"]) {
+      if (!config[required]) {
+        throw new Error(
+          `invalid_config: kind \`kubernetes\` requires \`${required}\` — the cluster context the target runs on and the container image its jobs run in`,
+        );
+      }
+    }
+  }
+  if (kind === "chopflow") {
+    const endpoint = config.endpoint ?? "";
+    if (!endpoint) {
+      throw new Error(
+        "invalid_config: kind `chopflow` requires `endpoint` — the ChopFlow queue endpoint the target submits to",
+      );
+    }
+    if (!endpoint.startsWith("http://") && !endpoint.startsWith("https://")) {
+      throw new Error(`invalid_config: \`endpoint\` must be an http(s) URL — got \`${endpoint}\``);
+    }
+  }
+  const _ = host;
+}
 
 function validateMockSpec(spec: JobSpec): void {
   if (!spec.cmd || !spec.cmd.trim()) {
@@ -2499,10 +2608,31 @@ export const mockApi = {
   // reasoned terminals, advanced by elapsed time on every read.
   listComputeTargets: async (): Promise<ComputeTargetView[]> => {
     await delay();
-    return mockTargets.map((t) => ({
-      ...t,
-      allowlisted: t.kind === "ssh" ? mockHostAllowlist.includes(t.host ?? "") : null,
-    }));
+    return mockTargets.map((t) => ({ ...t, allowlisted: mockAllowlistedFor(t) }));
+  },
+  getRegisteredAdapters: async (): Promise<RegisteredAdapter[]> => {
+    await delay();
+    return mockRegisteredAdapters.map((a) => ({ ...a }));
+  },
+  probeComputeTarget: async (name: string): Promise<TargetProbe> => {
+    await delay();
+    const target = mockTargets.find((t) => t.name === name);
+    if (!target) {
+      throw new Error(`unknown_target: \`${name}\` — no compute target with that name`);
+    }
+    if (target.kind === "local") {
+      return { status: "ok", detail: "local machine — always reachable" };
+    }
+    if (target.kind === "chopflow") {
+      return { status: "ok", detail: `queue answered (${target.config?.endpoint ?? "?"})` };
+    }
+    return {
+      status: mockAllowlistedFor(target) === false ? "unreachable" : "ok",
+      detail:
+        mockAllowlistedFor(target) === false
+          ? `${mockGateValue(target)} not allowlisted — add it in Settings → Compute targets`
+          : `${target.kind} answered (${mockGateValue(target) ?? "local"})`,
+    };
   },
   getHostAllowlist: async (): Promise<string[]> => {
     await delay();
@@ -2526,13 +2656,17 @@ export const mockApi = {
     name: string,
     kind: string,
     host?: string | null,
+    config?: Record<string, string>,
   ): Promise<ComputeTargetView[]> => {
     await delay();
     const trimmedName = name.trim();
     const trimmedKind = kind.trim();
     const trimmedHost = (host ?? "").trim();
-    if (trimmedKind !== "local" && trimmedKind !== "ssh") {
-      throw new Error(`unknown_kind: \`${trimmedKind}\` — no adapter of that kind is registered (v1: local | ssh)`);
+    const trimmedConfig = config ?? {};
+    if (!mockRegisteredAdapters.some((a) => a.kind === trimmedKind)) {
+      throw new Error(
+        `unknown_kind: \`${trimmedKind}\` — no adapter of that kind is registered (${mockRegisteredAdapters.map((a) => a.kind).join(" | ")})`,
+      );
     }
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(trimmedName)) {
       throw new Error(
@@ -2544,9 +2678,9 @@ export const mockApi = {
         "target.declared requires a host for kind `ssh` — the target names the machine it connects to",
       );
     }
-    if (trimmedKind !== "ssh" && trimmedHost) {
+    if (trimmedKind !== "ssh" && trimmedKind !== "scheduler" && trimmedHost) {
       throw new Error(
-        `invalid_host: a \`${trimmedKind}\` target carries no host — only ssh targets name the machine they connect to`,
+        `invalid_host: a \`${trimmedKind}\` target carries no host — only ssh and scheduler targets name the machine they connect to`,
       );
     }
     if (trimmedHost && (/\s/.test(trimmedHost) || trimmedHost.startsWith("-") || [...trimmedHost].some((c) => MOCK_SHELL_METACHARS.includes(c)))) {
@@ -2554,21 +2688,22 @@ export const mockApi = {
         `invalid_host: \`${trimmedHost}\` — a host is one token (it becomes one argv element of ssh)`,
       );
     }
+    mockValidateConfig(trimmedKind, trimmedConfig, trimmedHost);
     if (!mockTargets.some((t) => t.name === trimmedName)) {
-      mockTargets.push({
+      const view: ComputeTargetView = {
         name: trimmedName,
         kind: trimmedKind,
-        host: trimmedKind === "ssh" ? trimmedHost : null,
-        allowlisted: trimmedKind === "ssh" ? mockHostAllowlist.includes(trimmedHost) : null,
+        host: trimmedKind === "ssh" || trimmedKind === "scheduler" ? (trimmedHost || null) : null,
+        allowlisted: null,
+        config: Object.keys(trimmedConfig).length ? { ...trimmedConfig } : undefined,
         builtin: false,
         seq: ++mockJobEventSeq,
         ts: realNowISO(),
-      });
+      };
+      view.allowlisted = mockAllowlistedFor(view);
+      mockTargets.push(view);
     }
-    return mockTargets.map((t) => ({
-      ...t,
-      allowlisted: t.kind === "ssh" ? mockHostAllowlist.includes(t.host ?? "") : null,
-    }));
+    return mockTargets.map((t) => ({ ...t, allowlisted: mockAllowlistedFor(t) }));
   },
   submitJob: async (missionId: string, target: string, spec: JobSpec): Promise<Job> => {
     await delay();

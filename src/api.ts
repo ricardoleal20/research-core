@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -310,14 +310,36 @@ const browserApi = {
     }
     return mockApi.submitJob(_missionId, _target, _spec);
   },
-  declareComputeTarget: async (_name: string, _kind: string, _host?: string | null) => {
+  declareComputeTarget: async (
+    _name: string,
+    _kind: string,
+    _host?: string | null,
+    _config?: Record<string, string>,
+  ) => {
     if (await servedByCore) {
       throw new Error(
         "Read-only view — declare targets from the desktop app / " +
           "Vista de solo lectura — declara destinos desde la app de escritorio",
       );
     }
-    return mockApi.declareComputeTarget(_name, _kind, _host);
+    return mockApi.declareComputeTarget(_name, _kind, _host, _config);
+  },
+  // The registered adapter kinds + contract versions (Story 6.5): a read
+  // over the same-origin API when served.
+  getRegisteredAdapters: async (): Promise<RegisteredAdapter[]> => {
+    if (await servedByCore) return httpJson<RegisteredAdapter[]>("/api/adapters");
+    return mockApi.getRegisteredAdapters();
+  },
+  // Probe one target (the settings row's discovery/unreachable state):
+  // a mutation — the served browser view refuses it.
+  probeComputeTarget: async (_name: string): Promise<TargetProbe> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — probe targets from the desktop app / " +
+          "Vista de solo lectura — sondea destinos desde la app de escritorio",
+      );
+    }
+    return mockApi.probeComputeTarget(_name);
   },
   // Run receipts (Story 2.5, FR-6.1): the drill-down's audit ledger — a read
   // over the same-origin API (the served browser view replays the identical
@@ -960,8 +982,16 @@ export const api = mockActive ? browserApi : {
   // (Story 3.3) carry a host; hosts outside the allowlist are refused
   // before any connection is attempted.
   listComputeTargets: () => invoke<ComputeTargetView[]>("list_compute_targets"),
-  declareComputeTarget: (name: string, kind: string, host?: string | null) =>
-    invoke<ComputeTargetView[]>("declare_compute_target", { name, kind, host }),
+  declareComputeTarget: (
+    name: string,
+    kind: string,
+    host?: string | null,
+    config?: Record<string, string>,
+  ) =>
+    invoke<ComputeTargetView[]>("declare_compute_target", { name, kind, host, config }),
+  getRegisteredAdapters: () => invoke<RegisteredAdapter[]>("list_registered_adapters"),
+  probeComputeTarget: (name: string) =>
+    invoke<TargetProbe>("probe_compute_target", { name }),
   getHostAllowlist: () => invoke<string[]>("get_host_allowlist"),
   setHostAllowlist: (hosts: string[]) =>
     invoke<string[]>("set_host_allowlist", { hosts }),

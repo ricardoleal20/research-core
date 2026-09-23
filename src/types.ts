@@ -239,6 +239,7 @@ export interface MissionRun {
   actor: string; // "user" | "agent" | "system:<component>"
   role?: string; // the agent role a role-scoped event is attributed to
   runId?: string; // the run the event belongs to (Story 2.5) — the receipt drill-down's target
+  detail?: string; // the terminal reason a job.failed row renders (Stories 6.2–6.4, AD-12)
 }
 
 // One completed agent step (Story 2.1): which role ran, on which
@@ -907,17 +908,37 @@ export interface FetchedJobResults {
 }
 
 // One compute target as the mission card's target row renders it: a name
-// and the adapter kind behind it ("local" | "ssh"), plus — for ssh targets
-// (Story 3.3) — the host it connects to and whether that host is on the
-// workspace allowlist (hosts outside it are refused before any connection).
+// and the adapter kind behind it ("local" | "ssh" | "scheduler" |
+// "kubernetes" | "chopflow"), plus — for ssh/scheduler targets (Stories
+// 3.3, 6.2) — the host it connects to and whether that gate value is on
+// the workspace allowlist, and — for the v0.2.0 kinds (Stories 6.2–6.4)
+// — the per-kind config map.
 export interface ComputeTargetView {
   name: string;
   kind: string;
-  host?: string | null; // the host an ssh target connects to
-  allowlisted?: boolean | null; // host on the allowlist? (null for local)
+  host?: string | null; // the host an ssh/scheduler target connects to
+  allowlisted?: boolean | null; // the gate value on the allowlist? (null when no gate)
+  config?: Record<string, string>; // per-kind settings (flavor/prefixes, context/ns/image, endpoint/queue)
   builtin: boolean; // the built-in "local" needs no target.declared event
   seq?: number | null;
   ts?: string | null;
+}
+
+// One registered adapter kind (Story 6.5, NFR-15): what the settings row
+// lists — community adapters appear exactly as first-party ones do.
+export interface RegisteredAdapter {
+  kind: string;
+  contractVersion: string; // the adapter contract version it was validated against
+  builtin: boolean; // ships with ResearchCore vs. registered from outside
+}
+
+// A target probe's outcome (the settings row's discovery/unreachable
+// state, per adapter — Story 6.2's probe): `ok` carries the adapter's own
+// detail line, `unreachable` its typed reason, `unsupported` for kinds
+// with no probe.
+export interface TargetProbe {
+  status: "ok" | "unreachable" | "unsupported";
+  detail: string;
 }
 
 // ---- Readiness gate (Story 4.3, FR-13.1/13.2 — the final PRD story) ----

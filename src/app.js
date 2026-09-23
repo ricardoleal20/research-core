@@ -361,6 +361,8 @@ async function loadTrust() {
 async function loadTargets() {
   try {
     app.data.targets = await api.listComputeTargets();
+    app.data.adapters = await api.getRegisteredAdapters();
+    app.data.allowlist = await api.getHostAllowlist();
     renderMainOnly();
   } catch (e) { console.error(e); }
 }
