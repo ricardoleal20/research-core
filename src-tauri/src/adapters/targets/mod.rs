@@ -16,17 +16,35 @@
 // too (it ENCODES the validated argv — see ssh.rs for why that is not a
 // freeform path).
 
+pub mod adapter_contract;
+pub mod chopflow;
+pub mod kubernetes;
+pub mod scheduler;
 pub mod ssh;
 
+pub use chopflow::ChopFlow;
+pub use kubernetes::Kubernetes;
+pub use scheduler::Scheduler;
 pub use ssh::Ssh;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::jobs::{JobResources, JobSpec, SpecError};
+
+/// The adapter contract's version (NFR-15): the trait shape, the JobSpec
+/// schema and the error vocabulary this version of ResearchCore binds
+/// community adapters to. The registry refuses registrations against any
+/// other version (Story 6.5).
+pub const ADAPTER_CONTRACT_VERSION: &str = "1";
+
+/// The kinds that ship with ResearchCore (the registry's first-party
+/// registrations, in registration order). Community adapters register
+/// alongside these through the validated seam (Story 6.5).
+pub const FIRST_PARTY_KINDS: &[&str] = &["local", "ssh", "scheduler", "kubernetes", "chopflow"];
 
 /// The target adapter's id for one submitted job — opaque to the core,
 /// addressed by monitor and fetch. For `Local` it is the in-memory key of
@@ -68,11 +86,14 @@ pub struct JobResult {
 
 /// Everything a target adapter can fail with — typed, never a bare io
 /// string. Error codes lead the message (bilingual-safe, EXPERIENCE.md).
+/// The v0.2.0 kinds add their honest down-states (Stories 6.2–6.4): an
+/// unreachable scheduler/cluster/queue endpoint is a TYPED error on that
+/// target only — never a crash, never a lie about the job's state.
 #[derive(Debug, thiserror::Error)]
 pub enum TargetError {
     #[error("unknown_target: `{0}` — no compute target with that name")]
     UnknownTarget(String),
-    #[error("unknown_kind: `{0}` — no adapter of that kind is registered (v1: local | ssh)")]
+    #[error("unknown_kind: `{0}` — no adapter of that kind is registered (local | ssh | scheduler | kubernetes | chopflow)")]
     UnknownKind(String),
     #[error("unknown_job: `{0}` — the target has no process for that handle")]
     UnknownJob(String),
@@ -80,30 +101,61 @@ pub enum TargetError {
     NotTerminal(String),
     #[error("host_not_allowed: `{host}` — hosts outside the allowlist are refused before any connection is attempted (allowlist: {known})")]
     HostNotAllowed { host: String, known: String },
+    #[error("context_not_allowed: `{context}` — cluster contexts outside the allowlist are refused before any connection is attempted (allowlist: {known})")]
+    ContextNotAllowed { context: String, known: String },
     #[error("missing_host: `{0}` — an ssh target names the host it connects to")]
     MissingHost(String),
+    #[error("missing_config: `{target}` needs `{key}` — {expectation}")]
+    MissingConfig {
+        target: String,
+        key: String,
+        expectation: String,
+    },
+    #[error("invalid_config: `{key}` — {reason}")]
+    InvalidConfig { key: String, reason: String },
+    #[error("scheduler_unreachable: {host} — the scheduler did not answer ({detail})")]
+    SchedulerUnreachable { host: String, detail: String },
+    #[error("kube_unreachable: {context} — the cluster did not answer ({detail})")]
+    KubeUnreachable { context: String, detail: String },
+    #[error("endpoint_unreachable: {endpoint} — the ChopFlow queue did not answer ({detail})")]
+    EndpointUnreachable { endpoint: String, detail: String },
     #[error("{0}")]
     InvalidSpec(#[from] SpecError),
     #[error("spawn_error: {0}")]
     Spawn(String),
 }
 
-/// The per-target facts an adapter executes against (Story 3.3): the
-/// declared target's name, the host an `ssh` target connects to, and the
-/// workspace host allowlist. The allowlist is enforced HERE — inside the
-/// adapter boundary, before any connection is attempted — as defense in
-/// depth behind the command layer's own check.
+/// The per-target facts an adapter executes against (Story 3.3 + the
+/// v0.2.0 kinds): the declared target's name, the host an `ssh` or
+/// `scheduler` target connects to, the workspace host allowlist, and the
+/// declared target's config map (scheduler flavor/prefixes, kubernetes
+/// context/namespace/image, chopflow endpoint/queue). The allowlist is
+/// enforced HERE — inside the adapter boundary, before any connection is
+/// attempted — as defense in depth behind the command layer's own check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetInfo {
     /// The declared target's name (`local`, `cluster-1`, …).
     pub name: String,
-    /// The host an `ssh` target connects to; `None` for `local`.
+    /// The host an `ssh`/`scheduler` target connects to; `None` for the
+    /// other kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     /// The workspace host allowlist (latest `host_allowlist.edited` fold).
     #[serde(default)]
     pub allowlist: Vec<String>,
+    /// The declared target's per-kind config map (one-token values,
+    /// validated at `target.declared` and re-parsed at the adapter
+    /// boundary — defense in depth).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
+}
+
+impl TargetInfo {
+    /// One config value (`None` when the key is absent).
+    pub fn cfg(&self, key: &str) -> Option<&str> {
+        self.config.get(key).map(String::as_str)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,12 +194,24 @@ pub struct TargetRegistry {
 }
 
 impl TargetRegistry {
-    /// The v1 registry: `local` (argv-direct) and `ssh` (allowlisted
-    /// remote hosts) registered.
+    /// The first-party registry: `local` (argv-direct), `ssh`
+    /// (allowlisted remote hosts, Story 3.3), `scheduler` (SLURM/PBS-
+    /// style clusters, Story 6.2), `kubernetes` (Job targets on an
+    /// allowlisted context, Story 6.3), and `chopflow` (a ChopFlow
+    /// queue endpoint, Story 6.4) registered — plus every community
+    /// adapter registered through the validated seam (Story 6.5).
     pub fn v1() -> Self {
         let mut registry = Self::empty();
         registry.register(Arc::new(Local));
         registry.register(Arc::new(Ssh::new()));
+        registry.register(Arc::new(Scheduler::new()));
+        registry.register(Arc::new(Kubernetes::new()));
+        registry.register(Arc::new(ChopFlow::new()));
+        // Community adapters (Story 6.5): validated at registration —
+        // they appear here exactly as first-party kinds do.
+        for community in adapter_contract::community_adapters() {
+            registry.register(community.adapter);
+        }
         registry
     }
 
@@ -175,6 +239,60 @@ impl TargetRegistry {
 
     fn empty() -> Self {
         Self { adapters: HashMap::new() }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The shared POSIX quoting discipline (the SSH adapter's, shared with the
+// scheduler adapter — Story 6.2)
+// ---------------------------------------------------------------------------
+
+/// Encode one string as a single POSIX shell word: wrap in single quotes
+/// (everything between them is literal), escaping embedded quotes by
+/// close-escape-reopen (`'\''`). Deterministic and reversible — a remote
+/// shell parses the word back to the exact same string. Every string the
+/// adapters transfer into a transport's command-line protocol goes through
+/// here (ssh.rs since Story 3.3; scheduler.rs's generated script bodies and
+/// remote command lines since Story 6.2) — no user-supplied value is ever
+/// transferred unencoded.
+pub(crate) fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+// ---------------------------------------------------------------------------
+// The shared bounded sync runner (probe/poll commands — Story 6.2's
+// pattern, shared with the SSH probe)
+// ---------------------------------------------------------------------------
+
+/// A bounded synchronous command run's outcome: the captured output, or
+/// the timeout that killed it (a stuck poll never hangs a job row).
+pub(crate) enum SyncRun {
+    Done(std::process::Output),
+    Timeout,
+}
+
+/// Run one command to completion with a deadline: stdout/stderr captured,
+/// stdin null. The poll/probe side of the adapters (submit is async and
+/// tracked; these are the quick questions asked afterwards).
+pub(crate) fn run_sync(argv: &[String], timeout: std::time::Duration) -> std::io::Result<SyncRun> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait()? {
+            Some(_) => return Ok(SyncRun::Done(child.wait_with_output()?)),
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(SyncRun::Timeout);
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(25)),
+        }
     }
 }
 
@@ -212,13 +330,24 @@ pub(crate) fn job_table(
 /// (no silent ends).
 pub(crate) fn track(
     table: &'static Mutex<HashMap<String, JobSlot>>,
+    command: tokio::process::Command,
+) -> JobHandle {
+    track_as(table, command, Uuid::new_v4().to_string())
+}
+
+/// `track` with a caller-chosen handle id (the scheduler adapter, Story
+/// 6.2: the generated batch script is NAMED after the handle before the
+/// submit process exists — `rc-<tag>.sh`, output files `rc-<tag>.<job>.out`).
+pub(crate) fn track_as(
+    table: &'static Mutex<HashMap<String, JobSlot>>,
     mut command: tokio::process::Command,
+    handle_id: String,
 ) -> JobHandle {
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let handle = JobHandle::new(Uuid::new_v4().to_string());
+    let handle = JobHandle::new(handle_id);
     let slot: JobSlot = Arc::new(Mutex::new(None));
     match command.spawn() {
         Ok(child) => {
@@ -382,7 +511,7 @@ mod tests {
     }
 
     fn local_info() -> TargetInfo {
-        TargetInfo { name: "local".into(), host: None, allowlist: Vec::new() }
+        TargetInfo { name: "local".into(), host: None, allowlist: Vec::new(), config: BTreeMap::new() }
     }
 
     // ---- the registry ----
@@ -390,12 +519,16 @@ mod tests {
     #[test]
     fn the_registry_resolves_by_kind_with_a_typed_unknown() {
         let registry = TargetRegistry::v1();
-        assert_eq!(registry.kinds(), vec!["local", "ssh"]);
-        assert_eq!(registry.adapter("local").unwrap().kind(), "local");
-        assert_eq!(registry.adapter("ssh").unwrap().kind(), "ssh");
-        let err = match registry.adapter("kubernetes") {
+        assert_eq!(
+            registry.kinds(),
+            vec!["chopflow", "kubernetes", "local", "scheduler", "ssh"]
+        );
+        for kind in registry.kinds() {
+            assert_eq!(registry.adapter(kind).unwrap().kind(), kind);
+        }
+        let err = match registry.adapter("mainframe") {
             Err(e) => e,
-            Ok(_) => panic!("`kubernetes` must not resolve in the v1 registry"),
+            Ok(_) => panic!("`mainframe` must not resolve in the registry"),
         };
         assert!(err.to_string().starts_with("unknown_kind:"), "unexpected: {err}");
     }

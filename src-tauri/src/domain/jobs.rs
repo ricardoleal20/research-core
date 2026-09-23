@@ -17,11 +17,14 @@
 //   code; `job.failed` carries a reason (spawn error, nonzero exit,
 //   signal) and the code when there was one.
 // - `target.declared` — a named compute target declared by the user
-//   (actor=user): `{ name, kind, host? }`. The kind names the adapter that
-//   runs its jobs (v1: `local`, `ssh`); an `ssh` target carries the host it
-//   connects to (a single token — it becomes one argv element of the ssh
-//   binary, so it is validated like one). The built-in target `local` needs
-//   no declaration.
+//   (actor=user): `{ name, kind, host?, config? }`. The kind names the
+//   adapter that runs its jobs (v1: `local`, `ssh`; v0.2.0: `scheduler`,
+//   `kubernetes`, `chopflow`); an `ssh` or `scheduler` target carries the
+//   host it connects to (a single token — it becomes one argv element of
+//   the ssh binary, so it is validated like one), and the v0.2.0 kinds
+//   carry a `config` map of one-token settings validated per kind
+//   (`validate_target_config`). The built-in target `local` needs no
+//   declaration.
 // - `host_allowlist.edited` — the workspace host allowlist (Story 3.3,
 //   actor=user): the full list of hosts SSH targets may connect to, latest
 //   event wins. Hosts outside it are refused before any connection is
@@ -235,10 +238,15 @@ impl NewEvent {
     }
 
     /// Typed constructor (AD-15): the one way a named compute target is
-    /// declared — `{ name, kind, host? }`, actor=user. The kind must name a
-    /// registered adapter (checked by the shell command against the
-    /// registry before this runs); an `ssh` target requires its host, and
-    /// the host is validated as the single argv token it becomes.
+    /// declared — `{ name, kind, host?, config? }`, actor=user. The kind
+    /// must name a registered adapter (checked by the shell command against
+    /// the registry before this runs); an `ssh` target requires its host,
+    /// and the host is validated as the single argv token it becomes. A
+    /// `scheduler` target MAY carry a host (the submission node — the same
+    /// one-token rule); `kubernetes` and `chopflow` targets carry no host
+    /// (their config holds the context/endpoint instead). The config map is
+    /// validated per kind (`validate_target_config`) — one-token values
+    /// only, unknown keys refused (a typo never silently no-ops).
     pub fn target_declared(payload: TargetDeclaredPayload) -> Result<Self, EventError> {
         if !valid_target_name(&payload.name) {
             return Err(EventError::Invalid(
@@ -248,7 +256,7 @@ impl NewEvent {
         }
         if payload.kind.trim().is_empty() {
             return Err(EventError::Invalid(
-                "target.declared requires a kind — the adapter that runs its jobs (v1: local | ssh)"
+                "target.declared requires a kind — the adapter that runs its jobs (local | ssh | scheduler | kubernetes | chopflow)"
                     .into(),
             ));
         }
@@ -265,6 +273,13 @@ impl NewEvent {
                     .into(),
             ));
         }
+        if !matches!(payload.kind.as_str(), "ssh" | "scheduler") && payload.host.is_some() {
+            return Err(EventError::Invalid(format!(
+                "invalid_host: a `{}` target carries no host — only ssh and scheduler targets name the machine they connect to (kubernetes carries its context, chopflow its endpoint, in config)",
+                payload.kind
+            )));
+        }
+        validate_target_config(&payload.kind, &payload.config).map_err(EventError::Invalid)?;
         Self::new(TARGET_DECLARED, Actor::User, serde_json::to_value(&payload)?)
     }
 
@@ -327,14 +342,124 @@ pub struct JobLifecyclePayload {
 }
 
 /// The `target.declared` payload: a named compute target of an adapter
-/// kind (`local` | `ssh`), with the host an `ssh` target connects to (a
-/// single token — validated like the argv element it becomes).
+/// kind (`local` | `ssh` | `scheduler` | `kubernetes` | `chopflow`), with
+/// the host an `ssh`/`scheduler` target connects to (a single token —
+/// validated like the argv element it becomes) and the per-kind config map
+/// the v0.2.0 kinds carry (one-token values, validated per kind).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TargetDeclaredPayload {
     pub name: String,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Per-target adapter settings (Story 6.2–6.4): scheduler flavor and
+    /// command prefixes, the kubernetes context/namespace/image, the
+    /// chopflow endpoint/queue. Keys and values are validated per kind —
+    /// `validate_target_config`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
+}
+
+/// The config keys each first-party kind accepts (v0.2.0). Unknown kinds
+/// (community adapters) accept any one-token keys — their contract is
+/// theirs; the one-token rule still binds (config values become argv
+/// elements or URLs, never shell strings).
+fn allowed_config_keys(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "local" | "ssh" => Some(&[]),
+        "scheduler" => Some(&["flavor", "submitPrefix", "pollPrefix", "acctPrefix"]),
+        "kubernetes" => Some(&["context", "namespace", "image", "kubectlPrefix"]),
+        "chopflow" => Some(&["endpoint", "queue"]),
+        _ => None,
+    }
+}
+
+/// Validate a declared target's config map (Story 6.2–6.4): every value is
+/// ONE TOKEN (never blank, never whitespace, never shell syntax, never a
+/// leading dash — values become argv elements, URLs or directive fields),
+/// unknown keys are refused for the first-party kinds (a typo never
+/// silently no-ops), and the kind's required keys must be present. The
+/// adapters re-parse and re-validate at their boundary (defense in depth)
+/// — this keeps the LOG honest.
+pub(crate) fn validate_target_config(
+    kind: &str,
+    config: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(allowed) = allowed_config_keys(kind) {
+        for key in config.keys() {
+            if !allowed.contains(&key.as_str()) {
+                return Err(format!(
+                    "invalid_config: `{key}` — kind `{kind}` accepts {} (or none)",
+                    if allowed.is_empty() {
+                        "no config keys".to_string()
+                    } else {
+                        allowed
+                            .iter()
+                            .map(|k| format!("`{k}`"))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    }
+                ));
+            }
+        }
+    }
+    for (key, value) in config {
+        if value.trim().is_empty() {
+            return Err(format!(
+                "invalid_config: `{key}` is blank — config values are one token each"
+            ));
+        }
+        if value.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "invalid_config: `{key}` carries whitespace — config values are one token each (they become argv elements, never shell strings)"
+            ));
+        }
+        if value.starts_with('-') {
+            return Err(format!(
+                "invalid_config: `{key}` starts with a dash — it would read as a command option"
+            ));
+        }
+        if let Some(ch) = value.chars().find(|c| SHELL_METACHARS.contains(c)) {
+            return Err(format!(
+                "invalid_config: `{key}` carries shell syntax (`{ch}`) — config values are one token each"
+            ));
+        }
+    }
+    match kind {
+        "scheduler" => {
+            if let Some(flavor) = config.get("flavor")
+                && !matches!(flavor.as_str(), "slurm" | "pbs")
+            {
+                return Err(format!(
+                    "invalid_config: `flavor` is `slurm` or `pbs` — got `{flavor}`"
+                ));
+            }
+        }
+        "kubernetes" => {
+            for required in ["context", "image"] {
+                if !config.contains_key(required) {
+                    return Err(format!(
+                        "invalid_config: kind `kubernetes` requires `{required}` — the cluster context the target runs on and the container image its jobs run in"
+                    ));
+                }
+            }
+        }
+        "chopflow" => {
+            let Some(endpoint) = config.get("endpoint") else {
+                return Err(
+                    "invalid_config: kind `chopflow` requires `endpoint` — the ChopFlow queue endpoint the target submits to"
+                        .into(),
+                );
+            };
+            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                return Err(format!(
+                    "invalid_config: `endpoint` must be an http(s) URL — got `{endpoint}`"
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The `host_allowlist.edited` payload (Story 3.3): the FULL allowlist —
@@ -400,9 +525,14 @@ pub struct Job {
 pub struct DeclaredTarget {
     pub name: String,
     pub kind: String,
-    /// The host an `ssh` target connects to (`None` for `local`).
+    /// The host an `ssh`/`scheduler` target connects to (`None` for the
+    /// other kinds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// The per-kind config map the v0.2.0 kinds carry (empty for v1
+    /// targets — serde-defaulted when absent).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
     pub seq: i64,
     pub ts: DateTime<Utc>,
 }
@@ -502,6 +632,7 @@ pub fn fold_declared_targets(events: &[StoredEvent]) -> Vec<DeclaredTarget> {
                 name: payload.name,
                 kind: payload.kind,
                 host: payload.host,
+                config: payload.config,
                 seq: event.seq,
                 ts: event.ts,
             },
@@ -673,6 +804,7 @@ mod tests {
             name: "cluster-1".into(),
             kind: "ssh".into(),
             host: Some("gpu-01.lab".into()),
+            config: BTreeMap::new(),
         })
         .unwrap();
         assert_eq!(ev.kind, TARGET_DECLARED);
@@ -683,6 +815,7 @@ mod tests {
                 name: bad.into(),
                 kind: "local".into(),
                 host: None,
+                config: BTreeMap::new(),
             })
             .unwrap_err();
             assert!(err.to_string().contains("name"), "{bad:?}: {err}");
@@ -696,6 +829,7 @@ mod tests {
             name: "cluster-1".into(),
             kind: "ssh".into(),
             host: None,
+            config: BTreeMap::new(),
         })
         .unwrap_err();
         assert!(err.to_string().contains("host"), "unexpected: {err}");
@@ -704,6 +838,7 @@ mod tests {
             name: "laptop".into(),
             kind: "local".into(),
             host: None,
+            config: BTreeMap::new(),
         })
         .unwrap();
         // the host is one token: whitespace, shell syntax, option-leading
@@ -713,6 +848,7 @@ mod tests {
                 name: "cluster-1".into(),
                 kind: "ssh".into(),
                 host: Some(bad.into()),
+                config: BTreeMap::new(),
             })
             .unwrap_err();
             assert!(err.to_string().contains("invalid_host:"), "{bad:?}: {err}");
@@ -722,8 +858,114 @@ mod tests {
             name: "cluster-1".into(),
             kind: "ssh".into(),
             host: Some("ricardo@gpu-01.lab".into()),
+            config: BTreeMap::new(),
         })
         .unwrap();
+    }
+
+    // ---- the per-kind config map (Stories 6.2–6.4) ----
+
+    #[test]
+    fn target_config_validates_keys_values_and_required_keys() {
+        let payload = |kind: &str, config: BTreeMap<String, String>| TargetDeclaredPayload {
+            name: "cluster-1".into(),
+            kind: kind.into(),
+            host: None,
+            config,
+        };
+        // the v0.2.0 kinds land with their config
+        NewEvent::target_declared(payload(
+            "scheduler",
+            BTreeMap::from([
+                ("flavor".into(), "slurm".into()),
+                ("submitPrefix".into(), "/opt/slurm/bin/sbatch".into()),
+            ]),
+        ))
+        .unwrap();
+        NewEvent::target_declared(payload(
+            "kubernetes",
+            BTreeMap::from([
+                ("context".into(), "lab-gpu".into()),
+                ("namespace".into(), "research".into()),
+                ("image".into(), "ghcr.io/lab/trainer:latest".into()),
+            ]),
+        ))
+        .unwrap();
+        NewEvent::target_declared(payload(
+            "chopflow",
+            BTreeMap::from([("endpoint".into(), "https://queue.chopflow.dev".into())]),
+        ))
+        .unwrap();
+        // unknown keys never land (a typo never silently no-ops)
+        for (kind, key, host) in [
+            ("local", "flavor", None),
+            ("ssh", "context", Some("gpu-01.lab")),
+            ("scheduler", "submit_prefix", None),
+            ("kubernetes", "kubeContext", None),
+            ("chopflow", "url", None),
+        ] {
+            let err = NewEvent::target_declared(TargetDeclaredPayload {
+                name: "cluster-1".into(),
+                kind: kind.into(),
+                host: host.map(str::to_string),
+                config: BTreeMap::from([(key.into(), "x".into())]),
+            })
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("invalid_config:"),
+                "{kind}/{key}: unexpected: {err}"
+            );
+            assert!(err.to_string().contains(key), "the error names the key: {err}");
+        }
+        // one-token values only: whitespace, shell syntax, leading dashes
+        for bad in ["two words", "a;b", "-oProxyCommand=evil", ""] {
+            let err = NewEvent::target_declared(payload(
+                "scheduler",
+                BTreeMap::from([("flavor".into(), bad.into())]),
+            ))
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("invalid_config:"),
+                "{bad:?}: unexpected: {err}"
+            );
+        }
+        // an unknown flavor value never lands
+        let err = NewEvent::target_declared(payload(
+            "scheduler",
+            BTreeMap::from([("flavor".into(), "lsf".into())]),
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid_config:"), "unexpected: {err}");
+        // the required keys of kube/chopflow
+        let err = NewEvent::target_declared(payload("kubernetes", BTreeMap::new())).unwrap_err();
+        assert!(err.to_string().contains("context"), "unexpected: {err}");
+        let err = NewEvent::target_declared(payload("chopflow", BTreeMap::new())).unwrap_err();
+        assert!(err.to_string().contains("endpoint"), "unexpected: {err}");
+        let err = NewEvent::target_declared(payload(
+            "chopflow",
+            BTreeMap::from([("endpoint".into(), "ftp://nope".into())]),
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("http"), "unexpected: {err}");
+        // a scheduler target may carry a host (its submission node); kube
+        // and chopflow targets never do
+        NewEvent::target_declared(TargetDeclaredPayload {
+            name: "cluster-1".into(),
+            kind: "scheduler".into(),
+            host: Some("login.hpc.edu".into()),
+            config: BTreeMap::new(),
+        })
+        .unwrap();
+        for kind in ["kubernetes", "chopflow", "local"] {
+            let err = NewEvent::target_declared(TargetDeclaredPayload {
+                name: "cluster-1".into(),
+                kind: kind.into(),
+                host: Some("login.hpc.edu".into()),
+                config: BTreeMap::new(),
+            })
+            .unwrap_err();
+            assert!(err.to_string().contains("invalid_host:"), "{kind}: {err}");
+        }
     }
 
     // ---- the host allowlist (Story 3.3) ----
@@ -884,6 +1126,7 @@ mod tests {
                         name: name.into(),
                         kind: kind.into(),
                         host: if kind == "ssh" { Some("gpu-01.lab".into()) } else { None },
+                        config: BTreeMap::new(),
                     })
                     .unwrap(),
                 )

@@ -156,6 +156,11 @@ const DICT: Record<string, Record<Lang, string>> = {
   "trust.notAllowlisted": { es: "fuera de la lista", en: "not allowlisted", pt: "fora da lista", fr: "hors liste" },
   "trust.noSshTargets": { es: "sin destinos ssh declarados — decláralos desde la app de escritorio", en: "no ssh targets declared — declare them from the desktop app", pt: "sem alvos ssh declarados — declare-os na app de desktop", fr: "aucune cible ssh déclarée — déclarez-les depuis l'app" },
   "trust.saveError": { es: "Error al guardar: ", en: "Error saving: ", pt: "Erro ao guardar: ", fr: "Erreur d'enregistrement : " },
+  "trust.declare": { es: "Declarar destino de cómputo", en: "Declare a compute target", pt: "Declarar alvo de computação", fr: "Déclarer une cible de calcul" },
+  "trust.targetName": { es: "Nombre", en: "Name", pt: "Nome", fr: "Nom" },
+  "trust.add": { es: "Añadir", en: "Add target", pt: "Adicionar", fr: "Ajouter" },
+  "trust.probe": { es: "Sonear", en: "Probe", pt: "Sondar", fr: "Tester" },
+  "trust.noConfigFields": { es: "La clase de destino no tiene campos de configuración definidos:", en: "This target kind has no config fields defined:", pt: "Este tipo de alvo não tem campos de configuração:", fr: "Ce type de cible n'a pas de champs de configuration :" },
   "danger.title": { es: "Datos — zona de peligro", en: "Data — danger zone", pt: "Dados — zona de perigo", fr: "Données — zone de danger" },
   "danger.desc": {
     es: "Borra <b>toda</b> la base de datos —proyectos, referencias, revisiones, acciones, chats y ajustes— y la recrea desde cero. La app volverá al asistente de configuración inicial. No se puede deshacer.",

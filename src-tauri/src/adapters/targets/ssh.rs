@@ -39,8 +39,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::domain::jobs::{validate_host, JobSpec, SpecError};
 
 use super::{
-    job_table, observe, read_result, track, ComputeTarget, JobHandle, JobResult, JobSlot,
-    TargetError, TargetInfo, TargetJobStatus,
+    job_table, observe, read_result, run_sync, shell_quote, track, ComputeTarget, JobHandle,
+    JobResult, JobSlot, SyncRun, TargetError, TargetInfo, TargetJobStatus,
 };
 
 /// How long ssh may spend establishing the connection before giving up —
@@ -56,6 +56,53 @@ impl Ssh {
     /// The adapter the registry registers (Story 3.2's seam).
     pub fn new() -> Self {
         Ssh
+    }
+
+    /// The reachability probe (the settings row's discovery state, Story
+    /// 6.2's probe pattern applied to the v1 kinds): a cheap
+    /// `ssh -o BatchMode=yes <host> true` — allowlist-gated before any
+    /// connection, argv-direct, typed unreachable when the host does not
+    /// answer.
+    pub fn probe(&self, target: &TargetInfo) -> Result<String, TargetError> {
+        let host = target
+            .host
+            .as_deref()
+            .ok_or_else(|| TargetError::MissingHost(target.name.clone()))?;
+        validate_host(host).map_err(SpecError::InvalidHost)?;
+        if !target.allowlist.iter().any(|allowed| allowed == host) {
+            return Err(TargetError::HostNotAllowed {
+                host: host.to_string(),
+                known: if target.allowlist.is_empty() {
+                    "empty — add hosts in Settings → Compute targets".to_string()
+                } else {
+                    target.allowlist.join(" | ")
+                },
+            });
+        }
+        let argv: Vec<String> = vec![
+            ssh_bin(),
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}"),
+            "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
+            host.to_string(),
+            "true".into(),
+        ];
+        match run_sync(&argv, std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS as u64 + 2)) {
+            Ok(SyncRun::Done(out)) if out.status.success() => {
+                Ok(format!("host answered ({host})"))
+            }
+            Ok(SyncRun::Done(out)) => Err(TargetError::Spawn(format!(
+                "ssh_unreachable: {host} — {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+            Ok(SyncRun::Timeout) => Err(TargetError::Spawn(format!(
+                "ssh_unreachable: {host} — connect timed out"
+            ))),
+            Err(e) => Err(TargetError::Spawn(format!("ssh_unreachable: {host} — {e}"))),
+        }
     }
 }
 
@@ -116,13 +163,9 @@ fn ssh_jobs() -> &'static Mutex<HashMap<String, JobSlot>> {
     job_table(&JOBS)
 }
 
-/// Encode one string as a single POSIX shell word: wrap in single quotes
-/// (everything between them is literal), escaping embedded quotes by
-/// close-escape-reopen (`'\''`). Deterministic and reversible — the
-/// remote shell parses the word back to the exact same string.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
+/// Encode one string as a single POSIX shell word — the shared quoting
+/// discipline lives in `mod.rs` (`shell_quote`) since Story 6.2 gave the
+/// scheduler adapter the same remote-transfer rule.
 
 /// Encode the validated spec's argv into the ssh transport's command
 /// string: env assignments (`KEY='value'` — keys are validated names, no
@@ -228,6 +271,7 @@ mod tests {
             name: "cluster-1".into(),
             host: host.map(|h| h.to_string()),
             allowlist: allowlist.iter().map(|h| h.to_string()).collect(),
+            config: std::collections::BTreeMap::new(),
         }
     }
 
@@ -298,6 +342,24 @@ mod tests {
         }
     }
 
+    /// Wait (bounded) for a tracked fake-ssh job to reach its terminal —
+    /// a fixed sleep flakes under a fully parallel test run, a bounded
+    /// retry does not.
+    async fn wait_terminal(
+        ssh: &Ssh,
+        handle: &JobHandle,
+    ) -> TargetJobStatus {
+        for _ in 0..100 {
+            match ssh.monitor(handle).unwrap() {
+                TargetJobStatus::Running => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await
+                }
+                status => return status,
+            }
+        }
+        panic!("the fake-ssh job never reached its terminal");
+    }
+
     // ---- the transfer: argv encoded, never a freeform string ----
 
     #[tokio::test]
@@ -319,7 +381,7 @@ printf '%s\n' "$@""#,
             "",
         ]);
         let handle = ssh.submit(&weird, &info(Some("gpu-01.lab"), &["gpu-01.lab"])).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        wait_terminal(&ssh, &handle).await;
         let result = ssh.fetch(&handle).unwrap();
         assert_eq!(result.code, Some(0), "stdout: {}", result.stdout);
         // cmd + args round-trip EXACTLY — one per line, empty args as
@@ -345,7 +407,7 @@ printf '%s\n' "$@""#,
         s.env.insert("EPOCHS".into(), "10; rm -rf /".into());
         s.workdir = Some("/tmp/lab dir".into());
         let handle = ssh.submit(&s, &info(Some("gpu-01.lab"), &["gpu-01.lab"])).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        wait_terminal(&ssh, &handle).await;
         let result = ssh.fetch(&handle).unwrap();
         // the ssh options, the host as ONE argv element, then the line
         let lines: Vec<&str> = result.stdout.trim_end_matches('\n').split('\n').collect();
@@ -370,8 +432,7 @@ printf '%s\n' "$@""#,
             .submit(&spec("python3", &["train.py"]), &info(Some("gpu-01.lab"), &["gpu-01.lab"]))
             .unwrap();
         assert_eq!(ssh.monitor(&handle).unwrap(), TargetJobStatus::Running);
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert_eq!(ssh.monitor(&handle).unwrap(), TargetJobStatus::Finished { code: 0 });
+        assert_eq!(wait_terminal(&ssh, &handle).await, TargetJobStatus::Finished { code: 0 });
         let result = ssh.fetch(&handle).unwrap();
         assert_eq!(result.code, Some(0));
         assert_eq!(result.stdout.trim(), "trained 3 epochs");
@@ -391,9 +452,8 @@ printf '%s\n' "$@""#,
         let handle = ssh
             .submit(&spec("python3", &["train.py"]), &info(Some("gpu-01.lab"), &["gpu-01.lab"]))
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         assert_eq!(
-            ssh.monitor(&handle).unwrap(),
+            wait_terminal(&ssh, &handle).await,
             TargetJobStatus::Failed { reason: "exit_code_255".into(), code: Some(255) }
         );
         let result = ssh.fetch(&handle).unwrap();

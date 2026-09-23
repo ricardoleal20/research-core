@@ -183,7 +183,7 @@ function renderRunsDrill(app, missionId, runs) {
         <div class="space-y-1">
           ${runs.map((r) => `
             <div class="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-gray-100 transition">
-              <span class="font-mono text-xs tabular text-muted truncate">e-${r.seq} · ${esc(r.kind)} · ${esc(r.actor)}${r.role ? " · " + esc(r.role) : ""}</span>
+              <span class="font-mono text-xs tabular text-muted truncate">e-${r.seq} · ${esc(r.kind)} · ${esc(r.actor)}${r.role ? " · " + esc(r.role) : ""}${r.detail ? ` · <span class="text-amber-700">${esc(r.detail)}</span>` : ""}</span>
               <span class="flex items-center gap-2 shrink-0">
                 <span class="font-mono text-[10px] text-muted tabular">${fmtTs(r.ts)}</span>
                 ${r.runId ? `<button onclick="RC.openReceipt('${esc(r.runId)}')" class="text-xs font-medium text-primary hover:underline">${t("receipt.open")}</button>` : ""}

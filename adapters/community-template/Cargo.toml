@@ -1,0 +1,13 @@
+[package]
+name = "research-core-adapter-template"
+version = "0.2.0"
+edition = "2024"
+description = "Community compute-target adapter template for ResearchCore (Story 6.5, FR-22.4) — the reference implementation of the versioned adapter contract"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+research-core = { path = "../../src-tauri" }
+
+[lib]
+name = "sleep_template"
