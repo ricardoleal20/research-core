@@ -1201,9 +1201,7 @@ mod tests {
         let handle = scheduler
             .submit(&spec("python3", &[]), &info(&[("submitPrefix", &submit)], None, &[]))
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let status = scheduler.monitor(&handle).unwrap();
-        match status {
+        match until_parsed(&scheduler, &handle).await.unwrap() {
             TargetJobStatus::Failed { reason, code } => {
                 assert!(reason.starts_with("submit_failed:"), "unexpected: {reason}");
                 assert_eq!(code, Some(1));
