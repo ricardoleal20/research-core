@@ -10,9 +10,9 @@ import { t, setLang, getLang } from "./i18n";
 import { icon, esc, btn, toggleRcSelect, pickRcSelect, closeRcSelects } from "./ui/helpers";
 import { renderLock, bindLock, renderWizard } from "./ui/lock";
 import { RC as RC_BUS, ctx } from "./ui/rc";
-import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer } from "./ui/missions";
+import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer, renderCheckpointsDrawer } from "./ui/missions";
 import { renderDashboard } from "./ui/dashboard";
-import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings } from "./ui/screens";
+import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings, renderExportModal } from "./ui/screens";
 
 // ========== ACCENT SLOT (the bible's six swappable options) ==========
 const ACCENTS = {
@@ -66,6 +66,10 @@ const app = {
     readinessOpen: false,
     readinessMissionId: null,
     receiptRunId: null,
+    checkpointsOpen: false,
+    rollbackConfirm: null,
+    exportOpen: false,
+    exportComposer: null,
     commandPaletteOpen: false,
     projectMenuOpen: false,
   },
@@ -77,6 +81,9 @@ const app = {
     runs: {}, // missionId -> MissionRun[]
     runsOpen: {}, // missionId -> bool (drill-down toggle)
     board: {}, // missionId -> { hyps: [], evidence: Record<hypId, Claim[]>, proposals: [] }
+    disclosure: {}, // missionId -> SearchDisclosure (the Divulgación fold)
+    checkpoints: null, // CheckpointsView (the restore-point control)
+    rollbackOutcome: null, // the last rollback's orphaned outcome
     digest: null,
     trust: null,
     targets: [],
@@ -182,6 +189,7 @@ function renderShell() {
             </div>
           </div>
           <div class="flex items-center gap-2">
+            <button onclick="RC.openExport()" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("ex.title")}">${icon("fileText", "w-4 h-4")}</button>
             <button onclick="RC.navigate('settings')" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("rc.nav.settings")}">${icon("settings", "w-4 h-4")}</button>
             <button onclick="RC.lockApp()" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("rc.lock.title")}">${icon("lock", "w-4 h-4")}</button>
           </div>
@@ -249,6 +257,8 @@ function render() {
   if (app.state.commandPaletteOpen) renderCommandPalette();
   if (app.state.readinessOpen) renderReadinessDrawer(app);
   if (app.state.receiptRunId) renderReceiptDrawer(app);
+  if (app.state.checkpointsOpen) renderCheckpointsDrawer(app);
+  if (app.state.exportOpen) renderExportModal(app);
 }
 
 function renderMain() {
@@ -345,6 +355,12 @@ async function loadBoard(missionId) {
     app.data.board[missionId] = { hyps: [], evidence: {}, proposals: [] };
     renderMainOnly();
   }
+  // the Divulgación fold (Story 4.1): every search.run of this mission, nulls
+  // included — read alongside the board, never a write
+  try {
+    app.data.disclosure[missionId] = await api.getSearchDisclosure(missionId);
+    renderMainOnly();
+  } catch (e) { console.error(e); }
 }
 
 async function loadDigest() {
@@ -484,6 +500,9 @@ document.addEventListener("keydown", (e) => {
     if (app.state.commandPaletteOpen) { closeCommandPalette(); return; }
     if (app.state.readinessOpen) { app.state.readinessOpen = false; render(); return; }
     if (app.state.receiptRunId) { app.state.receiptRunId = null; render(); return; }
+    if (app.state.rollbackConfirm) { app.state.rollbackConfirm = null; render(); return; }
+    if (app.state.checkpointsOpen) { app.state.checkpointsOpen = false; app.data.rollbackOutcome = null; render(); return; }
+    if (app.state.exportOpen) { app.state.exportOpen = false; app.state.exportComposer = null; render(); return; }
     if (app.state.projectMenuOpen) { app.state.projectMenuOpen = false; render(); return; }
     closeRcSelects();
   }

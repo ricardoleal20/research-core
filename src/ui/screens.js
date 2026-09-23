@@ -1018,8 +1018,129 @@ function renderTrustCenter(app) {
 
 export function bindSettings(app) {}
 
+// ========== OPEN EXPORT COMPOSER (Story 3.1, FR-7.1/7.2) ==========
+// The header's Exportar action: scope picker + target folder, the staleness
+// warning for a previous export at that folder staled by a rollback, and the
+// result manifest — over the export_workspace / inspect_export commands.
+export function renderExportModal(app) {
+  const s = app.state.exportComposer;
+  const overlay = document.createElement("div");
+  overlay.className = "rc-modal fixed inset-0 z-[60] flex items-center justify-center p-6";
+  const scopes = ["all", "missions", "hypotheses", "evidence", "timeline", "search_log"];
+  overlay.innerHTML = `
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="RC.closeExport()"></div>
+    <div class="relative w-full max-w-lg bg-white border border-border rounded-xl shadow-xl overflow-hidden animate-scale-in">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+        <h2 class="font-serif text-2xl italic">${t("ex.title")}</h2>
+        <button onclick="RC.closeExport()" class="p-1 rounded hover:bg-gray-100">${icon("close", "w-5 h-5")}</button>
+      </div>
+      ${s.result ? renderExportResult(s.result) : `
+      <div class="p-5 space-y-4">
+        <p class="text-xs text-muted leading-relaxed">${t("ex.sub")}</p>
+        <div>
+          <label class="block text-sm font-medium mb-1.5">${t("ex.scope")}</label>
+          ${rcSelect({ id: "ex-scope", options: scopes.map((sc) => ({ value: sc, label: t("ex.scope." + sc) })), value: s.scope, onChange: "RC.setExportScope(this.value)" })}
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1.5">${t("ex.dir")}</label>
+          <input id="ex-dir" value="${esc(s.dir)}" placeholder="${t("ex.dirPh")}" onchange="RC.inspectExportDir()" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
+        </div>
+        ${s.inspect === null ? "" : s.inspect.stale ? `
+          <div class="rounded-lg border-amber-300 border-2 bg-amber-50 px-3 py-2 flex items-start gap-2">
+            ${icon("danger", "w-4 h-4 text-amber-700 shrink-0 mt-0.5")}
+            <p class="text-xs font-medium text-amber-700 leading-relaxed">${t("ex.stale", { seq: s.inspect.cutSeq })}</p>
+          </div>` : `
+          <div class="rounded-lg border border-border bg-gray-50 px-3 py-2 flex items-center gap-2">
+            ${icon("check", "w-4 h-4 text-emerald-600 shrink-0")}
+            <p class="text-xs text-muted">${t("ex.fresh", { seq: s.inspect.cutSeq })}</p>
+          </div>`}
+        ${btn({ label: s.running ? t("ex.running") : t("ex.run"), variant: "default", cls: "w-full", iconName: "fileText", onClick: "RC.runExport()", disabled: s.running || !s.dir.trim() })}
+      </div>`}
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function renderExportResult(r) {
+  return `
+    <div class="p-5 space-y-4">
+      <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 flex items-center gap-3">
+        ${icon("check", "w-5 h-5 text-emerald-600 shrink-0")}
+        <p class="text-sm font-medium text-emerald-700">${t("ex.result")}</p>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><p class="caption text-muted mb-0.5">${t("ex.scope")}</p><p class="text-sm font-medium">${t("ex.scope." + r.manifest.scope)}</p></div>
+        <div><p class="caption text-muted mb-0.5">${t("ex.dir")}</p><p class="text-sm font-mono text-xs break-all">${esc(r.dir)}</p></div>
+        <div><p class="caption text-muted mb-0.5">${t("ex.cut")}</p><p class="font-mono text-sm tabular">e-${r.manifest.cutSeq}</p></div>
+        <div><p class="caption text-muted mb-0.5">${t("ex.rendered")}</p><p class="font-mono text-xs tabular">${fmtTs(r.manifest.renderedTs)}</p></div>
+      </div>
+      ${r.manifest.staleNotice ? `
+        <div class="rounded-lg border-amber-300 border-2 bg-amber-50 px-3 py-2">
+          <p class="text-xs font-medium text-amber-700">${t("ex.stale", { seq: r.manifest.staleNotice.previousCut })}</p>
+        </div>` : ""}
+      <div>
+        <p class="caption text-muted mb-1.5">${t("ex.files")} · ${r.manifest.fileCount}</p>
+        <div class="max-h-44 overflow-y-auto rounded-xl border border-border divide-y divide-border bg-white">
+          ${r.files.map((f) => `
+            <div class="px-3 py-1.5 font-mono text-[11px] text-muted break-all">${esc(f)}</div>`).join("")}
+        </div>
+      </div>
+      ${btn({ label: t("ex.close"), variant: "secondary", cls: "w-full", onClick: "RC.closeExport()" })}
+    </div>`;
+}
+
 // ========== HANDLERS ==========
 Object.assign(RC, {
+  // ---- Open export composer (Story 3.1, FR-7.1/7.2) ----
+  openExport() {
+    const app = ctx.app;
+    app.state.exportOpen = true;
+    app.state.exportComposer = { scope: "all", dir: "", inspect: null, result: null, running: false };
+    ctx.render();
+  },
+  closeExport() {
+    const app = ctx.app;
+    app.state.exportOpen = false;
+    app.state.exportComposer = null;
+    ctx.render();
+  },
+  setExportScope(scope) {
+    const s = ctx.app.state.exportComposer;
+    if (!s) return;
+    s.scope = scope;
+  },
+  async inspectExportDir() {
+    const app = ctx.app;
+    const s = app.state.exportComposer;
+    if (!s) return;
+    const dir = document.getElementById("ex-dir")?.value.trim() ?? s.dir;
+    s.dir = dir;
+    if (!dir) { s.inspect = null; ctx.render(); return; }
+    try {
+      s.inspect = await api.inspectExport(dir);
+    } catch (e) {
+      console.error(e);
+      s.inspect = null;
+    }
+    ctx.render();
+  },
+  async runExport() {
+    const app = ctx.app;
+    const s = app.state.exportComposer;
+    if (!s || s.running) return;
+    const dir = document.getElementById("ex-dir")?.value.trim() || s.dir;
+    if (!dir) return;
+    s.dir = dir;
+    s.running = true;
+    s.error = null;
+    ctx.render();
+    try {
+      s.result = await api.exportWorkspace(dir, s.scope);
+    } catch (e) {
+      alert(t("onb.error") + " " + (e?.message || e));
+    }
+    s.running = false;
+    ctx.render();
+  },
   openRefDetail,
   closeRefDetail() {
     document.querySelectorAll(".rc-modal").forEach((el) => el.remove());

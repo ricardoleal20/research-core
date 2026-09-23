@@ -1578,6 +1578,75 @@ const DICT: Record<string, Record<Lang, string>> = {
   "dash.readiness.title": { es: "Listo para preprint", en: "Preprint readiness", pt: "Pronto para preprint", fr: "Prêt pour le preprint" },
   "dash.readiness.blockers": { es: "{count} bloqueos", en: "{count} blockers", pt: "{count} bloqueios", fr: "{count} bloqueurs" },
   "dash.readiness.viewReport": { es: "ver informe →", en: "see report →", pt: "ver relatório →", fr: "voir le rapport →" },
+
+  // ---- Checkpoints control (Story 2.6, FR-10.1) — the three keys the
+  // rendered drawer adds beyond the existing cp.* vocabulary above.
+  "cp.sub": {
+    es: "Restaura el modelo de lectura a un punto nombrado — el historial nunca se reescribe.",
+    en: "Returns the read model to a named point — history is never rewritten.",
+    pt: "Devolve o modelo de leitura a um ponto nomeado — o histórico nunca é reescrito.",
+    fr: "Ramène le modèle de lecture à un point nommé — l'historique n'est jamais réécrit.",
+  },
+  "cp.head": { es: "Cabeza del log", en: "Log head", pt: "Cabeça do log", fr: "Tête du journal" },
+  "cp.orphanedEvents": { es: "Eventos huérfanos", en: "Orphaned events", pt: "Eventos órfãos", fr: "Événements orphelins" },
+
+  // ---- Open export composer (Story 3.1, FR-7.1/7.2): the header's Export
+  // action — scope picker + target folder, the staleness warning when a
+  // previous export at that folder has been staled by a rollback, and the
+  // result manifest.
+  "ex.title": { es: "Exportar", en: "Export", pt: "Exportar", fr: "Exporter" },
+  "ex.sub": {
+    es: "Renderiza el pliegue pedido en un único corte con nombre, en archivos abiertos y git-friendly.",
+    en: "Renders the requested fold at one named cut into open, git-friendly files.",
+    pt: "Renderiza a dobra pedida num único corte nomeado, em arquivos abertos e git-friendly.",
+    fr: "Génère le pli demandé en une coupe nommée unique, en fichiers ouverts et git-friendly.",
+  },
+  "ex.scope": { es: "Alcance", en: "Scope", pt: "Âmbito", fr: "Portée" },
+  "ex.scope.all": { es: "Todo el workspace", en: "Whole workspace", pt: "Todo o workspace", fr: "Tout l'espace de travail" },
+  "ex.scope.missions": { es: "Misiones", en: "Missions", pt: "Missões", fr: "Missions" },
+  "ex.scope.hypotheses": { es: "Hipótesis", en: "Hypotheses", pt: "Hipóteses", fr: "Hypothèses" },
+  "ex.scope.evidence": { es: "Evidencia", en: "Evidence", pt: "Evidência", fr: "Preuves" },
+  "ex.scope.timeline": { es: "Cronología", en: "Timeline", pt: "Cronologia", fr: "Chronologie" },
+  "ex.scope.search_log": { es: "Log de búsquedas", en: "Search log", pt: "Log de pesquisas", fr: "Journal des recherches" },
+  "ex.dir": { es: "Carpeta destino", en: "Target folder", pt: "Pasta destino", fr: "Dossier cible" },
+  "ex.dirPh": { es: "~/ResearchCore/Export", en: "~/ResearchCore/Export", pt: "~/ResearchCore/Export", fr: "~/ResearchCore/Export" },
+  "ex.stale": {
+    es: "Esta carpeta ya tiene una exportación en e-{seq}, quedada tras una restauración posterior — volver a exportar la actualiza.",
+    en: "This folder already holds an export at e-{seq}, staled by a later rollback — exporting again refreshes it.",
+    pt: "Esta pasta já tem uma exportação em e-{seq}, desatualizada por uma restauração posterior — exportar de novo atualiza-a.",
+    fr: "Ce dossier contient déjà une exportation en e-{seq}, périmée par une restauration ultérieure — exporter à nouveau l'actualise.",
+  },
+  "ex.fresh": { es: "Exportación previa en e-{seq} — actualizada.", en: "Previous export at e-{seq} — up to date.", pt: "Exportação prévia em e-{seq} — atualizada.", fr: "Exportation précédente en e-{seq} — à jour." },
+  "ex.run": { es: "Exportar", en: "Export", pt: "Exportar", fr: "Exporter" },
+  "ex.running": { es: "Exportando…", en: "Exporting…", pt: "A exportar…", fr: "Exportation…" },
+  "ex.result": { es: "Exportación lista", en: "Export ready", pt: "Exportação pronta", fr: "Exportation prête" },
+  "ex.cut": { es: "Corte", en: "Cut", pt: "Corte", fr: "Coupe" },
+  "ex.rendered": { es: "Generado", en: "Rendered", pt: "Gerado", fr: "Généré" },
+  "ex.files": { es: "Archivos", en: "Files", pt: "Arquivos", fr: "Fichiers" },
+  "ex.close": { es: "Cerrar", en: "Close", pt: "Fechar", fr: "Fermer" },
+
+  // ---- Search disclosure panel (Story 4.1, FR-12.1): the mission board's
+  // Divulgación card — every search run in seq order, PRISMA-style, null
+  // results included by name.
+  "sd.title": { es: "Divulgación", en: "Disclosure", pt: "Divulgação", fr: "Divulgation" },
+  "sd.sub": {
+    es: "Cada búsqueda ejecutada, en orden — incluidos los resultados nulos.",
+    en: "Every search executed, in order — null results included.",
+    pt: "Cada pesquisa executada, em ordem — resultados nulos incluídos.",
+    fr: "Chaque recherche exécutée, dans l'ordre — résultats nuls inclus.",
+  },
+  "sd.total": { es: "{count} búsquedas", en: "{count} searches", pt: "{count} pesquisas", fr: "{count} recherches" },
+  "sd.nulls": { es: "{count} nulos", en: "{count} null", pt: "{count} nulos", fr: "{count} nuls" },
+  "sd.results": { es: "{count} resultados", en: "{count} results", pt: "{count} resultados", fr: "{count} résultats" },
+  "sd.nullResult": { es: "resultado nulo", en: "null result", pt: "resultado nulo", fr: "résultat nul" },
+  "sd.firstPage": { es: "primera pasada", en: "first pass", pt: "primeira passagem", fr: "première passe" },
+  "sd.empty": {
+    es: "Sin búsquedas registradas todavía — la divulgación nace con la primera.",
+    en: "No searches recorded yet — disclosure begins with the first one.",
+    pt: "Ainda sem pesquisas registadas — a divulgação nasce com a primeira.",
+    fr: "Aucune recherche consignée pour l'instant — la divulgation naît avec la première.",
+  },
+  "sd.noFilters": { es: "sin filtros", en: "no filters", pt: "sem filtros", fr: "sans filtres" },
 };
 
 const SUPPORTED: Lang[] = ["es", "en", "pt", "fr"];
