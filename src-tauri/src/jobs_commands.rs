@@ -890,18 +890,27 @@ async fn declare_compute_target_inner(
 /// exactly as first-party ones do.
 #[tauri::command]
 pub async fn list_registered_adapters() -> Result<Vec<RegisteredAdapterView>, String> {
-    Ok(first_party_adapters())
+    Ok(all_registered_adapters())
 }
 
-pub(crate) fn first_party_adapters() -> Vec<RegisteredAdapterView> {
-    crate::adapters::targets::FIRST_PARTY_KINDS
-        .iter()
-        .map(|kind| RegisteredAdapterView {
-            kind: kind.to_string(),
-            contract_version: crate::adapters::targets::ADAPTER_CONTRACT_VERSION.to_string(),
-            builtin: true,
-        })
-        .collect()
+pub(crate) fn all_registered_adapters() -> Vec<RegisteredAdapterView> {
+    let mut views: Vec<RegisteredAdapterView> =
+        crate::adapters::targets::FIRST_PARTY_KINDS
+            .iter()
+            .map(|kind| RegisteredAdapterView {
+                kind: kind.to_string(),
+                contract_version: crate::adapters::targets::ADAPTER_CONTRACT_VERSION.to_string(),
+                builtin: true,
+            })
+            .collect();
+    for community in crate::adapters::targets::adapter_contract::community_adapters() {
+        views.push(RegisteredAdapterView {
+            kind: community.kind,
+            contract_version: community.contract_version,
+            builtin: false,
+        });
+    }
+    views
 }
 
 /// Probe one compute target (the settings row's discovery/unreachable
@@ -1033,6 +1042,23 @@ mod tests {
             }
         }
         panic!("the job never reached its terminal");
+    }
+
+    // ---- the registered-adapter listing (Story 6.5) ----
+
+    #[test]
+    fn registered_adapters_list_kind_and_contract_version() {
+        let adapters = super::all_registered_adapters();
+        assert_eq!(adapters.len(), crate::adapters::targets::FIRST_PARTY_KINDS.len());
+        for view in &adapters {
+            assert!(view.builtin, "the first-party kinds are builtin: {view:?}");
+            assert_eq!(
+                view.contract_version,
+                crate::adapters::targets::ADAPTER_CONTRACT_VERSION
+            );
+        }
+        assert!(adapters.iter().any(|a| a.kind == "local"));
+        assert!(adapters.iter().any(|a| a.kind == "kubernetes"));
     }
 
     // ---- validation before submit (AD-6) ----

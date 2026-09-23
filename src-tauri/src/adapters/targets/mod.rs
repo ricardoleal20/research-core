@@ -16,6 +16,7 @@
 // too (it ENCODES the validated argv — see ssh.rs for why that is not a
 // freeform path).
 
+pub mod adapter_contract;
 pub mod chopflow;
 pub mod kubernetes;
 pub mod scheduler;
@@ -197,7 +198,8 @@ impl TargetRegistry {
     /// (allowlisted remote hosts, Story 3.3), `scheduler` (SLURM/PBS-
     /// style clusters, Story 6.2), `kubernetes` (Job targets on an
     /// allowlisted context, Story 6.3), and `chopflow` (a ChopFlow
-    /// queue endpoint, Story 6.4) registered.
+    /// queue endpoint, Story 6.4) registered — plus every community
+    /// adapter registered through the validated seam (Story 6.5).
     pub fn v1() -> Self {
         let mut registry = Self::empty();
         registry.register(Arc::new(Local));
@@ -205,6 +207,11 @@ impl TargetRegistry {
         registry.register(Arc::new(Scheduler::new()));
         registry.register(Arc::new(Kubernetes::new()));
         registry.register(Arc::new(ChopFlow::new()));
+        // Community adapters (Story 6.5): validated at registration —
+        // they appear here exactly as first-party kinds do.
+        for community in adapter_contract::community_adapters() {
+            registry.register(community.adapter);
+        }
         registry
     }
 

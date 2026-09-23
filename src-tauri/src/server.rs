@@ -75,6 +75,7 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf) -> Router {
         )
         .route("/api/jobs/{job_id}/result-proposals", get(job_result_proposals))
         .route("/api/targets", get(compute_targets))
+        .route("/api/adapters", get(registered_adapters))
         .route("/api/skills", get(list_skills))
         .route("/api/ai-config", get(ai_config))
         .route("/api/host-allowlist", get(host_allowlist))
@@ -341,6 +342,13 @@ async fn compute_targets(
     crate::jobs_commands::list_targets_inner(&events)
         .map(Json)
         .map_err(|_| internal())
+}
+
+/// The registered adapter kinds with their contract versions (Story 6.5,
+/// NFR-15 — read-only per AD-14): first-party kinds and community
+/// adapters, exactly as the settings row lists them.
+async fn registered_adapters() -> Result<Json<Vec<crate::jobs_commands::RegisteredAdapterView>>, StatusCode> {
+    Ok(Json(crate::jobs_commands::all_registered_adapters()))
 }
 
 /// The host allowlist (Story 3.3 — read-only per AD-14): the hosts SSH
