@@ -568,6 +568,7 @@ mod tests {
                 model: String::new(),
                 cli: String::new(),
                 cli_model: String::new(),
+                local_base_url: String::new(),
             },
         )
         .unwrap()

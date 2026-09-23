@@ -509,19 +509,53 @@ fn keychain_has_key(conn: &Connection, provider: &str) -> bool {
         && !db::get_setting(conn, "api_key").trim().is_empty()
 }
 
-/// The AI provider configuration read (Stories 5.7–5.9): everything the
-/// assistant surface and Ajustes → IA render — mode, provider, base URL,
+/// The AI provider configuration read (Stories 5.7–5.9 + 6.1): everything
+/// the assistant surface and Ajustes → IA render — mode, provider, base URL,
 /// model, whether a key is stored (never the key itself), the CLI bridge
-/// state with honest per-binary detection, the model list the picker
-/// offers, and whether a REAL provider is configured (the assistant's
-/// unconfigured state renders from this).
+/// state with honest per-binary detection, the local provider's honest
+/// detection status (Story 6.1: reachable + its installed models, or the
+/// unreachable reason), the model list the picker offers, and whether a
+/// REAL provider is configured (the assistant's unconfigured state renders
+/// from this).
 #[tauri::command]
 pub async fn get_ai_config(db: State<'_, Db>) -> Result<Value, String> {
+    let local_base = {
+        let c = db.0.lock().await;
+        db::get_setting(&c, "local_base_url")
+    };
+    // honest local detection (NFR-14): probe BEFORE the read so the row and
+    // the assistant gate render the endpoint's real state
+    let local = local_status(&local_base).await;
     let c = db.0.lock().await;
-    ai_config_inner(&c)
+    ai_config_inner(&c, Some(local))
 }
 
-pub fn ai_config_inner(c: &Connection) -> Result<Value, String> {
+/// The local provider's honest detection status (Story 6.1, FR-24.1,
+/// NFR-14): one probe of the configured local endpoint through the adapter
+/// layer (AD-9) — reachable + its installed models via `GET /api/tags`, or
+/// the honest unreachable reason. A stopped runtime is the unconfigured
+/// state with the reason — never a dead spawn, never a simulated stand-in.
+pub async fn local_status(base_url: &str) -> Value {
+    use crate::adapters::providers::ollama;
+    let base = if base_url.trim().is_empty() {
+        ollama::DEFAULT_BASE_URL.to_string()
+    } else {
+        base_url.trim().to_string()
+    };
+    match ollama::Ollama::new(&base) {
+        Err(e) => json!({ "baseUrl": base, "reachable": false, "models": [], "error": e.to_string() }),
+        Ok(adapter) => match adapter.tags().await {
+            Ok(models) => {
+                json!({ "baseUrl": base, "reachable": true, "models": models, "error": null })
+            }
+            Err(e) => {
+                json!({ "baseUrl": base, "reachable": false, "models": [], "error": e.to_string() })
+            }
+        },
+    }
+}
+
+pub fn ai_config_inner(c: &Connection, local: Option<Value>) -> Result<Value, String> {
     use crate::adapters::providers as prov;
     let mode = db::get_setting(c, "llm_mode");
     let provider = db::get_setting(c, "provider");
@@ -529,6 +563,7 @@ pub fn ai_config_inner(c: &Connection) -> Result<Value, String> {
     let model = db::get_setting(c, "model");
     let cli = prov::cli::Cli::binary_name(&db::get_setting(c, "llm_cli"));
     let cli_model = db::get_setting(c, "llm_cli_model");
+    let local_base_url = db::get_setting(c, "local_base_url");
     let has_key = keychain_has_key(c, &provider);
     // honest CLI detection — present/absent chips (never a dead spawn)
     let cli_available: Value = ["codex", "claude", "opencode"]
@@ -544,21 +579,54 @@ pub fn ai_config_inner(c: &Connection) -> Result<Value, String> {
         })
         .collect::<serde_json::Map<String, Value>>()
         .into();
-    // is a REAL provider configured? (FR-17.1 — the assistant's gate)
+    // The local provider's status: the caller's fresh probe when it ran one
+    // (the async command / the server route), else a lazy honest "not
+    // probed" — never a fabricated reachable state.
+    let local = local.unwrap_or_else(|| {
+        json!({ "baseUrl": local_base_url, "reachable": false, "models": [], "error": null })
+    });
+    let local_reachable = local.get("reachable").and_then(Value::as_bool).unwrap_or(false);
+    // is a REAL provider configured? (FR-17.1 — the assistant's gate; a
+    // configured local provider counts as real, FR-24.2, but only when its
+    // endpoint is honestly reachable — a stopped runtime is the
+    // unconfigured state with the reason, NFR-14)
     let configured = match mode.trim() {
         "simulate" => false,
         "cli" => which_cli(&cli).is_some(),
+        "local" => local_reachable,
         _ => {
-            // provider mode, or legacy auto: a key + a resolvable endpoint
-            has_key
-                && (!base_url.trim().is_empty()
-                    || prov::default_base_url(&provider).is_some())
+            if provider.trim() == "local" {
+                local_reachable
+            } else {
+                // provider mode, or legacy auto: a key + a resolvable endpoint
+                has_key
+                    && (!base_url.trim().is_empty()
+                        || prov::default_base_url(&provider).is_some())
+            }
         }
     };
-    let models = if mode.trim() == "cli" {
-        prov::cli_models()
-    } else {
-        prov::curated_models(&provider)
+    let models = match mode.trim() {
+        "cli" => prov::cli_models(),
+        // the local picker lists the endpoint's live models (FR-24.1)
+        "local" => local
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ if provider.trim() == "local" => local
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => prov::curated_models(&provider),
     };
     Ok(json!({
         "mode": mode,
@@ -569,6 +637,7 @@ pub fn ai_config_inner(c: &Connection) -> Result<Value, String> {
         "cli": cli,
         "cliModel": cli_model,
         "cliAvailable": cli_available,
+        "local": local,
         "models": models,
         "configured": configured,
     }))
@@ -608,8 +677,13 @@ pub async fn configure_ai_provider(
             .map_err(err)?;
         entry.set_password(api_key.trim()).map_err(err)?;
     }
+    let local_base = {
+        let c = db.0.lock().await;
+        db::get_setting(&c, "local_base_url")
+    };
+    let local = local_status(&local_base).await;
     let c = db.0.lock().await;
-    ai_config_inner(&c)
+    ai_config_inner(&c, Some(local))
 }
 
 /// Switch the assistant onto a CLI bridge provider (FR-17.3, Story 5.8):
@@ -628,8 +702,85 @@ pub async fn use_cli_bridge(db: State<'_, Db>, cli: String) -> Result<Value, Str
         db::set_setting(&c, "llm_cli", &cli).map_err(err)?;
     }
     let _ = path;
+    let local_base = {
+        let c = db.0.lock().await;
+        db::get_setting(&c, "local_base_url")
+    };
+    let local = local_status(&local_base).await;
     let c = db.0.lock().await;
-    ai_config_inner(&c)
+    ai_config_inner(&c, Some(local))
+}
+
+/// Switch the AI config onto the LOCAL provider (Story 6.1, FR-24.1):
+/// settings only — the base URL is not a secret, so there is no keychain
+/// write and no key at all. A non-localhost URL is refused eagerly (the
+/// typed zero-egress guard, FR-24.3). The returned config carries the fresh
+/// detection probe: an unreachable endpoint is the honest unconfigured
+/// state there (and the typed `local_unreachable:` refusal at call time) —
+/// never a silent fallback to simulated (NFR-14, FR-24.2). An empty model
+/// defaults to the first one the endpoint lists.
+#[tauri::command]
+pub async fn use_local_provider(
+    db: State<'_, Db>,
+    base_url: String,
+    model: String,
+) -> Result<Value, String> {
+    use_local_provider_inner(db.inner(), &base_url, &model).await
+}
+
+pub async fn use_local_provider_inner(
+    db: &Db,
+    base_url: &str,
+    model: &str,
+) -> Result<Value, String> {
+    use crate::adapters::providers::ollama;
+    let base = if base_url.trim().is_empty() {
+        ollama::DEFAULT_BASE_URL.to_string()
+    } else {
+        base_url.trim().to_string()
+    };
+    // eager localhost guard — zero egress is structural, not advisory
+    ollama::Ollama::new(&base).map_err(|e| e.to_string())?;
+    {
+        let c = db.0.lock().await;
+        db::set_setting(&c, "llm_mode", "local").map_err(err)?;
+        db::set_setting(&c, "provider", "local").map_err(err)?;
+        db::set_setting(&c, "local_base_url", &base).map_err(err)?;
+        db::set_setting(&c, "model", model.trim()).map_err(err)?;
+    }
+    let local = local_status(&base).await;
+    // auto-pick the first listed model when none was chosen (FR-24.1:
+    // auto-detection lists the installed models straight into the picker)
+    if model.trim().is_empty() {
+        if let Some(first) = local.get("models").and_then(Value::as_array).and_then(|a| {
+            a.first().and_then(Value::as_str).map(str::to_string)
+        }) {
+            let c = db.0.lock().await;
+            db::set_setting(&c, "model", &first).map_err(err)?;
+        }
+    }
+    let c = db.0.lock().await;
+    ai_config_inner(&c, Some(local))
+}
+
+/// Test the LOCAL provider's endpoint (Story 6.1, FR-24.1): `GET /api/tags`
+/// through the local adapter's own HTTP surface (AD-9). No key required; a
+/// success returns the LIVE installed-model list — the Local row refreshes
+/// from it and the picker lists it.
+#[tauri::command]
+pub async fn test_local_provider(base_url: String) -> Result<Value, String> {
+    use crate::adapters::providers::ollama;
+    let base = if base_url.trim().is_empty() {
+        ollama::DEFAULT_BASE_URL.to_string()
+    } else {
+        base_url.trim().to_string()
+    };
+    let test = crate::adapters::providers::models::test_local_connection(&base).await;
+    Ok(json!({
+        "ok": test.ok,
+        "models": test.models,
+        "error": test.error,
+    }))
 }
 
 /// Test the configured API provider's connection (Story 5.7): one GET
@@ -658,3 +809,130 @@ pub async fn list_provider_models(provider: String) -> Result<Vec<String>, Strin
     Ok(crate::adapters::providers::curated_models(&provider))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// An in-memory workspace: schema + eventstore, wrapped in the Db handle.
+    fn test_db() -> Db {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::Db::migrate(&conn).unwrap();
+        crate::eventstore::EventStore::init(&conn).unwrap();
+        Db(std::sync::Arc::new(tokio::sync::Mutex::new(conn)))
+    }
+
+    /// A one-shot fake Ollama on the shared test runtime: /api/tags lists
+    /// two models, /api/chat answers the native shape.
+    async fn fake_ollama() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/tags",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "models": [{ "name": "llama3.1:8b" }, { "name": "qwen2.5:14b" }]
+                    }))
+                }),
+            )
+            .route(
+                "/api/chat",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "hola local" },
+                        "prompt_eval_count": 10,
+                        "eval_count": 5
+                    }))
+                }),
+            );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Story 6.1 (FR-24.1): switching the AI config onto a reachable local
+    /// endpoint configures it as the REAL provider — the models it lists
+    /// flow into the picker, the model defaults to the first one, and the
+    /// honest detection status rides the config.
+    #[tokio::test]
+    async fn use_local_provider_configures_the_real_local_provider() {
+        let db = test_db();
+        let base = fake_ollama().await;
+        let cfg = use_local_provider_inner(&db, &base, "").await.unwrap();
+        assert_eq!(cfg["mode"], "local");
+        assert_eq!(cfg["provider"], "local");
+        assert_eq!(cfg["local"]["baseUrl"], base);
+        assert_eq!(cfg["local"]["reachable"], true);
+        assert_eq!(cfg["local"]["models"][0], "llama3.1:8b");
+        // the model defaulted to the first listed one
+        assert_eq!(cfg["model"], "llama3.1:8b");
+        // the live list flows into the picker's models
+        assert_eq!(cfg["models"].as_array().unwrap().len(), 2);
+        // a REACHABLE local provider is a configured real provider (FR-24.2
+        // — the assistant's gate opens)
+        assert_eq!(cfg["configured"], true);
+        // no key was ever demanded or stored
+        assert_eq!(cfg["hasKey"], false);
+        // the settings persisted (keychain-free — a local URL is no secret)
+        {
+            let c = db.0.lock().await;
+            assert_eq!(db::get_setting(&c, "llm_mode"), "local");
+            assert_eq!(db::get_setting(&c, "local_base_url"), base);
+        }
+    }
+
+    /// Story 6.1 (NFR-14): an endpoint that is not running is the honest
+    /// unconfigured state with the reason — configured stays false, never a
+    /// dead spawn, never a silent simulated fallback.
+    #[tokio::test]
+    async fn an_unreachable_local_endpoint_is_the_honest_unconfigured_state() {
+        let db = test_db();
+        let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = gone.local_addr().unwrap();
+        drop(gone);
+        let cfg = use_local_provider_inner(&db, &format!("http://{addr}"), "llama3.1:8b")
+            .await
+            .unwrap();
+        assert_eq!(cfg["local"]["reachable"], false);
+        assert!(
+            cfg["local"]["error"].as_str().unwrap().contains("local_unreachable:"),
+            "the honest reason rides the config: {}",
+            cfg["local"]["error"]
+        );
+        assert_eq!(cfg["configured"], false, "a stopped runtime is the unconfigured state");
+    }
+
+    /// Story 6.1 (FR-24.3): a non-localhost base URL is refused eagerly at
+    /// configuration time — zero egress is structural.
+    #[tokio::test]
+    async fn a_non_localhost_local_base_url_is_refused_eagerly() {
+        let db = test_db();
+        let err = use_local_provider_inner(&db, "http://10.0.0.5:11434", "llama3.1:8b")
+            .await
+            .unwrap_err();
+        assert!(err.contains("local_not_localhost:"), "unexpected: {err}");
+        // nothing was written on the refused path
+        let c = db.0.lock().await;
+        assert_eq!(db::get_setting(&c, "llm_mode"), "");
+    }
+
+    /// Story 6.1 (FR-24.1): the local test-connection command lists the
+    /// endpoint's installed models through the adapter layer (AD-9).
+    #[tokio::test]
+    async fn test_local_provider_lists_the_installed_models() {
+        let base = fake_ollama().await;
+        let t = test_local_provider(base).await.unwrap();
+        assert_eq!(t["ok"], true);
+        assert_eq!(t["models"].as_array().unwrap().len(), 2);
+        // and a stopped runtime reports the honest reason
+        let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = gone.local_addr().unwrap();
+        drop(gone);
+        let t = test_local_provider(format!("http://{addr}")).await.unwrap();
+        assert_eq!(t["ok"], false);
+        assert!(t["error"].as_str().unwrap().contains("local_unreachable:"));
+    }
+}

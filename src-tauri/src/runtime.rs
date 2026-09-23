@@ -344,6 +344,7 @@ mod tests {
             model: model.into(),
             cli: String::new(),
             cli_model: String::new(),
+            local_base_url: String::new(),
         }
     }
 

@@ -124,12 +124,19 @@ async fn list_skills(State(state): State<ServerState>) -> Result<Json<Vec<Skill>
     list_skills_inner(&c).map_err(|_| internal()).map(Json)
 }
 
-/// The AI provider configuration read (Stories 5.7–5.9, read-only per
+/// The AI provider configuration read (Stories 5.7–5.9 + 6.1, read-only per
 /// AD-14): what the served view's chat header and unconfigured state
-/// render — never the key itself, only its presence.
+/// render — never the key itself, only its presence. The local provider's
+/// honest detection probe runs here too (Story 6.1: the Local row renders
+/// the endpoint's real state).
 async fn ai_config(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
+    let local_base = {
+        let c = state.db.0.lock().await;
+        crate::db::get_setting(&c, "local_base_url")
+    };
+    let local = crate::commands::local_status(&local_base).await;
     let c = state.db.0.lock().await;
-    crate::commands::ai_config_inner(&c)
+    crate::commands::ai_config_inner(&c, Some(local))
         .map(Json)
         .map_err(|_| internal())
 }
