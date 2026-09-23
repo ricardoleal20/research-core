@@ -877,6 +877,17 @@ function renderReadinessItem(b, blocking) {
   } else if (b.kind === "pin_verification_failed") {
     title = t("rd.i.verificationFailed");
     chips = objChip("CLAIMS-" + b.claimSeq);
+  } else if (b.kind === "pin_unsupported") {
+    // Story 6.10: "pinned but unsupported by the citing source" — the
+    // support verdict surfaces as an info, never a blocker (the pin stays).
+    title = t("rd.i.supportUnsupported");
+    chips = objChip("CLAIMS-" + b.claimSeq);
+  } else if (b.kind === "pin_partially_supported") {
+    title = t("rd.i.supportPartial");
+    chips = objChip("CLAIMS-" + b.claimSeq);
+  } else if (b.kind === "support_unchecked") {
+    title = t("rd.i.supportUnchecked");
+    chips = objChip("CLAIMS-" + b.claimSeq);
   } else if (b.kind === "merge_queue_pending") {
     title = t("rd.i.mergeQueue", { count: b.pendingCount });
   } else if (b.kind === "manuscript_hypothesis_unresolved" || b.kind === "manuscript_hypothesis_refuted") {

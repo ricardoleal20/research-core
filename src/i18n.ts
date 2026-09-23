@@ -420,6 +420,14 @@ const DICT: Record<string, Record<Lang, string>> = {
     pt: "{count} trabalho(s) terminado(s)",
     fr: "{count} tâche(s) terminée(s)",
   },
+  // Support checks in the sweep (Story 6.10, FR-23.3): the one-line
+  // verdict names the rollup — the unsupported count never buried.
+  "digest.verdict.support": {
+    es: "{checked} soporte(s) comprobado(s) · {unsupported} sin respaldo",
+    en: "{checked} support checked · {unsupported} unsupported",
+    pt: "{checked} suporte(s) verificado(s) · {unsupported} sem respaldo",
+    fr: "{checked} soutien(s) vérifié(s) · {unsupported} non soutenus",
+  },
   "digest.job.finished": {
     es: "{target} · trabajo {job} · terminado",
     en: "{target} · job {job} · finished",
@@ -1196,6 +1204,44 @@ const DICT: Record<string, Record<Lang, string>> = {
     en: "Merge queue: {count} pending",
     pt: "Fila de fusão: {count} em espera",
     fr: "File de fusion : {count} en attente",
+  },
+  // Support verdicts in the gate (Story 6.10, FR-23.3) — infos, never
+  // blockers: the pin stays pinned; the verdict is a fact to see.
+  "rd.i.supportUnsupported": {
+    es: "Anclada pero no respaldada por la fuente citada",
+    en: "Pinned but unsupported by the citing source",
+    pt: "Ancorada mas sem respaldo da fonte citada",
+    fr: "Ancrée mais non soutenue par la source citée",
+  },
+  "rd.i.supportUnsupported.d": {
+    es: "El juicio de soporte de CLAIMS-{seq} fue «no soporta» — la fuente no sostiene la afirmación; permanece anclada, visible.",
+    en: "CLAIMS-{seq}'s support judgment was «does not support» — the source does not hold the claim up; the pin stays, visible.",
+    pt: "O júdice de suporte de CLAIMS-{seq} foi «não suporta» — a fonte não sustenta a alegação; a âncora permanece visível.",
+    fr: "Le jugement de soutien de CLAIMS-{seq} était « ne soutient pas » — la source ne porte pas l'affirmation ; l'ancre reste visible.",
+  },
+  "rd.i.supportPartial": {
+    es: "La afirmación excede lo que la fuente apoya",
+    en: "The claim asserts more than its source supports",
+    pt: "A alegação afirma mais do que a fonte suporta",
+    fr: "L'affirmation va plus loin que ce que soutient sa source",
+  },
+  "rd.i.supportPartial.d": {
+    es: "El juicio de soporte de CLAIMS-{seq} fue «parcial» — la fuente sostiene una versión más débil de la afirmación.",
+    en: "CLAIMS-{seq}'s support judgment was «partial» — the source supports a weaker assertion than the claim makes.",
+    pt: "O júdice de suporte de CLAIMS-{seq} foi «parcial» — a fonte suporta uma versão mais fraca da alegação.",
+    fr: "Le jugement de soutien de CLAIMS-{seq} était « partiel » — la source soutient une version plus faible que l'affirmation.",
+  },
+  "rd.i.supportUnchecked": {
+    es: "Soporte aún sin verificar tras los barridos",
+    en: "Support still unverified after the sweeps",
+    pt: "Suporte ainda por verificar após os barridos",
+    fr: "Soutien encore non vérifié après les scans",
+  },
+  "rd.i.supportUnchecked.d": {
+    es: "Los barridos no han juzgado CLAIMS-{seq} (sin modelo distinto disponible, respuestas ilegibles o rechazos) — por verificar, nunca supuesto.",
+    en: "The sweeps never judged CLAIMS-{seq} (no different model available, unreadable replies, or refusals) — to-verify, never assumed.",
+    pt: "Os barridos nunca avaliaram CLAIMS-{seq} (sem modelo distinto disponível, respostas ilegíveis ou recusas) — por verificar, nunca suposto.",
+    fr: "Les scans n'ont jamais jugé CLAIMS-{seq} (aucun modèle distinct disponible, réponses illisibles ou refus) — à vérifier, jamais supposé.",
   },
   "rd.i.mergeQueue.d": {
     es: "Las propuestas en cuarentena no son estado del tablero (AD-3) — no bloquean, pero no deberían sorprender.",

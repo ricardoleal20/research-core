@@ -721,6 +721,10 @@ function digestRow(r) {
     verdict = r.jobsFailed
       ? t("digest.job.failed", { target: r.jobVerdict?.target || "", job: (r.jobVerdict?.jobId || "").slice(0, 8), reason: r.jobVerdict?.reason || "?" })
       : t("digest.verdict.jobs", { count: r.jobsFinished });
+  // Story 6.10 (FR-23.3): a sweep night's one-line verdict names the
+  // support rollup — the unsupported count never buried.
+  else if (r.supportChecks > 0)
+    verdict = t("digest.verdict.support", { checked: r.supportChecks, unsupported: r.supportUnsupported });
   else verdict = t("digest.verdict.ok", { runs: r.runs, proposals: r.proposalsPending });
   return `
     <div class="px-6 py-4 hover-row">

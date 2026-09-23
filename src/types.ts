@@ -500,6 +500,10 @@ export interface DigestRow {
   jobsFinished: number;
   jobsFailed: number;
   jobVerdict: DigestJobVerdict | null; // the latest completed job's verdict
+  // Support checks the night swept (Story 6.10, FR-23.3): the one-line
+  // verdict names both counts — the unsupported count never buried.
+  supportChecks: number;
+  supportUnsupported: number;
 }
 
 // One remote job completion's verdict (Story 3.4): which target, which job,
@@ -1006,6 +1010,11 @@ export type ReadinessItemKind =
   | "load_bearing_refuted" // things rest on it; refuted
   | "unreckoned_null_result" // null search; its mission still unresolved
   | "pin_verification_failed" // INFO: pinned, but the machine check failed
+  // INFO (Story 6.10, FR-23.3): the gate consumes the THIRD signal —
+  // support verdicts, never blockers (the pin stays; honesty, not amnesia).
+  | "pin_unsupported" // support says the citing source does not hold the claim up
+  | "pin_partially_supported" // support says the claim asserts more than its source
+  | "support_unchecked" // unverified support after N sweeps — visibly to-verify
   | "merge_queue_pending" // INFO: quarantine is not board state (AD-3)
   // manuscript scope (Story 6.8, FR-20.5): the paper cannot quietly outrun
   // the evidence — each flag references the hypothesis card AND the

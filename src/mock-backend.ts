@@ -892,6 +892,9 @@ const seededRows: DigestRow[] = [
     // one-line verdict, its results waiting in quarantine.
     jobsFinished: 1, jobsFailed: 0,
     jobVerdict: { target: "cluster-1", jobId: "3f2a91c4-77b1-4c5e-9a20-8d41c2b6a0f3", failed: false, reason: null },
+    // Story 6.10: the overnight sweep judged cl41 / cl42 on m24 — one
+    // unsupported, one supported; this seed row carries the honest rollup.
+    supportChecks: 2, supportUnsupported: 1,
   },
   {
     missionId: "m22-seed", missionSeq: 22,
@@ -900,6 +903,7 @@ const seededRows: DigestRow[] = [
     ceilingReached: true, proposalsPending: 0, spendCents: 100, ceilingCents: 100,
     receiptSeq: 102, runId: "nightshift-22", lastRunTs: "2026-09-19T02:14:00Z",
     jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
+    supportChecks: 0, supportUnsupported: 0,
   },
   {
     missionId: "m24-seed", missionSeq: 24,
@@ -908,6 +912,7 @@ const seededRows: DigestRow[] = [
     ceilingReached: false, proposalsPending: 0, spendCents: 31, ceilingCents: 100,
     receiptSeq: 103, runId: "nightshift-24", lastRunTs: "2026-09-19T01:44:00Z",
     jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
+    supportChecks: 0, supportUnsupported: 0,
   },
   {
     missionId: "m26-seed", missionSeq: 26,
@@ -916,6 +921,7 @@ const seededRows: DigestRow[] = [
     ceilingReached: false, proposalsPending: 0, spendCents: 0, ceilingCents: 100,
     receiptSeq: 104, runId: "nightshift-26", lastRunTs: "2026-09-19T02:58:00Z",
     jobsFinished: 0, jobsFailed: 0, jobVerdict: null,
+    supportChecks: 0, supportUnsupported: 0,
   },
 ];
 const seededDigest: MorningDigest = {
@@ -1139,6 +1145,21 @@ const seededReadinessClaims: Claim[] = [
   { id: "cl9-seed", seq: 9, ts: "2026-09-18T22:19:00Z", hypothesisId: "h31-seed",
     text: "Grounding costs under 12% extra latency at 32k context",
     sourceMessageId: null, pinned: false, pin: null },
+  // Story 6.10's seeded demo: a PINNED + machine-verified claim whose
+  // support the sweeps never judged (m21-seed has mockSweeps = 3 — past the
+  // threshold) — the readiness info "soporte aún sin verificar tras los
+  // barridos" renders, never silently assumed fresh.
+  { id: "cl12-seed", seq: 12, ts: "2026-09-18T22:40:00Z", hypothesisId: "h31-seed",
+    text: "Densely-grounded models outperform sparse-grounded ones in long-form generation",
+    sourceMessageId: null, pinned: true, pin: {
+      seq: 58, ts: "2026-09-18T22:41:00Z", claimId: "cl12-seed", hypothesisId: "h31-seed",
+      kind: "citation", refId: "ref-grounding", artifactRef: null,
+      excerpt: "Densely-grounded generation outperforms sparse-grounded generation in long-form settings.",
+      digest: "9d2b41c477b14c5e9a208d41c2b6a0f39d2b41c477b14c5e9a208d41c2b6a0f3",
+      confidence: 0.78, assessingModel: "GLM-5.3", refLabel: "Gao et al. 2023",
+      verification: { status: "verified", detail: "excerpt_matched", source: "arxiv:2305.14627", ts: "2026-09-19T02:02:00Z" },
+      support: null,
+    } },
   // the clean mission's pinned + verified claims. Story 6.9's honest seed:
   // CLAIMS-41 carries the full three-signal combination the board must
   // render without conflating — existence VERIFIED by code, confidence HIGH
@@ -1152,6 +1173,14 @@ const seededReadinessClaims: Claim[] = [
     text: "Memory grows linearly, not quadratically, with context",
     sourceMessageId: null, pinned: true, pin: verifiedPin(61, "cl42-seed", "h33-seed", "ref-sparse", "Memory grows linearly, not quadratically, with context length.", "supported") },
 ];
+
+// Support sweeps per mission (Story 6.10): the mock's count of times the
+// mock Night Shift ran its support-sweep pass — incremented on
+// runNightShiftNow, seeded so the readiness frame can demo the
+// "unverified support after N sweeps" info on a mission the sweep keeps
+// missing (e.g. every candidate model equals the pin's assessing model).
+const SUPPORT_SWEEP_THRESHOLD = 3;
+const mockSweeps: Record<string, number> = { "m21-seed": 3 };
 
 // The mock manuscript-consistency scan (Story 6.8, FR-20.4): mirrors the
 // core's deterministic, non-LLM marker resolution — `\hyp{…}` / `\claim{…}`
@@ -1267,9 +1296,10 @@ function mockMsItem(missionId: string, flag: MockMsFlag): ReadinessItem {
 }
 
 /** The mock readiness fold (mirrors the core's pure derivation): blockers
- *  each referencing their specific board object, verified-failed pins and
- *  merge-queue pending as info rows (never blockers), the four-row trail —
- *  plus the manuscript scope (Story 6.8) when manuscripts are registered. */
+ *  each referencing their specific board object, verified-failed pins,
+ *  support verdicts, support-unchecked-after-N-sweeps and merge-queue
+ *  pending as info rows (never blockers), the four-row trail — plus the
+ *  manuscript scope (Story 6.8) when manuscripts are registered. */
 function mockReadinessReport(missionId: string | null): ReadinessReport {
   const hyps = [...seededReadinessHypotheses, ...hypotheses];
   const allClaims = [...seededReadinessClaims, ...claims];
@@ -1338,7 +1368,9 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
     }
   }
 
-  // infos (never blockers): verified-failed pins + merge-queue pending
+  // infos (never blockers): verified-failed pins, SUPPORT verdicts
+  // (Story 6.10 — the third signal consumed by the gate), unchecked-support
+  // after N sweeps, + merge-queue pending
   for (const c of inScopeClaims.filter((c) => c.pinned && c.pin?.verification?.status === "failed")) {
     infos.push({
       kind: "pin_verification_failed", claimId: c.id, claimSeq: c.seq,
@@ -1346,6 +1378,25 @@ function mockReadinessReport(missionId: string | null): ReadinessReport {
       hypothesisStatus: null, searchSeq: null, missionId: null,
       claimTies: [], relationTies: [], pendingCount: 0,
     });
+  }
+  for (const c of inScopeClaims.filter((c) => c.pinned)) {
+    const support = c.pin?.support;
+    const kind =
+      support?.status === "unsupported" ? "pin_unsupported"
+        : support?.status === "partially" ? "pin_partially_supported"
+          : (support === null || support === undefined || support.status === "stale")
+              && c.hypothesisId !== null
+              && ((mockSweeps[hypById.get(c.hypothesisId)?.missionId ?? ""] ?? 0) >= SUPPORT_SWEEP_THRESHOLD)
+            ? "support_unchecked"
+            : null;
+    if (kind) {
+      infos.push({
+        kind, claimId: c.id, claimSeq: c.seq,
+        hypothesisId: c.hypothesisId, hypothesisSeq: hypById.get(c.hypothesisId)?.seq ?? null,
+        hypothesisStatus: null, searchSeq: null, missionId: null,
+        claimTies: [], relationTies: [], pendingCount: 0,
+      } as ReadinessItem);
+    }
   }
   const pendingProposals = proposals.filter((p) =>
     p.status === "pending" && (!missionId || p.missionId === missionId));
@@ -1556,6 +1607,14 @@ function currentMockDigest(): MorningDigest {
               reason: latestJob.reason ?? null,
             }
           : null,
+        // Support checks (Story 6.10): the mock's sweep tallies per mission
+        // from the live pin state.
+        supportChecks: claims
+          .filter((c) => c.pinned && c.pin && hypotheses.find((h) => h.id === c.hypothesisId)?.missionId === m.id && c.pin.support)
+          .length,
+        supportUnsupported: claims
+          .filter((c) => c.pinned && c.pin && hypotheses.find((h) => h.id === c.hypothesisId)?.missionId === m.id && c.pin.support?.status === "unsupported")
+          .length,
       };
       return row;
     })
@@ -1779,6 +1838,63 @@ function assertDifferentModelCritics(roles: RoleConfig[]): void {
       );
     }
   }
+}
+
+/** The mock's deterministic support judge, shared by the manual command
+ *  (onlyUnchecked=false: an explicit re-check re-judges everything) and the
+ *  mock Night Shift sweep (onlyUnchecked=true: de-duped — a pin already
+ *  judged for its current pin_seq, support non-stale, is never re-asked).
+ *  Mirrors the core's rules: a judge model that always differs from the
+ *  pin's assessing model, word-overlap entailment, honest no_different_model
+ *  skips. */
+function mockJudgePins(onlyUnchecked: boolean, hypothesisId: string | null = null): SupportRunSummary {
+  const judges = ["claude-sonnet-4-5", "glm-5.3", "llama-3.3-70b"];
+  const summary: SupportRunSummary = {
+    checked: 0, supported: 0, partially: 0, unsupported: 0, unverifiable: 0,
+    records: [], claims: [],
+  };
+  for (const claim of claims) {
+    if (hypothesisId && claim.hypothesisId !== hypothesisId) continue;
+    const pin = claim.pin;
+    if (!claim.pinned || !pin) continue; // unpinned — nothing to judge
+    if (onlyUnchecked && pin.support && pin.support.status !== "stale") continue; // de-dup
+    const record: SupportCheckRecord = {
+      claimSeq: claim.seq, verdict: null, confidence: null, judgingModel: null, skip: null,
+    };
+    // THE DIFFERENT-MODEL TEST (mock mirror): the first judge candidate
+    // that differs from the pin's assessing model (case-insensitive).
+    const judge = judges.find(
+      (j) => j.trim().toLowerCase() !== pin.assessingModel.trim().toLowerCase(),
+    );
+    if (!judge) {
+      record.skip = "no_different_model";
+      summary.records.push(record);
+      continue;
+    }
+    // The deterministic entailment heuristic: the fraction of the claim's
+    // significant tokens the excerpt carries — full overlap supports, a
+    // partial overlap supports only a weaker assertion, none does not
+    // support it.
+    const tokens = (s: string) =>
+      s.toLowerCase().split(/[^a-z0-9áéíóúüñ%]+/).filter((tk) => tk.length >= 4);
+    const claimTokens = tokens(claim.text);
+    const excerptTokens = new Set(tokens(pin.excerpt));
+    const overlap = claimTokens.length === 0
+      ? 1
+      : claimTokens.filter((tk) => excerptTokens.has(tk)).length / claimTokens.length;
+    const verdict: SupportVerdict =
+      overlap >= 0.6 ? "supported" : overlap > 0 ? "partially" : "unsupported";
+    const confidence = overlap >= 0.6 ? 0.9 : overlap > 0 ? 0.7 : 0.8;
+    pin.support = { status: verdict, confidence, judgingModel: judge, ts: nowISO() };
+    summary.checked += 1;
+    summary[verdict] += 1;
+    record.verdict = verdict;
+    record.confidence = confidence;
+    record.judgingModel = judge;
+    summary.records.push(record);
+  }
+  summary.records.sort((a, b) => a.claimSeq - b.claimSeq);
+  return summary;
 }
 
 export const mockApi = {
@@ -3166,51 +3282,7 @@ export const mockApi = {
   // wins); an unsupported verdict marks the pin and never deletes it.
   runPinSupportChecks: async (hypothesisId: string | null): Promise<SupportRunSummary> => {
     await delay();
-    const judges = ["claude-sonnet-4-5", "glm-5.3", "llama-3.3-70b"];
-    const summary: SupportRunSummary = {
-      checked: 0, supported: 0, partially: 0, unsupported: 0, unverifiable: 0,
-      records: [], claims: [],
-    };
-    for (const claim of claims) {
-      if (hypothesisId && claim.hypothesisId !== hypothesisId) continue;
-      const pin = claim.pin;
-      if (!claim.pinned || !pin) continue; // unpinned — nothing to judge
-      const record: SupportCheckRecord = {
-        claimSeq: claim.seq, verdict: null, confidence: null, judgingModel: null, skip: null,
-      };
-      // THE DIFFERENT-MODEL TEST (mock mirror): the first judge candidate
-      // that differs from the pin's assessing model (case-insensitive).
-      const judge = judges.find(
-        (j) => j.trim().toLowerCase() !== pin.assessingModel.trim().toLowerCase(),
-      );
-      if (!judge) {
-        record.skip = "no_different_model";
-        summary.records.push(record);
-        continue;
-      }
-      // The deterministic entailment heuristic: the fraction of the claim's
-      // significant tokens the excerpt carries — full overlap supports, a
-      // partial overlap supports only a weaker assertion, none does not
-      // support it.
-      const tokens = (s: string) =>
-        s.toLowerCase().split(/[^a-z0-9áéíóúüñ%]+/).filter((tk) => tk.length >= 4);
-      const claimTokens = tokens(claim.text);
-      const excerptTokens = new Set(tokens(pin.excerpt));
-      const overlap = claimTokens.length === 0
-        ? 1
-        : claimTokens.filter((tk) => excerptTokens.has(tk)).length / claimTokens.length;
-      const verdict: SupportVerdict =
-        overlap >= 0.6 ? "supported" : overlap > 0 ? "partially" : "unsupported";
-      const confidence = overlap >= 0.6 ? 0.9 : overlap > 0 ? 0.7 : 0.8;
-      pin.support = { status: verdict, confidence, judgingModel: judge, ts: nowISO() };
-      summary.checked += 1;
-      summary[verdict] += 1;
-      record.verdict = verdict;
-      record.confidence = confidence;
-      record.judgingModel = judge;
-      summary.records.push(record);
-    }
-    summary.records.sort((a, b) => a.claimSeq - b.claimSeq);
+    const summary = mockJudgePins(false, hypothesisId);
     summary.claims = claims
       .filter((c) => !hypothesisId || c.hypothesisId === hypothesisId)
       .map((c) => ({ ...c, pin: c.pin ? { ...c.pin } : null }));
@@ -3354,6 +3426,20 @@ export const mockApi = {
         );
       }
       push("run.finished");
+      // Story 6.10 (FR-23.3): the support sweep — de-duped, never re-asks a
+      // judged pin; a mission with nothing to judge opens no sweep run.
+      const missionClaims = claims.filter(
+        (c) => hypotheses.find((h) => h.id === c.hypothesisId)?.missionId === mission.id,
+      );
+      const hasUnchecked = missionClaims.some(
+        (c) => c.pinned && (!c.pin?.support || c.pin.support.status === "stale"),
+      );
+      if (hasUnchecked) {
+        push("run.started");
+        mockSweeps[mission.id] = (mockSweeps[mission.id] ?? 0) + 1;
+        mockJudgePins(true);
+        push("run.finished");
+      }
     }
     const d = currentMockDigest();
     return { ...d, rows: d.rows.map((r) => ({ ...r })), alerts: d.alerts.map((a) => ({ ...a })) };
