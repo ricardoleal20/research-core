@@ -1954,7 +1954,7 @@ mod tests {
         let outcome = {
             let conn = db.0.lock().await;
             let store = EventStore::new(&conn);
-            proposals::approve(&store, p.id, false)
+            proposals::approve(&store, p.id, false, None)
                 .map_err(|e| EventError::Invalid(e.to_string()))
                 .unwrap()
         };

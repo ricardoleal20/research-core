@@ -100,18 +100,25 @@ pub struct ProposalCreatedPayload {
 }
 
 /// The `merge.approved` payload: which proposal, whether the human forced
-/// past a stale basis, and the recorded `basis_stale` marker (true only on a
-/// forced merge past a stale basis — the UI surfaces it).
+/// past a stale basis, the recorded `basis_stale` marker (true only on a
+/// forced merge past a stale basis — the UI surfaces it), and the surface
+/// the decision came from (`None` = the desktop review surface; a remote
+/// one-tap carries `mobile` — Story 6.16, NFR-13: every remote decision is
+/// evented with surface attribution visible in receipts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MergeApprovedPayload {
     pub proposal_id: Uuid,
     pub force: bool,
     pub basis_stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MergeRejectedPayload {
     pub proposal_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,18 +206,26 @@ impl NewEvent {
         proposal_id: Uuid,
         force: bool,
         basis_stale: bool,
+        surface: Option<&str>,
     ) -> Result<Self, EventError> {
         let payload = MergeApprovedPayload {
             proposal_id,
             force,
             basis_stale,
+            surface: surface.map(str::to_string),
         };
         Ok(Self::new(MERGE_APPROVED, Actor::User, serde_json::to_value(&payload)?)?
             .with_causes(vec![proposal_id]))
     }
 
-    pub(crate) fn merge_rejected(proposal_id: Uuid) -> Result<Self, EventError> {
-        let payload = MergeRejectedPayload { proposal_id };
+    pub(crate) fn merge_rejected(
+        proposal_id: Uuid,
+        surface: Option<&str>,
+    ) -> Result<Self, EventError> {
+        let payload = MergeRejectedPayload {
+            proposal_id,
+            surface: surface.map(str::to_string),
+        };
         Ok(Self::new(MERGE_REJECTED, Actor::User, serde_json::to_value(&payload)?)?
             .with_causes(vec![proposal_id]))
     }
@@ -270,13 +285,17 @@ fn validate_proposed_payload(
 }
 
 /// The receipt stamp of the event that decided a proposal (merged, rejected,
-/// superseded, or voided): seq, ts, actor — never silent, never anonymous.
+/// superseded, or voided): seq, ts, actor — never silent, never anonymous —
+/// and, for remote decisions, the surface they came from (`mobile`,
+/// NFR-13/Story 6.16: visible in receipts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionStamp {
     pub seq: i64,
     pub ts: DateTime<Utc>,
     pub actor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
 }
 
 /// A proposal as read from the log (AD-8) — the quarantine read model the
@@ -687,6 +706,13 @@ fn decide(
             event.kind, event.seq, corrupt
         )));
     }
+    // Remote decisions carry their surface in the payload (NFR-13) — the
+    // desktop's own decisions carry none.
+    let surface = event
+        .payload
+        .get("surface")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
     proposal.status = to;
     proposal.decided = Some(DecisionStamp {
         seq: event.seq,
@@ -698,6 +724,7 @@ fn decide(
                 format!("system:{}", format!("{component:?}").to_lowercase())
             }
         },
+        surface,
     });
     Ok(())
 }
@@ -827,11 +854,14 @@ pub fn propose_evidence_pin(
 /// the `basis_stale` marker the UI surfaces. Merging supersedes conflicting
 /// pending siblings (same target, same proposed kind, same basis — true
 /// alternatives), and the superseded list is returned so the surface can
-/// show what was displaced.
+/// show what was displaced. `surface` names the deciding surface when the
+/// decision is remote (`Some("mobile")` through the bridge, NFR-13) — the
+/// desktop review surface passes `None`.
 pub fn approve(
     store: &EventStore<'_>,
     proposal_id: Uuid,
     force: bool,
+    surface: Option<&str>,
 ) -> Result<ApproveOutcome, ProposalError> {
     let events = store.events_all()?;
     let proposals = ProposalsProjection::fold(&events)?;
@@ -882,7 +912,7 @@ pub fn approve(
         });
     }
     // The approval — the only construction site (crate-private ctor above).
-    store.append(NewEvent::merge_approved(proposal_id, force, stale)?)?;
+    store.append(NewEvent::merge_approved(proposal_id, force, stale, surface)?)?;
     // Conflicting pending siblings: same target, same kind, same basis —
     // alternatives derived from the same state. The merge supersedes them.
     let sibling_ids: Vec<Uuid> = proposals
@@ -919,8 +949,13 @@ pub fn approve(
 
 /// Reject a pending proposal — the change never applies, the proposal stays
 /// in the log with its rejection receipt. A decided proposal can never be
-/// rejected (or merged) again.
-pub fn reject(store: &EventStore<'_>, proposal_id: Uuid) -> Result<Proposal, ProposalError> {
+/// rejected (or merged) again. `surface` names the deciding surface when the
+/// rejection is remote (`Some("mobile")` through the bridge, NFR-13).
+pub fn reject(
+    store: &EventStore<'_>,
+    proposal_id: Uuid,
+    surface: Option<&str>,
+) -> Result<Proposal, ProposalError> {
     let events = store.events_all()?;
     let proposals = ProposalsProjection::fold(&events)?;
     let proposal = proposals
@@ -933,7 +968,7 @@ pub fn reject(store: &EventStore<'_>, proposal_id: Uuid) -> Result<Proposal, Pro
             status: proposal.status,
         });
     }
-    store.append(NewEvent::merge_rejected(proposal_id)?)?;
+    store.append(NewEvent::merge_rejected(proposal_id, surface)?)?;
     let after = ProposalsProjection::fold(&store.events_all()?)?;
     Ok(after
         .into_iter()
@@ -1145,7 +1180,7 @@ mod tests {
         // excluded: the board still reads the pre-proposal state
         assert_eq!(board_status(&store, h.id), Proposed);
         // approve → the fold applies the intended transition at the approval
-        let outcome = approve(&store, p.id, false).unwrap();
+        let outcome = approve(&store, p.id, false, None).unwrap();
         assert_eq!(outcome.proposal.status, ProposalStatus::Merged);
         assert!(outcome.superseded.is_empty());
         assert_eq!(board_status(&store, h.id), Testing);
@@ -1178,7 +1213,7 @@ mod tests {
         assert!(t.seq > p.basis_seq);
         let head = store.head_seq().unwrap();
         // the merge is refused with the typed error carrying both seqs
-        let err = approve(&store, p.id, false).unwrap_err();
+        let err = approve(&store, p.id, false, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("basis_stale"), "unexpected: {msg}");
         assert!(msg.contains(&format!("{}", p.basis_seq)), "carries the basis seq: {msg}");
@@ -1204,7 +1239,7 @@ mod tests {
         let p = propose_transition(&store, "run-7", h.id, Testing, "pins hold").unwrap();
         user_transitions(&store, h.id, Proposed, Testing, "user ran the suite first");
         // force past the stale basis: the approval records the marker
-        let outcome = approve(&store, p.id, true).unwrap();
+        let outcome = approve(&store, p.id, true, None).unwrap();
         assert_eq!(outcome.proposal.status, ProposalStatus::Merged);
         assert!(outcome.proposal.basis_stale, "the marker the UI must surface");
         let merge = store
@@ -1226,15 +1261,15 @@ mod tests {
         let m = seed_mission(&store);
         let h = seed_hypothesis(&store, m);
         let p = propose_transition(&store, "run-7", h.id, Testing, "pins hold").unwrap();
-        approve(&store, p.id, false).unwrap();
+        approve(&store, p.id, false, None).unwrap();
         let head = store.head_seq().unwrap();
-        let err = approve(&store, p.id, false).unwrap_err();
+        let err = approve(&store, p.id, false, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("not_pending"), "unexpected: {msg}");
         assert!(msg.contains("merged"), "names the current status: {msg}");
         assert_eq!(store.head_seq().unwrap(), head, "nothing was appended");
         // forcing does not help — a decided proposal is decided
-        let err = approve(&store, p.id, true).unwrap_err();
+        let err = approve(&store, p.id, true, None).unwrap_err();
         assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
     }
 
@@ -1261,8 +1296,8 @@ mod tests {
         assert!(p1.seq < p2.seq, "proposal order: P1 before P2");
         assert_ne!(p1.basis_seq, p2.basis_seq, "different bases — not conflicting siblings");
         // approvals in opposite order: P2 (clean), then P1 (forced)
-        approve(&store, p2.id, false).unwrap();
-        let out1 = approve(&store, p1.id, true).unwrap();
+        approve(&store, p2.id, false, None).unwrap();
+        let out1 = approve(&store, p1.id, true, None).unwrap();
         assert!(out1.proposal.basis_stale, "P1 merged past its stale basis");
         // the fold applied by approval order: P1 (last approved) wins
         assert_eq!(board_status(&store, h.id), Testing, "approval order: P1's to wins");
@@ -1281,8 +1316,8 @@ mod tests {
         let p1 = propose_transition(&store, "run-7", h.id, Testing, "first: move to testing").unwrap();
         user_transitions(&store, h.id, Proposed, Testing, "user advanced the entity");
         let p2 = propose_transition(&store, "run-8", h.id, Supported, "second: evidence holds").unwrap();
-        approve(&store, p1.id, true).unwrap();
-        approve(&store, p2.id, true).unwrap();
+        approve(&store, p1.id, true, None).unwrap();
+        approve(&store, p2.id, true, None).unwrap();
         assert_eq!(board_status(&store, h.id), Supported, "creation-order approvals end on P2's to");
         // the divergence: the two orders fold to different states, each
         // deterministic — a proposal-order fold would always end on P2's
@@ -1302,7 +1337,7 @@ mod tests {
         let p2 = propose_transition(&store, "run-8", h.id, Testing, "alternative B").unwrap();
         assert_eq!(p1.basis_seq, p2.basis_seq, "same basis — true alternatives");
         // merging P2 supersedes the pending sibling P1
-        let outcome = approve(&store, p2.id, false).unwrap();
+        let outcome = approve(&store, p2.id, false, None).unwrap();
         assert_eq!(outcome.superseded.len(), 1);
         assert_eq!(outcome.superseded[0].id, p1.id);
         assert_eq!(outcome.superseded[0].status, ProposalStatus::Superseded);
@@ -1317,7 +1352,7 @@ mod tests {
         assert!(p1_after.decided.is_some(), "the supersession carries a receipt stamp");
         // a later merge attempt on the superseded sibling fails loudly
         let head = store.head_seq().unwrap();
-        let err = approve(&store, p1.id, false).unwrap_err();
+        let err = approve(&store, p1.id, false, None).unwrap_err();
         assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
         assert!(err.to_string().contains("superseded"), "unexpected: {err}");
         assert_eq!(store.head_seq().unwrap(), head, "nothing was appended");
@@ -1336,7 +1371,7 @@ mod tests {
         let p1 = propose_transition(&store, "run-7", h.id, Testing, "first").unwrap();
         user_transitions(&store, h.id, Proposed, Testing, "user advanced");
         let p2 = propose_transition(&store, "run-8", h.id, Supported, "second").unwrap();
-        let outcome = approve(&store, p2.id, false).unwrap();
+        let outcome = approve(&store, p2.id, false, None).unwrap();
         assert!(outcome.superseded.is_empty(), "different bases — no supersession");
         let p1_after = ProposalsProjection::fold(&store.events_all().unwrap())
             .unwrap()
@@ -1357,10 +1392,10 @@ mod tests {
         let h = seed_hypothesis(&store, m);
         // rejected
         let p1 = propose_transition(&store, "run-7", h.id, Testing, "will be rejected").unwrap();
-        let rejected = reject(&store, p1.id).unwrap();
+        let rejected = reject(&store, p1.id, None).unwrap();
         assert_eq!(rejected.status, ProposalStatus::Rejected);
         assert!(rejected.decided.is_some());
-        let err = approve(&store, p1.id, false).unwrap_err();
+        let err = approve(&store, p1.id, false, None).unwrap_err();
         assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
         assert!(err.to_string().contains("rejected"), "unexpected: {err}");
         assert_eq!(board_status(&store, h.id), Proposed, "a rejection never touches the board");
@@ -1368,11 +1403,11 @@ mod tests {
         let p2 = propose_transition(&store, "run-8", h.id, Testing, "will be voided").unwrap();
         let voided = void(&store, p2.id).unwrap();
         assert_eq!(voided.status, ProposalStatus::Voided);
-        let err = approve(&store, p2.id, true).unwrap_err();
+        let err = approve(&store, p2.id, true, None).unwrap_err();
         assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
         assert!(err.to_string().contains("voided"), "unexpected: {err}");
         // a decided proposal can also never be re-rejected
-        let err = reject(&store, p1.id).unwrap_err();
+        let err = reject(&store, p1.id, None).unwrap_err();
         assert!(err.to_string().contains("not_pending"), "unexpected: {err}");
     }
 
@@ -1380,8 +1415,8 @@ mod tests {
     fn reject_and_void_refuse_unknown_proposals_without_appending() {
         let conn = mem_conn();
         let store = EventStore::new(&conn);
-        assert!(approve(&store, Uuid::new_v4(), false).unwrap_err().to_string().contains("not_found"));
-        assert!(reject(&store, Uuid::new_v4()).unwrap_err().to_string().contains("not_found"));
+        assert!(approve(&store, Uuid::new_v4(), false, None).unwrap_err().to_string().contains("not_found"));
+        assert!(reject(&store, Uuid::new_v4(), None).unwrap_err().to_string().contains("not_found"));
         assert!(void(&store, Uuid::new_v4()).unwrap_err().to_string().contains("not_found"));
         assert_eq!(store.head_seq().unwrap(), 0, "nothing was appended");
     }
@@ -1395,10 +1430,10 @@ mod tests {
         let m = seed_mission(&store);
         let h = seed_hypothesis(&store, m);
         let p = propose_transition(&store, "run-7", h.id, Testing, "pins hold").unwrap();
-        approve(&store, p.id, false).unwrap();
+        approve(&store, p.id, false, None).unwrap();
         // a second merge.approved appended by hand (the command path refuses
         // it first) — the fold must fail loudly, not silently re-decide
-        store.append(NewEvent::merge_approved(p.id, false, false).unwrap()).unwrap();
+        store.append(NewEvent::merge_approved(p.id, false, false, None).unwrap()).unwrap();
         let err = ProposalsProjection::fold(&store.events_all().unwrap())
             .expect_err("a double decide contradicts the log");
         assert!(err.to_string().contains("not pending"), "unexpected: {err}");
@@ -1409,8 +1444,8 @@ mod tests {
         let conn = mem_conn();
         let store = EventStore::new(&conn);
         let ghost = Uuid::new_v4();
-        store.append(NewEvent::merge_approved(ghost, false, false).unwrap()).unwrap();
-        store.append(NewEvent::merge_rejected(ghost).unwrap()).unwrap();
+        store.append(NewEvent::merge_approved(ghost, false, false, None).unwrap()).unwrap();
+        store.append(NewEvent::merge_rejected(ghost, None).unwrap()).unwrap();
         assert!(ProposalsProjection::fold(&store.events_all().unwrap())
             .unwrap()
             .is_empty());
@@ -1571,7 +1606,7 @@ mod tests {
                 .any(|e| e.kind == EVIDENCE_PINNED),
             "the intended pin never lands as its own event"
         );
-        let merge = approve(&store, p.id, false).unwrap();
+        let merge = approve(&store, p.id, false, None).unwrap();
         assert_eq!(merge.proposal.status, ProposalStatus::Merged);
         // part 2: still no evidence.pinned event — the fold applies the
         // intended pin AT the merge (AD-13), and no actor=agent path ever
@@ -1633,7 +1668,7 @@ mod tests {
         // the hypothesis advances past the pin proposal's basis
         user_transitions(&store, h.id, Proposed, Testing, "user ran the suite first");
         let head = store.head_seq().unwrap();
-        let err = approve(&store, p.id, false).unwrap_err();
+        let err = approve(&store, p.id, false, None).unwrap_err();
         assert!(err.to_string().contains("basis_stale"), "unexpected: {err}");
         assert_eq!(store.head_seq().unwrap(), head, "the refusal is a dry run");
         // the pending read model carries the derived stale flag
@@ -1644,7 +1679,7 @@ mod tests {
             .unwrap();
         assert!(pending.basis_stale, "the pending card renders the warning variant");
         // forced: the marker is recorded, and the pin still applies
-        let outcome = approve(&store, p.id, true).unwrap();
+        let outcome = approve(&store, p.id, true, None).unwrap();
         assert!(outcome.proposal.basis_stale, "the marker the UI must surface");
         let [c] = EvidenceProjection::fold(&store.events_all().unwrap())
             .unwrap()
@@ -1693,10 +1728,10 @@ mod tests {
             )
             .unwrap();
         let head = store.head_seq().unwrap();
-        let err = approve(&store, p.id, false).unwrap_err();
+        let err = approve(&store, p.id, false, None).unwrap_err();
         assert!(err.to_string().contains("digest_mismatch"), "unexpected: {err}");
         // force does not help — a corrupt candidate never merges
-        let err = approve(&store, p.id, true).unwrap_err();
+        let err = approve(&store, p.id, true, None).unwrap_err();
         assert!(err.to_string().contains("digest_mismatch"), "unexpected: {err}");
         assert_eq!(store.head_seq().unwrap(), head, "nothing was appended");
         // and nothing was pinned

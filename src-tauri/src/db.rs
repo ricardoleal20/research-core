@@ -179,6 +179,11 @@ impl Db {
             );
             ",
         )?;
+        // Bridge pairing tokens (Story 6.14, FR-21.1): the sha-256 of each
+        // paired device's one-time token — the raw token is returned once at
+        // pairing time and never stored. The audit trail (pair/unpair) lives
+        // in the events log, not here.
+        conn.execute_batch(crate::domain::bridge::BRIDGE_TOKENS_SCHEMA)?;
         // Epic-5 chat intelligence: the chats/messages baseline grows its
         // mission-scope and skill columns — `CREATE TABLE IF NOT EXISTS`
         // cannot evolve an existing workspace, so the columns ALTER into

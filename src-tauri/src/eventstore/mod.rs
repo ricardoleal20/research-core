@@ -66,6 +66,9 @@ pub enum SystemComponent {
     Verifier,
     Telemetry,
     Runtime,
+    /// The bridge channel (Story 6.14): failed-push events — a push that
+    /// never reached its surface is visible, never a silent miss.
+    Bridge,
 }
 
 /// An event before it is appended: `seq` is not yet assigned (the store
@@ -284,6 +287,7 @@ mod tests {
             SystemComponent::Verifier,
             SystemComponent::Telemetry,
             SystemComponent::Runtime,
+            SystemComponent::Bridge,
         ] {
             let s = serde_json::to_string(&Actor::System { component }).unwrap();
             let back: Actor = serde_json::from_str(&s).unwrap();

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -46,6 +46,98 @@ async function httpJson<T>(path: string): Promise<T> {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json() as Promise<T>;
 }
+
+// The mobile companion transport (Story 6.15, FR-21.2, NFR-13): when this
+// page is served at `/m` by the bridge, every read and remote command
+// carries the pairing token (`X-RC-Pairing`) — unpaired requests are
+// refused with 401 `unpaired:` and the companion renders the pairing form.
+// The token lives in localStorage on the paired surface only; the home
+// machine stores just its sha-256. In plain `vite` dev the mock answers.
+export const onMobile: boolean =
+  typeof window !== "undefined" &&
+  (window.location.pathname === "/m" || window.location.pathname.startsWith("/m/"));
+
+export const pairingToken = (): string =>
+  (typeof localStorage !== "undefined" ? localStorage.getItem("rc-pairing") : "") || "";
+
+export function setPairingToken(token: string): void {
+  localStorage.setItem("rc-pairing", token);
+}
+
+async function mJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(path, {
+    ...init,
+    headers: { ...(init?.headers || {}), "X-RC-Pairing": pairingToken() },
+  });
+  if (r.status === 401) {
+    const body = await r.json().catch(() => null);
+    throw new Error(body?.error || `unpaired: this surface has no pairing with this deployment`);
+  }
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    throw new Error(body?.error || `HTTP ${r.status}`);
+  }
+  return (await r.json()) as T;
+}
+
+// Is a core serving this /m page? A 401 still proves the bridge answers —
+// the surface is simply unpaired (the pairing form takes over). Only a
+// dead fetch means plain `vite` dev → the mock.
+export const mobileServedByCore: Promise<boolean> = onMobile
+  ? fetch("/api/missions", { headers: { "X-RC-Pairing": pairingToken() } })
+      .then((r) => r.ok || r.status === 401)
+      .catch(() => false)
+  : Promise.resolve(false);
+
+// The companion's whole vocabulary (PRD §10 + NFR-5/NFR-13): status reads,
+// quick-capture, and one-tap approve/reject on pending quarantine
+// proposals. No board editing, no manuscript editing, no settings — deep
+// work stays on the laptop.
+export const mobileApi = {
+  listMissions: async (): Promise<Mission[]> =>
+    (await mobileServedByCore) ? mJson<Mission[]>("/api/missions") : mockApi.listMissions(),
+  getDashboardSummary: async (): Promise<DashboardSummary> =>
+    (await mobileServedByCore) ? mJson<DashboardSummary>("/api/dashboard") : mockApi.getDashboardSummary(),
+  getMorningDigest: async (): Promise<MorningDigest> =>
+    (await mobileServedByCore) ? mJson<MorningDigest>("/api/digest") : mockApi.getMorningDigest(),
+  getTrustStatus: async (): Promise<TrustStatus> =>
+    (await mobileServedByCore) ? mJson<TrustStatus>("/api/trust") : mockApi.getTrustStatus(),
+  listProposals: async (): Promise<Proposal[]> =>
+    (await mobileServedByCore) ? mJson<Proposal[]>("/api/proposals") : mockApi.listProposals(null),
+  // Quick-capture (Story 6.15, FR-21.3): a question lands on the home
+  // machine as a pending mission card — the companion's one creation verb.
+  quickCapture: async (question: string): Promise<Mission> => {
+    if (await mobileServedByCore) {
+      return mJson<Mission>("/api/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+    }
+    return mockApi.quickCapture(question, "mobile");
+  },
+  // One-tap approve/reject (Story 6.16): the SAME typed merge commands the
+  // desktop review surface calls, routed through the bridge with surface
+  // attribution — bounded, typed errors, never a blind merge.
+  approveProposal: async (proposalId: string, force: boolean): Promise<ApproveOutcome> => {
+    if (await mobileServedByCore) {
+      return mJson<ApproveOutcome>(`/api/proposals/${encodeURIComponent(proposalId)}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      });
+    }
+    return mockApi.approveProposal(proposalId, force);
+  },
+  rejectProposal: async (proposalId: string): Promise<Proposal> => {
+    if (await mobileServedByCore) {
+      return mJson<Proposal>(`/api/proposals/${encodeURIComponent(proposalId)}/reject`, {
+        method: "POST",
+      });
+    }
+    return mockApi.rejectProposal(proposalId);
+  },
+};
 
 const browserApi = {
   ...mockApi,
@@ -802,6 +894,100 @@ const browserApi = {
     }
     return mockApi.rejectManuscriptDiff(_proposalId);
   },
+  // Quick-capture + draft completion (Story 6.15, FR-21.3): mutations — the
+  // served read-only view refuses them; the mock keeps the flow working in
+  // plain `vite` dev (the mobile companion uses its own transport).
+  quickCapture: async (_question: string, _surface?: string | null) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — capture from the desktop app or the paired companion / " +
+          "Vista de solo lectura — captura desde la app de escritorio o el compañero emparejado",
+      );
+    }
+    return mockApi.quickCapture(_question, _surface);
+  },
+  completeCapturedMission: async (
+    _missionId: string,
+    _stopCondition: string,
+    _successCriterion: string,
+    _autonomy: Autonomy,
+    _spendCeilingCents: number,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — complete drafts from the desktop app / " +
+          "Vista de solo lectura — completa los borradores desde la app de escritorio",
+      );
+    }
+    return mockApi.completeCapturedMission(_missionId, _stopCondition, _successCriterion, _autonomy, _spendCeilingCents);
+  },
+  // The bridge commands (Story 6.14, FR-21.1): process-level channel
+  // management — desktop actions, refused in the served read-only view.
+  bridgeStatus: async (): Promise<BridgeStatusView> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the bridge from the desktop app / " +
+          "Vista de solo lectura — gestiona el puente desde la app de escritorio",
+      );
+    }
+    return mockApi.bridgeStatus();
+  },
+  enableBridge: async (
+    _mode: string,
+    _listenAddr?: string | null,
+    _chopflowUrl?: string | null,
+    _chopflowToken?: string | null,
+  ) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the bridge from the desktop app / " +
+          "Vista de solo lectura — gestiona el puente desde la app de escritorio",
+      );
+    }
+    return mockApi.enableBridge(_mode, _listenAddr, _chopflowUrl, _chopflowToken);
+  },
+  disableBridge: async () => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the bridge from the desktop app / " +
+          "Vista de solo lectura — gestiona el puente desde la app de escritorio",
+      );
+    }
+    return mockApi.disableBridge();
+  },
+  pairBridgeDevice: async (_deviceName: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — pair devices from the desktop app / " +
+          "Vista de solo lectura — empareja dispositivos desde la app de escritorio",
+      );
+    }
+    return mockApi.pairBridgeDevice(_deviceName);
+  },
+  unpairBridgeDevice: async (_deviceName: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage pairings from the desktop app / " +
+          "Vista de solo lectura — gestiona los emparejamientos desde la app de escritorio",
+      );
+    }
+    return mockApi.unpairBridgeDevice(_deviceName);
+  },
+  listBridgeDevices: async (): Promise<PairedDevice[]> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — see pairings from the desktop app / " +
+          "Vista de solo lectura — consulta los emparejamientos desde la app de escritorio",
+      );
+    }
+    return mockApi.listBridgeDevices();
+  },
+  // The notifications read (Story 6.16, FR-21.4): pending proposals +
+  // digest-ready — verdict summaries only (NFR-13).
+  listNotifications: async (): Promise<NotificationItem[]> => {
+    if (await servedByCore) return httpJson<NotificationItem[]>("/api/notifications");
+    return mockApi.listNotifications();
+  },
 };
 
 // When the Tauri runtime is absent (plain browser via `vite`), the browser
@@ -1145,6 +1331,45 @@ export const api = mockActive ? browserApi : {
   // idempotent — a second fetch appends nothing. The merge pins it.
   fetchJobResults: (jobId: string) =>
     invoke<FetchedJobResults>("fetch_job_results", { jobId }),
+
+  // quick-capture (Story 6.15, FR-21.3): a captured question lands as a
+  // pending mission card — a draft awaiting its terminators; completion is
+  // the owner's explicit launch (capture never launches, FR-1.2)
+  quickCapture: (question: string, surface?: string | null) =>
+    invoke<Mission>("quick_capture", { question, surface: surface ?? null }),
+  completeCapturedMission: (
+    missionId: string,
+    stopCondition: string,
+    successCriterion: string,
+    autonomy: Autonomy,
+    spendCeilingCents: number,
+  ) =>
+    invoke<Mission>("complete_captured_mission", {
+      missionId,
+      stopCondition,
+      successCriterion,
+      autonomy,
+      spendCeilingCents,
+    }),
+
+  // the bridge (Story 6.14, FR-21.1, NFR-13): the ONE remote channel —
+  // enable/disable, status, and the pairing ledger
+  bridgeStatus: () => invoke<BridgeStatusView>("bridge_status"),
+  enableBridge: (mode: string, listenAddr?: string | null, chopflowUrl?: string | null, chopflowToken?: string | null) =>
+    invoke<BridgeStatusView>("enable_bridge", {
+      mode,
+      listenAddr: listenAddr ?? null,
+      chopflowUrl: chopflowUrl ?? null,
+      chopflowToken: chopflowToken ?? null,
+    }),
+  disableBridge: () => invoke<BridgeStatusView>("disable_bridge"),
+  pairBridgeDevice: (deviceName: string) =>
+    invoke<PairingReceipt>("pair_bridge_device", { deviceName }),
+  unpairBridgeDevice: (deviceName: string) =>
+    invoke<PairedDevice[]>("unpair_bridge_device", { deviceName }),
+  listBridgeDevices: () => invoke<PairedDevice[]>("list_bridge_devices"),
+  // the notification bell's read (Story 6.16, FR-21.4): verdict summaries only
+  listNotifications: () => invoke<NotificationItem[]>("list_notifications"),
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),

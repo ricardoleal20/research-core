@@ -64,7 +64,7 @@ pub async fn approve_proposal(
         .map_err(|e| format!("invalid proposal id `{proposal_id}`: {e}"))?;
     let c = db.0.lock().await;
     let store = EventStore::new(&c);
-    proposals::approve(&store, proposal_id, force).map_err(err)
+    proposals::approve(&store, proposal_id, force, None).map_err(err)
 }
 
 /// Reject a pending proposal — the change never applies; the proposal stays
@@ -80,5 +80,5 @@ pub async fn reject_proposal(
         .map_err(|e| format!("invalid proposal id `{proposal_id}`: {e}"))?;
     let c = db.0.lock().await;
     let store = EventStore::new(&c);
-    proposals::reject(&store, proposal_id).map_err(err)
+    proposals::reject(&store, proposal_id, None).map_err(err)
 }

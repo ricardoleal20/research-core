@@ -1,10 +1,11 @@
 // In-process server shell (AD-7): an axum server embedded in the Tauri app
 // process, serving the built Svelte UI at http://localhost:PORT and a small
 // READ-ONLY API over the SAME core instance — single process, single writer
-// (AD-14). Mutations stay on the Tauri command path in v1: this server
-// exposes no mutation endpoints by design. Scope: the minimal shell that
-// satisfies the AD-7 browser-identity AC — bridges, auth, and remote access
-// are v0.2.0.
+// (AD-14). Mutations stay on the Tauri command path: this localhost server
+// exposes no mutation endpoints by design. Remote access (v0.2.0, Story
+// 6.14) plugs in as the bridge (crate::bridge) — the same read slice plus
+// the explicitly typed remote commands, behind pairing — never a second
+// network path and never a second writer.
 
 use crate::chat_commands::list_skills_inner;
 use crate::dashboard_commands::{dashboard_summary_inner, DashboardSummary};
@@ -48,14 +49,18 @@ pub fn port() -> u16 {
 }
 
 #[derive(Clone)]
-struct ServerState {
+pub(crate) struct ServerState {
     /// The shared core handle — same instance, same connection, same writer.
-    db: Db,
+    pub(crate) db: Db,
     /// The app data dir (serves the stored compiled PDFs).
-    data_dir: std::path::PathBuf,
+    pub(crate) data_dir: std::path::PathBuf,
 }
 
-pub fn router(db: Db, dist_dir: std::path::PathBuf, data_dir: std::path::PathBuf) -> Router {
+/// The READ-ONLY API slice (AD-14): every `/api` read the served browser
+/// view and the bridge's remote surfaces render over. Shared by the
+/// localhost server shell and the bridge (Story 6.14) — one read contract,
+/// never a second channel.
+pub(crate) fn read_api_router() -> Router<ServerState> {
     Router::new()
         .route("/api/missions", get(list_missions))
         .route("/api/dashboard", get(dashboard))
@@ -110,6 +115,24 @@ pub fn router(db: Db, dist_dir: std::path::PathBuf, data_dir: std::path::PathBuf
             "/api/manuscript/{mission_id}/diffs",
             get(manuscript_diffs),
         )
+        .route("/api/notifications", get(notifications))
+}
+
+/// The notifications read (Story 6.16, FR-21.4, NFR-13): pending quarantine
+/// proposals + the digest-ready notice, each a verdict summary in code form
+/// — never research content beyond the summary. A pure composition over the
+/// shared folds (proposals + digest) — a render never appends.
+async fn notifications(
+    State(state): State<ServerState>,
+) -> Result<Json<Vec<crate::bridge::NotificationItem>>, StatusCode> {
+    crate::bridge::notifications(&state.db)
+        .await
+        .map(Json)
+        .map_err(|_| internal())
+}
+
+pub fn router(db: Db, dist_dir: std::path::PathBuf, data_dir: std::path::PathBuf) -> Router {
+    read_api_router()
         .with_state(ServerState { db, data_dir })
         // The same built Svelte UI the desktop webview loads (frontend dist).
         .fallback_service(ServeDir::new(dist_dir))
@@ -511,8 +534,9 @@ async fn library_refs(
 /// Resolve the frontend dist dir: `RC_DIST_DIR` override, else the compile-time
 /// repo path (dev and local runs). In an installed bundle the UI ships as
 /// Tauri assets and this dir does not exist — the server then serves only the
-/// API, which is honest for this story's scope.
-fn dist_dir() -> std::path::PathBuf {
+/// API, which is honest for this story's scope. Shared with the bridge
+/// (Story 6.14): the tunnel serves the same built UI at `/m`.
+pub(crate) fn dist_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("RC_DIST_DIR") {
         return std::path::PathBuf::from(dir);
     }
@@ -1708,5 +1732,65 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The notifications route (Story 6.16, FR-21.4, NFR-13): verdict
+    /// summaries only — pending proposals as code-form lines, plus the
+    /// digest-ready notice — over the shared folds. A read: POST is not
+    /// routed (single writer, AD-14).
+    #[tokio::test]
+    async fn get_api_notifications_serves_verdict_summaries_read_only() {
+        let db = test_db();
+        {
+            let c = db.0.lock().await;
+            let store = EventStore::new(&c);
+            let mission = store
+                .append(NewEvent::mission_created(MissionCreatedPayload {
+                    question: "Does X hold up?".into(),
+                    stop_condition: "Stop after $5.".into(),
+                    success_criterion: "A blind rater agrees.".into(),
+                    autonomy: Autonomy::Watch,
+                    spend_ceiling_cents: 500,
+                    schedule: "daily-03:00".into(),
+                    roles: vec![],
+                })
+                .unwrap())
+                .unwrap();
+            let hyp = store
+                .append(NewEvent::hypothesis_created("X holds.", mission.id).unwrap())
+                .unwrap();
+            crate::domain::proposals::propose_transition(
+                &store,
+                "run-7",
+                hyp.id,
+                crate::domain::hypotheses::HypothesisStatus::Testing,
+                "run 7 suggests testing",
+            )
+            .unwrap();
+        }
+        let res = app(db.clone())
+            .oneshot(Request::get("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let items: Vec<crate::bridge::NotificationItem> = body_json(res.into_body()).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, "proposal");
+        assert!(items[0].summary.contains("hypothesis.status_changed → testing"));
+        assert!(!items[0].summary.contains("X holds"), "no statements — summaries only (NFR-13)");
+        // an empty core notifies honestly — nothing pending, no digest
+        let res = app(test_db())
+            .oneshot(Request::get("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let items: Vec<crate::bridge::NotificationItem> = body_json(res.into_body()).await;
+        assert!(items.is_empty());
+        // single writer (AD-14): a notification is a read — POST is not routed
+        let res = app(db)
+            .oneshot(Request::post("/api/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }

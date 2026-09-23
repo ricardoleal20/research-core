@@ -980,6 +980,13 @@ fn decide_diff(
             event.kind, event.seq, corrupt
         )));
     }
+    // Remote decisions carry their surface in the payload (NFR-13) — the
+    // desktop's own decisions carry none (mirrors proposals.rs).
+    let surface = event
+        .payload
+        .get("surface")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
     diff.status = to;
     diff.decided = Some(crate::domain::proposals::DecisionStamp {
         seq: event.seq,
@@ -991,6 +998,7 @@ fn decide_diff(
                 format!("system:{}", format!("{component:?}").to_lowercase())
             }
         },
+        surface,
     });
     Ok(())
 }

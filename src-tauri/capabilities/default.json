@@ -1,8 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window — grants core APIs and shell open.",
-  "windows": ["main"],
+  "description": "Capability for the main window \u2014 grants core APIs, shell open, and notifications (Story 6.16 push).",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:webview:allow-internal-toggle-devtools",
@@ -16,6 +18,7 @@
     "shell:allow-spawn",
     "shell:allow-kill",
     "shell:allow-stdin-write",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "notification:default"
   ]
 }

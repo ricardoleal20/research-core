@@ -13,6 +13,9 @@ import { RC as RC_BUS, ctx } from "./ui/rc";
 import { renderMissionsHome, renderBoard, bindBoard, renderReadinessDrawer, renderReceiptDrawer, renderCheckpointsDrawer } from "./ui/missions";
 import { renderDashboard } from "./ui/dashboard";
 import { renderRefs, bindRefs, renderReview, bindReview, renderAssistant, bindAssistant, renderActions, bindActions, renderDigest, renderStatus, renderSettings, bindSettings, renderExportModal } from "./ui/screens";
+import { onMobile } from "./api";
+import { bootMobile } from "./ui/mobile";
+import { renderBell, startBellPolling } from "./ui/notifications";
 
 // ========== ACCENT SLOT (the bible's six swappable options) ==========
 const ACCENTS = {
@@ -101,6 +104,8 @@ const app = {
     chatThinking: false,
     skills: [], // the skills registry (Story 5.6): the curated six + user-added
     assistantDraft: { missionId: null, skill: null }, // the scope a new conversation is born with
+    notifications: [], // the bell's read (Story 6.16, FR-21.4): verdict summaries only
+    bellOpen: false,
   },
 };
 
@@ -141,6 +146,7 @@ function unlock() {
   app.state.locked = false;
   if (!app.state.onboardingCompleted) { app.state.view = "wizard"; render(); }
   else { navigate("missions"); }
+  startBellPolling();
 }
 
 // ========== SHELL ==========
@@ -193,6 +199,7 @@ function renderShell() {
           </div>
           <div class="flex items-center gap-2">
             <button onclick="RC.openExport()" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("ex.title")}">${icon("fileText", "w-4 h-4")}</button>
+            ${renderBell(app)}
             <button onclick="RC.navigate('settings')" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("rc.nav.settings")}">${icon("settings", "w-4 h-4")}</button>
             <button onclick="RC.lockApp()" class="rounded-lg border border-border bg-white p-2 text-muted hover:text-foreground hover:border-primary/30 transition ring-focus" aria-label="${t("rc.lock.title")}">${icon("lock", "w-4 h-4")}</button>
           </div>
@@ -533,6 +540,9 @@ function openCommandPalette() { app.state.commandPaletteOpen = true; render(); }
 function closeCommandPalette() { app.state.commandPaletteOpen = false; render(); }
 
 // ========== GLOBAL EVENTS ==========
+// The desktop shell's global handlers never fire on the mobile companion
+// (its handlers live on RCM, and Cmd+K belongs to the laptop).
+if (!onMobile) {
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
@@ -540,6 +550,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") {
+    if (app.state.bellOpen) { RC.bellClose(); return; }
     if (app.state.commandPaletteOpen) { closeCommandPalette(); return; }
     if (app.state.readinessOpen) { app.state.readinessOpen = false; render(); return; }
     if (app.state.receiptRunId) { app.state.receiptRunId = null; render(); return; }
@@ -557,6 +568,7 @@ document.addEventListener("click", (e) => {
     render();
   }
 });
+}
 
 // ========== WIZARD HANDLERS ==========
 function wizSaveInputs() {
@@ -693,6 +705,16 @@ export {
 };
 
 // ========== BOOT ==========
+// The mobile companion (Story 6.15, FR-21.2): served at `/m` by the
+// bridge, the same built UI boots into the companion instead of the
+// desktop shell — status + quick-capture + one-tap only, never the lock,
+// the wizard, or the board (the depth divide, NFR-5/NFR-13).
+if (onMobile) {
+  bootMobile();
+} else {
+boot();
+}
+function boot() {
 const savedLang = localStorage.getItem("rc-lang");
 if (savedLang) setLang(savedLang);
 document.documentElement.lang = getLang();
@@ -702,5 +724,9 @@ applyMotion();
 render();
 loadBase().then(() => {
   render();
-  if (!app.state.locked && app.state.view !== "lock" && app.state.view !== "wizard") loadViewData(app.state.view);
+  if (!app.state.locked && app.state.view !== "lock" && app.state.view !== "wizard") {
+    loadViewData(app.state.view);
+    startBellPolling();
+  }
 });
+}

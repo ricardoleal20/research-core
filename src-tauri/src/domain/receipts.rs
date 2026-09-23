@@ -1050,7 +1050,7 @@ mod tests {
             .map(|p| p.seq)
             .unwrap();
         store
-            .append(NewEvent::merge_approved(proposal_id, false, false).unwrap())
+            .append(NewEvent::merge_approved(proposal_id, false, false, None).unwrap())
             .unwrap();
         let events = store.events_all().unwrap();
         let receipt = render_receipt(&events, "ns-42").unwrap().unwrap();

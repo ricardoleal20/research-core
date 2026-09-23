@@ -1,4 +1,6 @@
 mod agent;
+mod bridge;
+mod bridge_commands;
 mod chat_commands;
 mod checkpoints_commands;
 mod commands;
@@ -42,6 +44,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // System push (Story 6.16, FR-21.4): pending-proposal and
+        // digest-ready notifications reach the desktop through the OS
+        // notification center — verdict summaries only (NFR-13).
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Resolve data dir: ~/Library/Application Support/Research Core/db.sqlite
             let data_dir = app
@@ -60,6 +66,10 @@ pub fn run() {
             // In-process server shell (AD-7): the same app in the browser —
             // same core instance, one writer (AD-14), read-only API.
             server::spawn(db.clone(), data_dir.clone());
+            // The bridge (Story 6.14, FR-21.1, NFR-13): OFF unless
+            // RC_BRIDGE explicitly enables a channel (off | tunnel |
+            // chopflow) — one pluggable channel, never a second writer.
+            bridge::startup(db.clone(), data_dir.clone());
             // Night Shift scheduler (FR-4.1): one tick per minute — due
             // missions run their nightly literature scan, dead runs are
             // reaped honestly, and terminators evaluate (AD-12).
@@ -195,6 +205,11 @@ pub fn run() {
             missions_commands::get_mission_runs,
             missions_commands::get_run_receipt,
             missions_commands::run_agent_step,
+            // quick-capture (Story 6.15, FR-21.3): a captured question lands
+            // as a pending mission card — a draft awaiting its terminators;
+            // completion is the owner's explicit launch.
+            missions_commands::quick_capture,
+            missions_commands::complete_captured_mission,
             jobs_commands::declare_compute_target,
             jobs_commands::list_compute_targets,
             jobs_commands::list_registered_adapters,
@@ -265,6 +280,17 @@ pub fn run() {
             manuscript_commands::propose_manuscript_diff,
             manuscript_commands::approve_manuscript_diff,
             manuscript_commands::reject_manuscript_diff,
+            // bridge (Story 6.14, FR-21.1, NFR-13): the ONE remote channel —
+            // enable/disable, status, and the pairing ledger. Remote reads
+            // and remote approve/reject/capture route through the same typed
+            // core commands in-process (single writer, AD-14).
+            bridge_commands::bridge_status,
+            bridge_commands::list_notifications,
+            bridge_commands::enable_bridge,
+            bridge_commands::disable_bridge,
+            bridge_commands::pair_bridge_device,
+            bridge_commands::unpair_bridge_device,
+            bridge_commands::list_bridge_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
+use crate::eventstore::{Actor, EventError, EventStore, NewEvent, StoredEvent};
 
 pub const MISSION_CREATED: &str = "mission.created";
 
@@ -110,6 +110,16 @@ pub const MISSION_AWAITING_REVIEW: &str = "mission.awaiting_review";
 pub const MISSION_COMPLETED: &str = "mission.completed";
 pub const MISSION_STOPPED: &str = "mission.stopped";
 pub const MISSION_FAILED: &str = "mission.failed";
+/// Quick-capture (Story 6.15, FR-21.3, resolving FR-1.5): a question
+/// captured on a remote surface lands on the home machine as a PENDING
+/// MISSION CARD — a draft awaiting its stop condition and falsifiable
+/// success criterion. Capture never launches a mission by itself (FR-1.2):
+/// a draft is never Active and the Night Shift never runs it.
+pub const MISSION_QUICK_CAPTURE: &str = "mission.quick_capture";
+/// The owner completing a captured draft on the home machine: the
+/// terminator fields arrive, the draft becomes Active — the mission launches
+/// only through this explicit completion.
+pub const MISSION_CAPTURE_COMPLETED: &str = "mission.capture_completed";
 
 /// Spend is folded from `spend.recorded` events referencing the mission
 /// (the provider layer appends them via `domain::spend`'s typed constructor;
@@ -172,6 +182,31 @@ pub struct MissionCreatedPayload {
 
 fn default_schedule() -> String {
     DEFAULT_SCHEDULE.to_string()
+}
+
+/// The `mission.quick_capture` payload (Story 6.15, FR-21.3): the captured
+/// question and the surface it came from (`mobile` — attribution visible in
+/// receipts, NFR-13). Nothing else: a capture is a draft, not a mission —
+/// the stop condition and falsifiable success criterion are the owner's to
+/// give on the home machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuickCapturePayload {
+    pub question: String,
+    pub surface: String,
+}
+
+/// The `mission.capture_completed` payload: the terminator fields the owner
+/// gave the draft on the home machine. Validated at construction like a
+/// creation (AD-12) — a completed capture IS a launchable mission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureCompletedPayload {
+    pub mission_id: Uuid,
+    pub stop_condition: String,
+    pub success_criterion: String,
+    pub autonomy: Autonomy,
+    pub spend_ceiling_cents: u64,
+    #[serde(default = "default_schedule")]
+    pub schedule: String,
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<(), EventError> {
@@ -262,6 +297,57 @@ impl NewEvent {
         )
         .map(|e| e.with_causes(vec![mission_id]))
     }
+
+    /// Typed constructor (AD-15, Story 6.15, FR-21.3): the one way a
+    /// quick-capture comes into being — a `mission.quick_capture` event,
+    /// actor=user, carrying the captured question and its surface. A blank
+    /// question is refused at the edge: a capture says something.
+    pub fn mission_quick_capture(
+        question: &str,
+        surface: &str,
+    ) -> Result<Self, EventError> {
+        require_non_empty("question", question)?;
+        let surface = if surface.trim().is_empty() { "mobile" } else { surface };
+        let payload = QuickCapturePayload {
+            question: question.trim().to_string(),
+            surface: surface.to_string(),
+        };
+        Self::new(
+            MISSION_QUICK_CAPTURE,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )
+    }
+
+    /// Typed constructor (AD-15, Story 6.15): the one way a captured draft
+    /// is completed — a `mission.capture_completed` event, actor=user,
+    /// cause-linked to the capture. The terminator fields are validated like
+    /// a creation (AD-12): a completed capture is a launchable mission, so
+    /// it may not exist without a stop condition and a falsifiable success
+    /// criterion. An empty schedule launches on the default nightly scan.
+    pub fn mission_capture_completed(
+        payload: CaptureCompletedPayload,
+    ) -> Result<Self, EventError> {
+        if payload.mission_id.is_nil() {
+            return Err(EventError::Invalid(
+                "mission.mission_id must not be nil — a completion names its captured draft"
+                    .into(),
+            ));
+        }
+        require_non_empty("stop_condition", &payload.stop_condition)?;
+        require_non_empty("success_criterion", &payload.success_criterion)?;
+        validate_schedule(&payload.schedule)?;
+        let mut payload = payload;
+        if payload.schedule.trim().is_empty() {
+            payload.schedule = DEFAULT_SCHEDULE.into();
+        }
+        Self::new(
+            MISSION_CAPTURE_COMPLETED,
+            Actor::User,
+            serde_json::to_value(&payload)?,
+        )
+        .map(|e| e.with_causes(vec![payload.mission_id]))
+    }
 }
 
 /// A schedule must parse (`off` | `daily-HH:MM`); an empty one is the default
@@ -284,11 +370,28 @@ fn validate_schedule(schedule: &str) -> Result<(), EventError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MissionStatus {
+    /// A quick-captured draft (Story 6.15, FR-21.3): the card exists, its
+    /// terminator fields do not — it awaits the owner's stop condition and
+    /// falsifiable success criterion. Never runs, never spends.
+    Draft,
     Active,
     AwaitingReview,
     Completed,
     Stopped,
     Failed,
+}
+
+impl MissionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::AwaitingReview => "awaiting_review",
+            Self::Completed => "completed",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// The spend meter's three states (DESIGN.md components.spend-meter): `ok`
@@ -424,12 +527,41 @@ impl MissionsProjection {
                 missions.push(mission);
                 continue;
             }
+            if event.kind == MISSION_QUICK_CAPTURE {
+                // A captured draft (Story 6.15, FR-21.3): the card exists,
+                // its terminators do not — status Draft, schedule off, no
+                // budget. Never runs until the owner completes it.
+                let mission = Self::draft_from_capture(event)?;
+                index.insert(mission.id, missions.len());
+                missions.push(mission);
+                continue;
+            }
             // Any other event referencing a mission updates its read model.
             let Some(i) = Self::referenced(&index, event) else {
                 continue;
             };
             let mission = &mut missions[i];
             match event.kind.as_str() {
+                MISSION_CAPTURE_COMPLETED => {
+                    // The owner completed the draft (Story 6.15): the
+                    // terminator fields arrive, the mission becomes Active —
+                    // a completed capture is a launchable mission.
+                    let payload: CaptureCompletedPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|e| {
+                            EventError::Invalid(format!(
+                                "corrupt {MISSION_CAPTURE_COMPLETED} payload at seq {}: {e}",
+                                event.seq
+                            ))
+                        })?;
+                    mission.stop_condition = payload.stop_condition;
+                    mission.success_criterion = payload.success_criterion;
+                    mission.autonomy = payload.autonomy;
+                    mission.spend_ceiling_cents = payload.spend_ceiling_cents;
+                    mission.schedule = payload.schedule;
+                    if mission.status == MissionStatus::Draft {
+                        mission.status = MissionStatus::Active;
+                    }
+                }
                 MISSION_AWAITING_REVIEW => mission.status = MissionStatus::AwaitingReview,
                 MISSION_COMPLETED => mission.status = MissionStatus::Completed,
                 MISSION_STOPPED => mission.status = MissionStatus::Stopped,
@@ -520,6 +652,34 @@ impl MissionsProjection {
             .collect()
     }
 
+    /// A quick-captured draft's read model (Story 6.15): the card carries
+    /// the question and its capture surface's stamp; everything a mission
+    /// needs to end is empty by design — the draft awaits the owner.
+    fn draft_from_capture(event: &StoredEvent) -> Result<Mission, EventError> {
+        let payload: QuickCapturePayload =
+            serde_json::from_value(event.payload.clone()).map_err(|e| {
+                EventError::Invalid(format!(
+                    "corrupt {MISSION_QUICK_CAPTURE} payload at seq {}: {e}",
+                    event.seq
+                ))
+            })?;
+        Ok(Mission {
+            id: event.id,
+            seq: event.seq,
+            ts: event.ts,
+            question: payload.question,
+            stop_condition: String::new(),
+            success_criterion: String::new(),
+            autonomy: Autonomy::Watch,
+            spend_ceiling_cents: 0,
+            roles: Vec::new(),
+            schedule: "off".into(),
+            status: MissionStatus::Draft,
+            spend_cents: 0,
+            spend_state: SpendState::Ok,
+        })
+    }
+
     fn mission_from_event(event: &StoredEvent) -> Result<Mission, EventError> {
         let payload: MissionCreatedPayload =
             serde_json::from_value(event.payload.clone()).map_err(|e| {
@@ -544,6 +704,74 @@ impl MissionsProjection {
             spend_state: SpendState::Ok,
         })
     }
+}
+
+/// Quick-capture (Story 6.15, FR-21.3, resolving FR-1.5): a question
+/// captured on a remote surface lands as a PENDING MISSION CARD — one
+/// `mission.quick_capture` event (actor=user, surface-attributed) appended
+/// by the home writer, whatever surface asked. The card is a draft
+/// awaiting its stop condition and falsifiable success criterion; capture
+/// never launches a mission by itself (FR-1.2).
+pub fn quick_capture(
+    conn: &rusqlite::Connection,
+    question: &str,
+    surface: &str,
+) -> Result<Mission, String> {
+    let store = EventStore::new(conn);
+    let event =
+        NewEvent::mission_quick_capture(question, surface).map_err(|e| e.to_string())?;
+    let stored = store.append(event).map_err(|e| e.to_string())?;
+    // Return exactly what the log now holds — the read model, not the input.
+    let missions = MissionsProjection::fold(&[stored]).map_err(|e| e.to_string())?;
+    Ok(missions
+        .into_iter()
+        .next()
+        .expect("the fold of one capture event yields one draft mission"))
+}
+
+/// Complete a captured draft (Story 6.15): the owner gives the draft its
+/// stop condition and falsifiable success criterion on the home machine —
+/// one `mission.capture_completed` event, and only then does the mission
+/// become Active. A non-draft (or unknown) mission is refused with
+/// `not_draft:`; blank terminators are refused at the edge (AD-12).
+pub fn complete_quick_capture(
+    conn: &rusqlite::Connection,
+    mission_id: Uuid,
+    stop_condition: &str,
+    success_criterion: &str,
+    autonomy: Autonomy,
+    spend_ceiling_cents: u64,
+) -> Result<Mission, String> {
+    let store = EventStore::new(conn);
+    let events = store.events_all().map_err(|e| e.to_string())?;
+    let missions = MissionsProjection::fold(&events).map_err(|e| e.to_string())?;
+    let draft = missions
+        .iter()
+        .find(|m| m.id == mission_id)
+        .ok_or_else(|| format!("not_found: no mission with id `{mission_id}`"))?;
+    if draft.status != MissionStatus::Draft {
+        return Err(format!(
+            "not_draft: mission `{mission_id}` is `{}`, not a captured draft — completion is the draft's path (Story 6.15)",
+            draft.status.as_str()
+        ));
+    }
+    let event = NewEvent::mission_capture_completed(CaptureCompletedPayload {
+        mission_id,
+        stop_condition: stop_condition.to_string(),
+        success_criterion: success_criterion.to_string(),
+        autonomy,
+        spend_ceiling_cents,
+        schedule: String::new(), // the default nightly scan, like a creation
+    })
+    .map_err(|e| e.to_string())?;
+    store.append(event).map_err(|e| e.to_string())?;
+    let missions =
+        MissionsProjection::fold(&store.events_all().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    missions
+        .into_iter()
+        .find(|m| m.id == mission_id)
+        .ok_or_else(|| "not_found: the completed draft vanished from the fold".into())
 }
 
 #[cfg(test)]
@@ -612,6 +840,99 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         EventStore::init(&conn).unwrap();
         conn
+    }
+
+    /// Quick-capture (Story 6.15, FR-21.3, resolving FR-1.5): a captured
+    /// question lands as a PENDING MISSION CARD — a draft awaiting its stop
+    /// condition and falsifiable success criterion, attributed to its
+    /// surface. Capture never launches a mission by itself (FR-1.2): the
+    /// draft is never Active, never scheduled.
+    #[test]
+    fn quick_capture_lands_a_pending_draft_card() {
+        let conn = mem_conn();
+        let mission = quick_capture(&conn, "  Does attention sparsity hold at 32k?  ", "mobile")
+            .unwrap();
+        assert_eq!(mission.status, MissionStatus::Draft);
+        assert_eq!(mission.question, "Does attention sparsity hold at 32k?");
+        assert_eq!(mission.stop_condition, "", "the terminators are the owner's to give");
+        assert_eq!(mission.success_criterion, "");
+        assert_eq!(mission.schedule, "off", "a draft never runs (FR-1.2)");
+        assert_eq!(mission.spend_ceiling_cents, 0, "a draft has no budget");
+        // the audit trail: one user-actor capture event, surface-attributed
+        let events = EventStore::new(&conn).events_all().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, MISSION_QUICK_CAPTURE);
+        assert_eq!(events[0].actor, Actor::User);
+        let payload: QuickCapturePayload =
+            serde_json::from_value(events[0].payload.clone()).unwrap();
+        assert_eq!(payload.surface, "mobile");
+        // a blank question is refused at the edge
+        assert!(quick_capture(&conn, "   ", "mobile").is_err());
+    }
+
+    /// Completing the draft (Story 6.15): the owner gives the terminators on
+    /// the home machine — the mission becomes Active with the default
+    /// nightly schedule, exactly like a creation. A non-draft is refused
+    /// with `not_draft:`; blank terminators are refused at the edge (AD-12).
+    #[test]
+    fn completing_a_draft_fills_the_terminators_and_launches() {
+        let conn = mem_conn();
+        let draft = quick_capture(&conn, "Does X hold up?", "mobile").unwrap();
+        let mission = complete_quick_capture(
+            &conn,
+            draft.id,
+            "Stop after $5.",
+            "A blind rater agrees.",
+            Autonomy::Suggest,
+            500,
+        )
+        .unwrap();
+        assert_eq!(mission.status, MissionStatus::Active);
+        assert_eq!(mission.stop_condition, "Stop after $5.");
+        assert_eq!(mission.success_criterion, "A blind rater agrees.");
+        assert_eq!(mission.autonomy, Autonomy::Suggest);
+        assert_eq!(mission.spend_ceiling_cents, 500);
+        assert_eq!(mission.schedule, DEFAULT_SCHEDULE, "nightly by default, like a creation");
+        // the completion is a second event — the capture stays in the log
+        let events = EventStore::new(&conn).events_all().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].kind, MISSION_CAPTURE_COMPLETED);
+        assert_eq!(events[1].actor, Actor::User);
+        // a completed mission is not a draft — a second completion refuses
+        let err = complete_quick_capture(&conn, draft.id, "s", "c", Autonomy::Watch, 100)
+            .unwrap_err();
+        assert!(err.starts_with("not_draft:"), "unexpected: {err}");
+        // an unknown mission is refused honestly
+        let err = complete_quick_capture(&conn, Uuid::new_v4(), "s", "c", Autonomy::Watch, 100)
+            .unwrap_err();
+        assert!(err.starts_with("not_found:"), "unexpected: {err}");
+        // blank terminators never even construct the event (AD-12)
+        let conn = mem_conn();
+        let draft = quick_capture(&conn, "Q?", "mobile").unwrap();
+        assert!(
+            NewEvent::mission_capture_completed(CaptureCompletedPayload {
+                mission_id: draft.id,
+                stop_condition: "  ".into(),
+                success_criterion: "c".into(),
+                autonomy: Autonomy::Watch,
+                spend_ceiling_cents: 100,
+                schedule: String::new(),
+            })
+            .is_err()
+        );
+    }
+
+    /// A creation event is not a draft: completing it is refused — the
+    /// draft path belongs to captured cards only.
+    #[test]
+    fn a_created_mission_is_not_completable_as_a_draft() {
+        let conn = mem_conn();
+        let store = EventStore::new(&conn);
+        let created = store.append(NewEvent::mission_created(payload()).unwrap()).unwrap();
+        let err =
+            complete_quick_capture(&conn, created.id, "s", "c", Autonomy::Watch, 100)
+                .unwrap_err();
+        assert!(err.starts_with("not_draft:"), "unexpected: {err}");
     }
 
     #[test]

@@ -20,6 +20,7 @@ export const lifecycleChip = {
   revised: ["primary", "revised"],
 };
 export const statusColor = {
+  draft: "warning",
   active: "primary",
   awaiting_review: "warning",
   completed: "success",
@@ -145,6 +146,10 @@ function renderQuestionComposer(app) {
 }
 
 function renderMissionCard(app, m, i) {
+  // A quick-captured draft (Story 6.15, FR-21.3): the pending mission card
+  // — the question landed, the terminators did not. The owner completes it
+  // here; capture never launched anything (FR-1.2).
+  if (m.status === "draft") return renderDraftCard(app, m, i);
   const runs = app.data.runs[m.id] || [];
   const open = !!app.data.runsOpen[m.id];
   return `
@@ -171,6 +176,49 @@ function renderMissionCard(app, m, i) {
           </div>
         </div>
         ${open ? renderRunsDrill(app, m.id, runs) : ""}
+      </div>`)}
+    </div>`;
+}
+
+// The pending mission card's completion form (Story 6.15): the stop
+// condition, the falsifiable success criterion, the autonomy dial, and the
+// ceiling — the same composer idioms; only the owner launches.
+function renderDraftCard(app, m, i) {
+  const s = app.state.drafts?.[m.id] || { autonomy: "suggest", ceiling: "10.00", completing: false };
+  return `
+    <div class="animate-fade-up" style="animation-delay:${i * 40}ms">
+    ${card(`
+      <div class="p-6 space-y-4 border-l-4 border-l-amber-400">
+        <div class="flex items-start justify-between gap-3">
+          <span class="font-mono text-[10px] text-muted tabular">M-${m.seq}</span>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-medium text-amber-700">${t("missions.draft.capturedOn", { surface: "mobile" })}</span>
+            ${badge(t("missions.status.draft"), "warning")}
+          </div>
+        </div>
+        <h3 class="heading-3 leading-snug">${esc(m.question)}</h3>
+        <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
+          ${icon("history", "w-4 h-4 text-amber-700 shrink-0 mt-0.5")}
+          <p class="text-xs font-medium text-amber-700 leading-snug">${t("missions.draft.awaiting")}</p>
+        </div>
+        <div class="grid grid-cols-1 gap-4">
+          <div><label class="block text-sm font-medium mb-1.5">${t("missions.stopCondition")}</label><input id="dc-stop-${m.seq}" placeholder="${t("missions.draft.stopPh")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+          <div><label class="block text-sm font-medium mb-1.5">${t("missions.successCriterion")}</label><input id="dc-criterion-${m.seq}" placeholder="${t("missions.draft.criterionPh")}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium mb-1.5">${t("missions.autonomy")}</label>
+            <div class="grid grid-cols-3 gap-1 rounded-lg border border-border bg-gray-50 p-1">
+              ${[["watch", t("missions.autonomy.watch")], ["suggest", t("missions.autonomy.suggest")], ["act_with_receipts", t("missions.autonomy.act_with_receipts")]].map(([v, l]) => `
+                <button type="button" onclick="RC.draftAutonomy('${esc(m.id)}','${v}')" class="rounded-md py-1.5 text-xs font-medium transition ${s.autonomy === v ? "bg-white shadow-sm text-foreground" : "text-muted hover:text-foreground"}">${l}</button>
+              `).join("")}
+            </div>
+          </div>
+          <div><label class="block text-sm font-medium mb-1.5">${t("missions.spendCeiling")} <span class="text-muted font-normal">(${t("trust.hard")})</span></label><input id="dc-ceiling-${m.seq}" value="${esc(s.ceiling)}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
+        </div>
+        <div class="flex justify-end gap-2 pt-1">
+          ${btn({ label: s.completing ? t("missions.draft.completing") : t("missions.draft.complete"), variant: "default", iconName: "sparkle", onClick: `RC.completeCapture('${esc(m.id)}')`, disabled: s.completing })}
+        </div>
       </div>`)}
     </div>`;
 }
@@ -917,6 +965,38 @@ Object.assign(RC, {
   qboxAutonomy(v) {
     const s = ctx.app.state.qbox || (ctx.app.state.qbox = {});
     s.autonomy = v;
+    ctx.renderMainOnly();
+  },
+  // The draft card's autonomy dial (Story 6.15): drafts keep their
+  // in-progress form state per mission id.
+  draftAutonomy(missionId, v) {
+    const app = ctx.app;
+    const s = app.state.drafts || (app.state.drafts = {});
+    const d = s[missionId] || (s[missionId] = { autonomy: "suggest", ceiling: "10.00" });
+    d.autonomy = v;
+    ctx.renderMainOnly();
+  },
+  // Complete a quick-captured draft (Story 6.15, FR-21.3): the owner gives
+  // the terminators — only then does the mission launch (FR-1.2).
+  async completeCapture(missionId) {
+    const app = ctx.app;
+    const m = app.data.missions.find((x) => x.id === missionId);
+    if (!m || m.status !== "draft") return;
+    const s = app.state.drafts?.[missionId] || { autonomy: "suggest", ceiling: "10.00" };
+    const read = (id) => document.getElementById(id)?.value.trim() || "";
+    const stop = read(`dc-stop-${m.seq}`);
+    const criterion = read(`dc-criterion-${m.seq}`);
+    const ceiling = read(`dc-ceiling-${m.seq}`) || s.ceiling;
+    if (!stop || !criterion) return;
+    s.completing = true;
+    ctx.renderMainOnly();
+    try {
+      await api.completeCapturedMission(missionId, stop, criterion, s.autonomy || "suggest", Math.round(parseFloat(ceiling || "10") * 100));
+      await ctx.loadMissions();
+    } catch (e) {
+      alert(t("missions.draft.error") + (e?.message || e));
+    }
+    s.completing = false;
     ctx.renderMainOnly();
   },
   async launchMission() {
