@@ -35,11 +35,14 @@ const servedByCore: Promise<boolean> = fetch("/api/missions")
 
 // Sync live-binding flag: true once the probe resolves and this page is
 // served by the core's read-only server — the manuscript editor renders
-// read-only from it (desktop-only edits, AD-14).
-export let servedByCoreFlag = false;
+// read-only from it (desktop-only edits, AD-14). A getter (not a snapshot
+// boolean): the manuscript editor asks it on every render, so the answer
+// must track the probe's resolution, never a stale copy.
+let _servedByCore = false;
 servedByCore.then((v) => {
-  servedByCoreFlag = v;
+  _servedByCore = v;
 });
+export const servedByCoreFlag = (): boolean => _servedByCore;
 
 async function httpJson<T>(path: string): Promise<T> {
   const r = await fetch(path);
