@@ -1,11 +1,11 @@
 mod agent;
-mod bridge;
+pub mod bridge;
 mod bridge_commands;
 mod chat_commands;
 mod checkpoints_commands;
 mod commands;
 mod dashboard_commands;
-mod db;
+pub mod db;
 mod evidence_commands;
 mod export_commands;
 mod hypotheses_commands;
@@ -27,7 +27,7 @@ mod submissions_commands;
 mod nightshift;
 mod runtime;
 mod search_commands;
-mod server;
+pub mod server;
 mod trust;
 
 pub mod adapters;
