@@ -20,6 +20,12 @@ src-tauri/librust_out*
 *.log
 /tmp/
 
+# Playwright E2E (docs/e2e.md)
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
 # Editor / OS
 .vscode/
 .idea/
