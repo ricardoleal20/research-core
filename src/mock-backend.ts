@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, VenueTemplate, VenueCriterion, ProposedSubmission, ProposedSubmissionItem, FitCandidate, JournalFitResult, TierTwoReport, TierTwoItem, SubmissionView, SubmissionMission, SubmissionItem, CheckStamp, ZoteroImportResult, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, SupportCheckRecord, SupportVerdict } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, VenueTemplate, VenueCriterion, ProposedSubmission, ProposedSubmissionItem, FitCandidate, JournalFitResult, TierTwoReport, TierTwoItem, SubmissionView, SubmissionMission, SubmissionItem, CheckStamp, ZoteroImportResult, AiModelsListing, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, SupportCheckRecord, SupportVerdict } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -54,6 +54,20 @@ const CURATED_MODELS: Record<string, string[]> = {
   anthropic: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
   google: ["gemini-3-pro", "gemini-2-5-pro", "gemini-2-5-flash"],
   openrouter: ["openrouter/auto", "anthropic/claude-sonnet-4.5", "openai/gpt-5.2", "google/gemini-3-pro"],
+};
+
+// The explore path's deterministic seeded LIVE model lists (restoring the
+// bible wizard's EXPLORE action): what the mock's listProviderModels
+// answers per provider — a stable, larger-than-curated stand-in for the
+// provider's real /models answer. The local (Ollama) provider answers its
+// /api/tags shape. An unknown provider name is the typed fetch failure —
+// never invented entries.
+const MOCK_LIVE_MODELS: Record<string, string[]> = {
+  openai: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-5-mini", "gpt-5.2", "gpt-5.2-mini", "o4-mini"],
+  anthropic: ["claude-3-5-haiku-latest", "claude-haiku-4-5", "claude-opus-4-5", "claude-sonnet-4-5"],
+  google: ["gemini-2-5-flash", "gemini-2-5-flash-lite", "gemini-2-5-pro", "gemini-3-flash", "gemini-3-pro"],
+  openrouter: ["anthropic/claude-sonnet-4.5", "google/gemini-3-pro", "meta-llama/llama-3.3-70b-instruct", "openai/gpt-5.2", "openrouter/auto", "qwen/qwen-3-max"],
+  local: ["llama3.1:8b", "llama3.1:70b", "mistral-nemo:latest", "nomic-embed-text", "qwen2.5:14b"],
 };
 
 // The mock's honest CLI detection chips: codex and claude simulate as
@@ -2801,9 +2815,21 @@ export const mockApi = {
     }
     return { ok: true, models, error: null };
   },
-  listProviderModels: async (provider: string) => {
-    await delay();
-    return [...(CURATED_MODELS[provider.trim()] ?? [])];
+  // One provider's LIVE model list (the explore path): the deterministic
+  // seeded stand-in for the provider's real /models answer — sorted,
+  // deduped, with the provider attribution. Unknown providers (custom base
+  // URLs included — no server exists to list) are the typed fetch failure;
+  // the picker falls back to the curated list.
+  listProviderModels: async (provider: string, _baseUrl?: string): Promise<AiModelsListing> => {
+    await delay(400);
+    const p = provider.trim();
+    const models = MOCK_LIVE_MODELS[p];
+    if (!models) {
+      throw new Error(
+        `models_fetch_failed: provider \`${p}\` — the mock has no live list for it / el mock no tiene lista en vivo`,
+      );
+    }
+    return { provider: p, models: [...models] };
   },
 
   // missions

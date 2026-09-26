@@ -378,13 +378,22 @@ export function renderAssistant(app) {
   const unconfigured = ai ? !ai.configured : false;
   const pair = activeModelPair(app);
   // Story 5.9 (FR-17.4): the model picker lists the active provider's
-  // models (curated; free entry for custom URLs; CLI = ["default"]). With
-  // exactly one model the resolved pair renders read-only — no empty
-  // dropdown.
-  const modelOptions = ai ? ai.models.map((m) => ({
+  // models. SOURCING: the explored LIVE list for this provider when one
+  // exists (Ajustes → IA "explorar modelos" — the explore path); otherwise
+  // the curated list the config read carries (free entry for custom URLs;
+  // CLI = ["default"]) — the documented fallback when the explored list is
+  // empty or absent. With exactly one model the resolved pair renders
+  // read-only — no empty dropdown.
+  const aiExplore = app.state.aiExplore;
+  const exploredForProvider = ai && aiExplore && !aiExplore.exploring
+    && aiExplore.provider === (ai.provider || "") && (aiExplore.models || []).length
+    ? aiExplore.models
+    : null;
+  const pickerModels = exploredForProvider || (ai ? ai.models : []);
+  const modelOptions = pickerModels.map((m) => ({
     value: m,
-    label: ai.mode === "cli" ? `${m} · ${t("rc.assistant.viaCli")}` : m,
-  })) : [];
+    label: ai && ai.mode === "cli" ? `${m} · ${t("rc.assistant.viaCli")}` : m,
+  }));
   const activeModel = scope.model || (ai ? ai.model : "") || modelOptions[0]?.value || "";
   const modelPicker = unconfigured ? "" : (modelOptions.length > 1
     ? `<div class="w-40 hidden md:block">${rcSelect({ id: "chat-model-select", size: "sm", cls: "w-full", options: modelOptions, value: activeModel, onChange: "RC.setChatModel(this.value)" })}</div>`
@@ -1030,7 +1039,17 @@ function renderSettingsAi(app) {
     label: t(`prov.${p}`),
   }));
   const custom = draft.provider === "custom";
-  const savedModels = test && test.ok ? test.models : [];
+  // The explore path (restoring the bible wizard's EXPLORE action): the
+  // provider's LIVE model list fetched on demand — the chips render the
+  // explored list when one exists for the drafted provider, else the
+  // test-connection run's saved list. Clicking a chip sets the default
+  // model (persisted when the provider is the configured one).
+  const explore = app.state.aiExplore;
+  const exploring = explore && explore.exploring && explore.provider === draft.provider;
+  const exploredModels = explore && !explore.exploring && explore.provider === draft.provider && (explore.models || []).length
+    ? explore.models
+    : null;
+  const savedModels = exploredModels || (test && test.ok ? test.models : []);
   const cliRow = (name) => {
     const detected = ai.cliAvailable && ai.cliAvailable[name];
     const active = isCli && ai.cli === name;
@@ -1062,14 +1081,21 @@ function renderSettingsAi(app) {
           ${custom ? `<div><label class="block text-sm font-medium mb-1.5">${t("prov.baseUrl")}</label><input value="${esc(draft.baseUrl)}" oninput="RC.aiDraftField('baseUrl', this.value)" placeholder="https://api.example.com/v1" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>` : ""}
           <div><label class="block text-sm font-medium mb-1.5">${t("prov.apiKey")}</label><input id="ai-key-input" type="password" value="${esc(draft.key)}" oninput="RC.aiDraftField('key', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"><p class="text-xs text-muted mt-1">${t("prov.note")} ${t("prov.keyKeep")}</p></div>
           <div><label class="block text-sm font-medium mb-1.5">${t("prov.model")} ${custom ? `<span class="text-xs text-muted font-normal">(${t("prov.modelFreeEntry")})</span>` : ""}</label><input value="${esc(draft.model)}" oninput="RC.aiDraftField('model', this.value)" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"></div>
-          ${savedModels.length ? `<div class="flex flex-wrap gap-1.5">${savedModels.map((m) => `<button type="button" onclick="RC.aiPickModel('${esc(m)}')" class="rounded-full border border-border bg-card px-3 py-1 text-xs font-mono text-muted hover:border-primary/40 hover:text-primary transition">${esc(m)}</button>`).join("")}</div>` : ""}
+          ${savedModels.length ? `<div><p class="text-xs text-muted mb-1.5">${t("prov.exploreModelsLabel")}</p><div role="group" aria-label="${t("prov.exploreModelsLabel")}" class="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">${savedModels.map((m) => `<button type="button" title="${esc(m)}" onclick="RC.aiPickModel('${esc(m)}')" class="rounded-full border border-border bg-card px-3 py-1 text-xs font-mono text-muted hover:border-primary/40 hover:text-primary transition">${esc(m)}</button>`).join("")}</div></div>` : ""}
           <div class="flex flex-wrap items-center gap-2">
             ${btn({ label: t("prov.save"), onClick: "RC.saveAiProvider()" })}
             ${btn({ label: test && test.testing ? t("prov.testing") : t("prov.test"), variant: "secondary", onClick: "RC.testAiConnection()" })}
+            ${btn({ label: exploring ? t("prov.exploring") : t("prov.explore"), variant: "secondary", iconName: "sparkle", disabled: !!exploring, onClick: "RC.exploreAiModels()" })}
           </div>
-          ${test ? (test.ok
-            ? `<p class="text-xs font-medium text-emerald-600">${t("prov.testOk")} — ${test.models.length} models</p>`
-            : `<p class="text-xs font-medium text-rose-600">${t("prov.testFail")}: ${esc(test.error || "")}</p>`) : ""}
+          <p aria-live="polite">${exploring
+            ? `<span class="text-xs font-medium text-muted inline-flex items-center gap-1.5">${t("prov.exploring")}</span>`
+            : explore && !explore.exploring && explore.provider === draft.provider
+              ? (explore.error
+                ? `<span class="inline-flex items-center gap-1.5">${badge(t("prov.exploreFail"), "destructive")}<span class="text-xs font-medium text-rose-600">${esc(explore.error)}</span></span>`
+                : `<span class="text-xs font-medium text-emerald-600">${(explore.models || []).length} ${t("prov.exploreOk")}</span>`)
+            : test ? (test.ok
+              ? `<span class="text-xs font-medium text-emerald-600">${t("prov.testOk")} — ${test.models.length} models</span>`
+              : `<span class="text-xs font-medium text-rose-600">${t("prov.testFail")}: ${esc(test.error || "")}</span>`) : ""}</p>
         </div>
       </div>
 
@@ -1731,8 +1757,45 @@ Object.assign(RC, {
     if (value !== "custom") draft.baseUrl = "";
     ctx.renderMainOnly();
   },
-  aiPickModel(model) {
-    ctx.app.state.aiDraft.model = model;
+  // Pick a model from the chips (the test run's list or the explored live
+  // list): sets the draft AND persists it as the default model when the
+  // drafted provider is the configured one (the keychain key is kept — an
+  // empty key never overwrites the stored one).
+  async aiPickModel(model) {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
+    draft.model = model;
+    ctx.renderMainOnly();
+    const ai = app.data.aiConfig;
+    if (ai && ai.configured && draft.provider === ai.provider) {
+      try {
+        app.data.aiConfig = await api.configureAiProvider(
+          draft.provider,
+          draft.provider === "custom" ? (draft.baseUrl || ai.baseUrl || "") : "",
+          model,
+          "",
+        );
+        draft.key = "";
+      } catch { /* keep the draft — the save button persists it */ }
+    }
+  },
+  // The explore run (the explore path, restoring the bible wizard's EXPLORE
+  // action): fetch the drafted provider's LIVE model list through the core
+  // — the chips and the chat picker populate from it (the picker falls
+  // back to the curated list when it comes back empty). Failures render
+  // the honest error chip — never silent, never invented.
+  async exploreAiModels() {
+    const app = ctx.app;
+    const draft = app.state.aiDraft || (app.state.aiDraft = { provider: "openai", baseUrl: "", model: "", key: "" });
+    const provider = draft.provider || "openai";
+    if (app.state.aiExplore && app.state.aiExplore.exploring) return;
+    app.state.aiExplore = { exploring: true, provider, models: [] };
+    ctx.renderMainOnly();
+    try {
+      app.state.aiExplore = await api.listProviderModels(provider, draft.baseUrl || "");
+    } catch (e) {
+      app.state.aiExplore = { exploring: false, provider, models: [], error: e?.message || String(e) };
+    }
     ctx.renderMainOnly();
   },
   // Configure the API provider (FR-17.2): the key goes to the OS keychain

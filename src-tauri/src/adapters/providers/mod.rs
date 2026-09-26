@@ -346,6 +346,37 @@ impl ProviderSettings {
             _ => !ProviderLayer::has_real_provider(self),
         }
     }
+
+    /// The settings shape for ONE provider's model listing (the explore
+    /// path, restoring the bible wizard's EXPLORE action): the key from
+    /// that provider's OS-keychain account (AD-16 — never a parameter,
+    /// never the db), and the base URL explicit > the configured provider's
+    /// stored base URL > the provider's canonical endpoint. Mode is
+    /// irrelevant to a listing. The local (Ollama) provider needs no key —
+    /// its discovery hits the server's own /api/tags.
+    pub fn for_listing(conn: &Connection, provider: &str, base_url: &str) -> Self {
+        let name = provider.trim().to_string();
+        let configured = crate::db::get_setting(conn, "provider");
+        let stored_base = if name == configured.trim() {
+            crate::db::get_setting(conn, "base_url")
+        } else {
+            String::new()
+        };
+        Self {
+            mode: "provider".into(),
+            name: name.clone(),
+            base_url: if base_url.trim().is_empty() {
+                stored_base
+            } else {
+                base_url.trim().to_string()
+            },
+            api_key: provider_key(conn, &name),
+            model: String::new(),
+            cli: String::new(),
+            cli_model: String::new(),
+            local_base_url: crate::db::get_setting(conn, "local_base_url"),
+        }
+    }
 }
 
 /// API keys live in the OS keychain (AD-16); the legacy `settings.api_key`

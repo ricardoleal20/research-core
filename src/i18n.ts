@@ -1753,6 +1753,13 @@ const DICT: Record<string, Record<Lang, string>> = {
   "prov.cliPresent": { es: "detectado", en: "detected", pt: "detetado", fr: "détecté" },
   "prov.cliAbsent": { es: "no encontrado", en: "not found", pt: "não encontrado", fr: "introuvable" },
   "prov.test": { es: "Probar conexión", en: "Test connection", pt: "Testar ligação", fr: "Tester la connexion" },
+  // The explore path (restoring the bible wizard's EXPLORE action): fetch
+  // the provider's live model list and populate the chips + the picker.
+  "prov.explore": { es: "Explorar modelos", en: "Explore models", pt: "Explorar modelos", fr: "Explorer les modèles" },
+  "prov.exploring": { es: "Explorando…", en: "Exploring…", pt: "A explorar…", fr: "Exploration…" },
+  "prov.exploreOk": { es: "modelos encontrados", en: "models found", pt: "modelos encontrados", fr: "modèles trouvés" },
+  "prov.exploreFail": { es: "Exploración fallida", en: "Exploration failed", pt: "Exploração falhada", fr: "Échec de l'exploration" },
+  "prov.exploreModelsLabel": { es: "Modelos disponibles", en: "Available models", pt: "Modelos disponíveis", fr: "Modèles disponibles" },
   "prov.testing": { es: "Probando…", en: "Testing…", pt: "A testar…", fr: "Test en cours…" },
   "prov.testOk": { es: "Conexión correcta", en: "Connection ok", pt: "Ligação correta", fr: "Connexion réussie" },
   "prov.testFail": { es: "Conexión fallida", en: "Connection failed", pt: "Ligação falhada", fr: "Connexion échouée" },
