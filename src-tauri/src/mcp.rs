@@ -324,7 +324,9 @@ pub async fn arxiv_fetch(arxiv_id: &str) -> Result<Option<SearchResult>, String>
     Ok(parse_arxiv_atom(&text).into_iter().next())
 }
 
-fn parse_arxiv_atom(xml: &str) -> Vec<SearchResult> {
+/// The export API's Atom feed → search results. Shared with the multi-source
+/// link resolver (domain/resolver.rs — the arXiv door reuses this parser).
+pub(crate) fn parse_arxiv_atom(xml: &str) -> Vec<SearchResult> {
     let mut out = Vec::new();
     for entry in xml.split("<entry>").skip(1) {
         let title = extract(entry, "title").trim().replace('\n', " ");
