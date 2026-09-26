@@ -1256,6 +1256,16 @@ export interface AiConnectionTest {
   error: string | null;
 }
 
+// One explore-models run (the explore path, restoring the bible wizard's
+// EXPLORE action): the provider's LIVE model ids — sorted, deduped — with
+// the provider attribution. The key never crosses this boundary (NFR-10);
+// failures throw the typed honest errors (`provider_not_configured:` /
+// `models_fetch_failed:`).
+export interface AiModelsListing {
+  provider: string;
+  models: string[];
+}
+
 // ---- Manuscript (Stories 6.6–6.8, FR-20) ----
 // The .tex repo IS the manuscript (FR-20.1): a mission registers a .tex
 // project directory on disk; the event log references it, never copies it.

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, VenueTemplate, TierTwoReport, JournalFitResult, SubmissionView, SubmissionMission, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, VenueTemplate, TierTwoReport, JournalFitResult, SubmissionView, SubmissionMission, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, AiModelsListing, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -271,10 +271,20 @@ const browserApi = {
     }
     return mockApi.testProviderConnection();
   },
-  // The curated per-provider model list (Story 5.9): pure data, both
-  // transports answer locally.
-  listProviderModels: async (_provider: string): Promise<string[]> => {
-    return mockApi.listProviderModels(_provider);
+  // One provider's LIVE model list (the explore path): the provider's real
+  // /models endpoint through the core (the local server reuses /api/tags) —
+  // over the same-origin read-only API when served by the core, the mock in
+  // plain `vite` dev. The key stays keychain-side, never the query string.
+  listProviderModels: async (
+    _provider: string,
+    _baseUrl?: string,
+  ): Promise<AiModelsListing> => {
+    if (await servedByCore) {
+      const qs = `provider=${encodeURIComponent(_provider)}` +
+        (_baseUrl ? `&base_url=${encodeURIComponent(_baseUrl)}` : "");
+      return httpJson<AiModelsListing>(`/api/ai/models?${qs}`);
+    }
+    return mockApi.listProviderModels(_provider, _baseUrl);
   },
   addChatAttachments: async (
     _chatId: string,
@@ -1142,8 +1152,11 @@ export const api = mockActive ? browserApi : {
     invoke<AiConnectionTest>("test_local_provider", { baseUrl }),
   testProviderConnection: () =>
     invoke<AiConnectionTest>("test_provider_connection"),
-  listProviderModels: (provider: string) =>
-    invoke<string[]>("list_provider_models", { provider }),
+  listProviderModels: (provider: string, baseUrl?: string) =>
+    invoke<AiModelsListing>("list_provider_models", {
+      provider,
+      baseUrl: baseUrl ?? null,
+    }),
   // skills (Story 5.6): the registry is data — the curated six plus
   // user-added; addSkill grows the pool without code changes
   listSkills: () => invoke<Skill[]>("list_skills"),
