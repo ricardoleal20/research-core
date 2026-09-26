@@ -320,6 +320,16 @@ const browserApi = {
     }
     return mockApi.listRefs(projectId, filter);
   },
+  addRefFromLink: async (_url: string) => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — manage the library from the desktop app / " +
+          "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
+      );
+    }
+    return mockApi.addRefFromLink(_url);
+  },
+  // the v1 name, kept as an alias of the multi-source door
   addRefFromArxiv: async (_url: string) => {
     if (await servedByCore) {
       throw new Error(
@@ -327,7 +337,7 @@ const browserApi = {
           "Vista de solo lectura — gestiona la biblioteca desde la app de escritorio",
       );
     }
-    return mockApi.addRefFromArxiv(_url);
+    return mockApi.addRefFromLink(_url);
   },
   addRefManual: async (
     _title: string,
@@ -1074,10 +1084,13 @@ export const api = mockActive ? browserApi : {
   updateRef: (r: any) => invoke<void>("update_ref", r),
   deleteRef: (id: string) => invoke<void>("delete_ref", { id }),
   searchRefs: (projectId: string, q: string) => invoke<Ref[]>("search_refs", { projectId, q }),
-  // evented references CRUD (FR-15, Epic 5): arXiv paste (the shared
-  // fetch adapter behind the onboarding first-value flow), manual entry
-  // (title + one identifier), the deduped Zotero import, and the
-  // auditable remove/restore pair.
+  // evented references CRUD (FR-15, Epic 5): the multi-source link paste
+  // (the shared resolver behind the onboarding first-value flow — arXiv,
+  // DOI/Crossref, PubMed, Semantic Scholar, OpenAlex), manual entry (title
+  // + one identifier), the deduped Zotero import, and the auditable
+  // remove/restore pair.
+  addRefFromLink: (url: string) => invoke<Ref>("add_ref_from_link", { url }),
+  // the v1 command name, kept as an alias of the same door
   addRefFromArxiv: (url: string) => invoke<Ref>("add_ref_from_arxiv", { url }),
   addRefManual: (
     title: string,

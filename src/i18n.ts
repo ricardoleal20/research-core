@@ -796,10 +796,16 @@ const DICT: Record<string, Record<Lang, string>> = {
   // welcome's two quiet actions and the result moment. Zero jargon beyond
   // the current layer: papers, candidates, one mission with its stop
   // condition and criterion.
-  "onb.pasteTitle": { es: "Pega un enlace de arXiv", en: "Paste an arXiv URL", pt: "Cola um link do arXiv", fr: "Colle un lien arXiv" },
+  "onb.pasteTitle": { es: "Pega un enlace de un artículo", en: "Paste a paper link", pt: "Cola um link de um artigo", fr: "Collez un lien d'article" },
   "onb.modeArxiv": { es: "arXiv", en: "arXiv", pt: "arXiv", fr: "arXiv" },
   "onb.modeManual": { es: "Manual", en: "Manual", pt: "Manual", fr: "Manuel" },
-  "onb.urlPh": { es: "https://arxiv.org/abs/1706.03762", en: "https://arxiv.org/abs/1706.03762", pt: "https://arxiv.org/abs/1706.03762", fr: "https://arxiv.org/abs/1706.03762" },
+  "onb.urlPh": { es: "Pega un enlace (arXiv, DOI, PubMed, Semantic Scholar)…", en: "Paste a link (arXiv, DOI, PubMed, Semantic Scholar)…", pt: "Cola um link (arXiv, DOI, PubMed, Semantic Scholar)…", fr: "Collez un lien (arXiv, DOI, PubMed, Semantic Scholar)…" },
+  "onb.urlHint": {
+    es: "Soportados: arXiv (URL o id), DOI (doi.org o 10.…), PubMed, Semantic Scholar, OpenAlex y enlaces de revistas que lleven su DOI.",
+    en: "Supported: arXiv (URL or id), DOI (doi.org or 10.…), PubMed, Semantic Scholar, OpenAlex, and journal links carrying their DOI.",
+    pt: "Suportados: arXiv (URL ou id), DOI (doi.org ou 10.…), PubMed, Semantic Scholar, OpenAlex e links de revistas que levem o seu DOI.",
+    fr: "Pris en charge : arXiv (URL ou id), DOI (doi.org ou 10.…), PubMed, Semantic Scholar, OpenAlex et liens de revues portant leur DOI.",
+  },
   "onb.generate": { es: "Generar", en: "Generate", pt: "Gerar", fr: "Générer" },
   "onb.generating": { es: "Generando…", en: "Generating…", pt: "A gerar…", fr: "Génération…" },
   "onb.back": { es: "Volver", en: "Back", pt: "Voltar", fr: "Retour" },
@@ -1578,12 +1584,17 @@ const DICT: Record<string, Record<Lang, string>> = {
   // Evented references CRUD (FR-15, Epic 5): add / remove / restore.
   "rc.refs.add": { es: "Añadir referencia", en: "Add reference", pt: "Adicionar referência", fr: "Ajouter une référence" },
   "rc.refs.addTitle": { es: "Añadir a la biblioteca", en: "Add to the library", pt: "Adicionar à biblioteca", fr: "Ajouter à la bibliothèque" },
-  "rc.refs.mode.arxiv": { es: "Pegar arXiv", en: "Paste arXiv", pt: "Colar arXiv", fr: "Coller arXiv" },
+  "rc.refs.mode.arxiv": { es: "Pegar enlace", en: "Paste link", pt: "Colar link", fr: "Coller un lien" },
   "rc.refs.mode.manual": { es: "Entrada manual", en: "Manual entry", pt: "Entrada manual", fr: "Saisie manuelle" },
   "rc.refs.mode.zotero": { es: "Zotero", en: "Zotero", pt: "Zotero", fr: "Zotero" },
-  "rc.refs.arxiv.label": { es: "URL de arXiv", en: "arXiv URL", pt: "URL de arXiv", fr: "URL arXiv" },
-  "rc.refs.arxiv.ph": { es: "https://arxiv.org/abs/1706.03762", en: "https://arxiv.org/abs/1706.03762", pt: "https://arxiv.org/abs/1706.03762", fr: "https://arxiv.org/abs/1706.03762" },
-  "rc.refs.arxiv.help": { es: "Se rellenan título, autores, año y DOI desde arXiv.", en: "Title, authors, year and DOI are filled from arXiv.", pt: "Título, autores, ano e DOI são preenchidos a partir do arXiv.", fr: "Le titre, les auteurs, l'année et le DOI sont remplis depuis arXiv." },
+  "rc.refs.arxiv.label": { es: "Enlace del artículo", en: "Paper link", pt: "Link do artigo", fr: "Lien de l'article" },
+  "rc.refs.arxiv.ph": { es: "Pega un enlace (arXiv, DOI, PubMed, Semantic Scholar)…", en: "Paste a link (arXiv, DOI, PubMed, Semantic Scholar)…", pt: "Cola um link (arXiv, DOI, PubMed, Semantic Scholar)…", fr: "Collez un lien (arXiv, DOI, PubMed, Semantic Scholar)…" },
+  "rc.refs.arxiv.help": {
+    es: "Se rellenan título, autores, año y DOI desde arXiv, Crossref (DOI), PubMed, Semantic Scholar u OpenAlex — también enlaces de revistas que lleven su DOI.",
+    en: "Title, authors, year and DOI are filled from arXiv, Crossref (DOI), PubMed, Semantic Scholar or OpenAlex — journal links carrying their DOI work too.",
+    pt: "Título, autores, ano e DOI são preenchidos a partir do arXiv, Crossref (DOI), PubMed, Semantic Scholar ou OpenAlex — também links de revistas que levem o seu DOI.",
+    fr: "Le titre, les auteurs, l'année et le DOI sont remplis depuis arXiv, Crossref (DOI), PubMed, Semantic Scholar ou OpenAlex — les liens de revues portant leur DOI fonctionnent aussi.",
+  },
   "rc.refs.f.title": { es: "Título", en: "Title", pt: "Título", fr: "Titre" },
   "rc.refs.f.titlePh": { es: "Título del trabajo", en: "Paper title", pt: "Título do trabalho", fr: "Titre de l'article" },
   "rc.refs.f.authors": { es: "Autores", en: "Authors", pt: "Autores", fr: "Auteurs" },

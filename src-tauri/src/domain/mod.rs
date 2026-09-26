@@ -18,6 +18,7 @@ pub mod missions;
 pub mod onboarding;
 pub mod proposals;
 pub mod readiness;
+pub mod resolver;
 pub mod receipts;
 pub mod search;
 pub mod skills;

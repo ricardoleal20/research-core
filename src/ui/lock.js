@@ -385,7 +385,8 @@ function renderInitStep(app) {
       ${mode === "ai" ? `
         <div>
           <label class="block text-sm font-medium mb-1.5">${t("onb.pasteTitle")}</label>
-          <input id="wiz-arxiv" value="${esc(s.initUrl)}" placeholder="https://arxiv.org/abs/1706.03762" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
+          <input id="wiz-arxiv" value="${esc(s.initUrl)}" placeholder="${esc(t("onb.urlPh"))}" class="w-full rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
+          <p class="text-xs text-muted mt-1.5">${t("onb.urlHint")}</p>
           ${btn({ label: s.initLoading ? t("onb.generating") : t("onb.generate"), variant: "default", cls: "mt-3 w-full", iconName: "sparkle", onClick: "RC.wizFirstValue()", disabled: s.initLoading })}
         </div>
         ${s.initResult ? renderFirstValueResult(app, s.initResult) : ""}

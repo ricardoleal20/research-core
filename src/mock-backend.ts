@@ -2038,8 +2038,14 @@ const delay = (ms = 60) => new Promise<void>((r) => setTimeout(r, ms));
 // Mirrors the typed core: the same arXiv URL shapes parse to the bare id
 // (anything else fails with the same coded `invalid_url:` error before
 // anything happens), the paste upserts the paper into the library (matched
-// by url, never duplicated), and the simulated provider generates the
+// by url or doi, never duplicated), and the simulated provider generates the
 // candidates (attributed to "simulated", cost 0 — the mock has no key).
+//
+// The multi-source link resolver (the owner's "no solo arXiv") is mirrored
+// too: the same detection routes arXiv / DOI (Crossref) / PubMed / Semantic
+// Scholar / OpenAlex links, journal links carrying a DOI, and free-text
+// titles to deterministic seeded resolutions — and anything else fails with
+// the same coded `unsupported_source:` refusal (never fabricated metadata).
 
 function parseMockArxivUrl(input: string): string {
   const s = input.trim();
@@ -2086,6 +2092,240 @@ const seedPaper = (arxivId: string) =>
         abstract: null as string | null,
       };
 
+// A resolved link — the mirror of the core's ResolvedPaper.
+type MockResolved = {
+  source: "arxiv" | "doi" | "crossref" | "pubmed" | "s2" | "openalex";
+  title: string;
+  authors: string;
+  year: number | null;
+  venue: string;
+  doi: string | null;
+  url: string;
+  abstract: string | null;
+  arxivId: string | null;
+};
+
+// The honest refusal, verbatim from the core (bilingual, code first).
+const unsupportedSourceError = (input: string) =>
+  new Error(
+    `unsupported_source: \`${input}\` — paste a link or id from arXiv, doi.org, PubMed or Semantic Scholar: ` +
+      "an arXiv URL or id, a DOI like 10.1038/nature14539, or a journal link carrying its DOI / " +
+      "pega un enlace o id de arXiv, doi.org, PubMed o Semantic Scholar: una URL o id de arXiv, " +
+      "un DOI como 10.1038/nature14539, o un enlace de revista que lleve su DOI",
+  );
+
+// `10.1038/nature14539` — the DOI shape (prefix 10., 4-9 registrant digits,
+// a slash, a whitespace-free suffix). The mirror of the core's check.
+const looksLikeDoi = (s: string): boolean => /^10\.\d{4,9}\/\S+$/.test(s.trim());
+
+// The site sections a journal link may append after the DOI.
+const MOCK_TRAILING_SECTIONS = ["abstract", "full", "abs", "pdf", "references", "related", "epdf", "html"];
+
+// A DOI out of a journal link's path segments or query — best effort, the
+// mirror of the core's fallback.
+function extractMockDoiFromUrl(url: string): string | null {
+  const [path, query] = url.split("?", 2);
+  const segs = path.split("/").filter((p) => p !== "");
+  const start = segs.findIndex((seg) => /^10\.\d{4,9}$/.test(seg));
+  if (start >= 0 && start + 1 < segs.length) {
+    let end = segs.length;
+    while (end > start + 2 && MOCK_TRAILING_SECTIONS.includes(segs[end - 1].toLowerCase())) end -= 1;
+    const doi = segs.slice(start, end).join("/");
+    if (looksLikeDoi(doi)) return doi;
+  }
+  if (query) {
+    for (const pair of query.split("&")) {
+      const value = pair.includes("=") ? pair.slice(pair.indexOf("=") + 1) : pair;
+      if (looksLikeDoi(value)) return value.trim();
+    }
+  }
+  return null;
+}
+
+// The deterministic seeded DOI resolution: the design's example DOI (LeCun's
+// "Deep learning") resolves to real metadata; any other DOI gets a
+// generic-but-honest paper, like the arXiv seeds.
+function seedDoiPaper(doi: string, source: MockResolved["source"]): MockResolved {
+  if (doi === "10.1038/nature14539") {
+    return {
+      source,
+      title: "Deep learning",
+      authors: "LeCun, Yann, Bengio, Yoshua, Hinton, Geoffrey",
+      year: 2015,
+      venue: "Nature",
+      doi,
+      url: `https://doi.org/${doi}`,
+      abstract:
+        "Deep learning allows computational models that are composed of multiple processing layers to learn representations of data with multiple levels of abstraction.",
+      arxivId: null,
+    };
+  }
+  return {
+    source,
+    title: `DOI:${doi}`,
+    authors: "Unknown Author",
+    year: 2024,
+    venue: "Journal",
+    doi,
+    url: `https://doi.org/${doi}`,
+    abstract: null,
+    arxivId: null,
+  };
+}
+
+/** The multi-source link resolver's mock mirror: the same detection (arXiv
+ *  first, then the recognized hosts, then the bare DOI, then the best-effort
+ *  journal-link DOI, then the free-text title search), the same typed
+ *  refusals — `unsupported_source:` / `invalid_url:` — before anything
+ *  happens, never fabricated metadata. */
+function resolveMockLink(input: string): MockResolved {
+  const s = input.trim();
+  const unsupported = () => {
+    throw unsupportedSourceError(s);
+  };
+  if (!s) unsupported();
+  // arXiv first — the v1 parser, kept verbatim (URLs and bare ids)
+  try {
+    const arxivId = parseMockArxivUrl(s);
+    const seed = seedPaper(arxivId);
+    return {
+      source: "arxiv",
+      title: seed.title,
+      authors: seed.authors,
+      year: seed.year,
+      venue: "arXiv",
+      doi: `10.48550/arXiv.${arxivId}`,
+      url: `https://arxiv.org/abs/${arxivId}`,
+      abstract: seed.abstract,
+      arxivId,
+    };
+  } catch {
+    // not arXiv — the multi-source detection continues
+  }
+  // scheme split; a non-http(s) scheme is the typed invalid_url
+  let scheme: string | null = null;
+  let rest = s;
+  if (s.includes("://")) {
+    const [sc, after] = s.split("://", 2) as [string, string];
+    if (sc.toLowerCase() !== "http" && sc.toLowerCase() !== "https") {
+      throw new Error(`invalid_url: \`${s}\` — paste a valid link (https://arxiv.org/abs/1706.03762)`);
+    }
+    scheme = sc;
+    rest = after;
+  }
+  const lower = rest.toLowerCase();
+  const segs = (skip: number) => rest.split("/").filter((p) => p !== "").slice(skip);
+  if (lower.startsWith("doi.org/") || lower.startsWith("dx.doi.org/")) {
+    const doi = rest
+      .split("/")
+      .slice(1)
+      .join("/")
+      .split("?")[0]
+      .replace(/\/+$/, "");
+    if (!looksLikeDoi(doi)) unsupported();
+    return seedDoiPaper(doi, "doi");
+  }
+  if (lower.startsWith("api.crossref.org/works/")) {
+    const doi = segs(2).join("/").replace(/\/+$/, "");
+    if (!looksLikeDoi(doi)) unsupported();
+    return seedDoiPaper(doi, "crossref");
+  }
+  if (
+    lower.startsWith("pubmed.ncbi.nlm.nih.gov/") ||
+    lower.startsWith("www.ncbi.nlm.nih.gov/pubmed/") ||
+    lower.startsWith("ncbi.nlm.nih.gov/pubmed/")
+  ) {
+    const id = (lower.startsWith("pubmed.ncbi.nlm.nih.gov/") ? segs(1) : segs(2))
+      .join("/")
+      .replace(/\/+$/, "");
+    if (!/^\d+$/.test(id)) unsupported();
+    return {
+      source: "pubmed",
+      title: `PubMed:${id}`,
+      authors: "Unknown Author",
+      year: 2024,
+      venue: "PubMed",
+      doi: null,
+      url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+      abstract: null,
+      arxivId: null,
+    };
+  }
+  if (lower.startsWith("semanticscholar.org/paper/") || lower.startsWith("www.semanticscholar.org/paper/")) {
+    // the trailing 40-hex id after the title slug
+    const last = segs(2).join("/").replace(/\/+$/, "").split("/").pop() ?? "";
+    const id =
+      last.length > 40 && /^[0-9a-f]{40}$/.test(last.slice(-40)) ? last.slice(-40) : last;
+    if (!id) unsupported();
+    return {
+      source: "s2",
+      title: `Semantic Scholar:${id.slice(0, 8)}`,
+      authors: "Unknown Author",
+      year: 2024,
+      venue: "Semantic Scholar",
+      doi: null,
+      url: `https://www.semanticscholar.org/paper/${id}`,
+      abstract: null,
+      arxivId: null,
+    };
+  }
+  if (lower.startsWith("api.semanticscholar.org/graph/v1/paper/")) {
+    const id = segs(4).join("/").replace(/\/+$/, "").split("/").pop() ?? "";
+    if (!id) unsupported();
+    return {
+      source: "s2",
+      title: `Semantic Scholar:${id.slice(0, 12)}`,
+      authors: "Unknown Author",
+      year: 2024,
+      venue: "Semantic Scholar",
+      doi: null,
+      url: `https://www.semanticscholar.org/paper/${id}`,
+      abstract: null,
+      arxivId: null,
+    };
+  }
+  if (lower.startsWith("openalex.org/works/") || lower.startsWith("api.openalex.org/works/")) {
+    const id = segs(2).join("/").replace(/\/+$/, "");
+    if (!id) unsupported();
+    return {
+      source: "openalex",
+      title: `OpenAlex:${id}`,
+      authors: "Unknown Author",
+      year: 2024,
+      venue: "OpenAlex",
+      doi: null,
+      url: `https://openalex.org/works/${id}`,
+      abstract: null,
+      arxivId: null,
+    };
+  }
+  // a bare DOI (a trailing sentence period is not part of it)
+  if (looksLikeDoi(rest)) return seedDoiPaper(rest.replace(/\.+$/, ""), "doi");
+  // an unrecognized URL: best effort — a journal link usually carries its DOI
+  const firstSeg = rest.split("/")[0] ?? "";
+  if (scheme || (firstSeg.includes(".") && !/\s/.test(firstSeg))) {
+    const doi = extractMockDoiFromUrl(rest);
+    if (doi) return seedDoiPaper(doi, "openalex");
+    unsupported();
+  }
+  // free text (no scheme, no host): a title — the OpenAlex title search seed
+  if (rest.split(/\s+/).length >= 2) {
+    return {
+      source: "openalex",
+      title: s,
+      authors: "Unknown Author",
+      year: 2024,
+      venue: "OpenAlex",
+      doi: null,
+      url: "",
+      abstract: null,
+      arxivId: null,
+    };
+  }
+  unsupported();
+  throw new Error("unreachable");
+}
+
 // The simulated provider's candidates (mirrors the Rust simulator): sensible,
 // falsifiable, derived from the paper title in the interface language.
 function mockCandidates(title: string, lang: string): { statement: string; confidence: number }[] {
@@ -2102,9 +2342,10 @@ function mockCandidates(title: string, lang: string): { statement: string; confi
       ];
 }
 
-/** The shared first-value flow behind both mock doors (arXiv paste and the
- *  Zotero library stub): upsert the ref, generate the candidates, create the
- *  starter mission, and append the candidates as proposed hypotheses. */
+/** The shared first-value flow behind the mock doors (the multi-source link
+ *  paste and the Zotero library stub): upsert the ref, generate the
+ *  candidates, create the starter mission, and append the candidates as
+ *  proposed hypotheses. */
 async function mockFirstValue(paper: {
   refId?: string;
   title: string;
@@ -2112,12 +2353,20 @@ async function mockFirstValue(paper: {
   year: number | null;
   url: string;
   arxivId: string;
+  source?: string;
+  doi?: string | null;
+  venue?: string;
+  abstract?: string | null;
 }): Promise<FirstValueResult> {
   await delay(450);
-  // library upsert — match by url, never duplicate
+  const source = paper.source || "arxiv";
+  const sourceTag = source === "arxiv" ? "arXiv" : source;
+  // library upsert — match by url or doi, never duplicate
   let refId = paper.refId;
   if (!refId) {
-    const existing = mockRefs.find((r) => r.url === paper.url);
+    const existing = mockRefs.find(
+      (r) => (paper.url !== "" && r.url === paper.url) || (paper.doi && r.doi === paper.doi),
+    );
     refId = existing ? existing.id : "r" + (mockRefs.length + 1) + "-" + Date.now();
     if (!existing) {
       mockRefs.push({
@@ -2127,19 +2376,19 @@ async function mockFirstValue(paper: {
         title: paper.title,
         authors: paper.authors,
         year: paper.year ?? new Date().getFullYear(),
-        venue: "arXiv",
-        doi: `10.48550/arXiv.${paper.arxivId}`,
+        venue: paper.venue || "arXiv",
+        doi: paper.doi ?? (paper.arxivId ? `10.48550/arXiv.${paper.arxivId}` : ""),
         url: paper.url,
         isbn: "",
         attachment: null,
         status: "unread",
-        tags: "arXiv,onboarding",
+        tags: `${sourceTag},onboarding`,
         used: 0,
         citation_count: 0,
         created_at: nowISO(),
-        source: "arxiv",
+        source,
         removed: false,
-        arxiv_id: paper.arxivId,
+        arxiv_id: paper.arxivId || undefined,
         timeline: [],
       });
     }
@@ -2313,14 +2562,15 @@ export const mockApi = {
   // core's domain/library: adds append ref.added semantics (dedup by
   // url/doi/zotero key with the honest already_in_library refusal),
   // removal is the auditable archived state (never destructive), restore
-  // is the un-event, and a removed ref is never pinnable.
-  addRefFromArxiv: async (url: string): Promise<Ref> => {
+  // is the un-event, and a removed ref is never pinnable. The link add
+  // resolves through the multi-source mock resolver (same sources, same
+  // typed refusals as the core).
+  addRefFromLink: async (url: string): Promise<Ref> => {
     await delay(300);
-    const arxivId = parseMockArxivUrl(url);
-    const seed = seedPaper(arxivId);
-    const urlNorm = `https://arxiv.org/abs/${arxivId}`;
-    const doi = `10.48550/arXiv.${arxivId}`;
-    const dup = mockRefs.find((r) => r.url === urlNorm || r.doi === doi);
+    const res = resolveMockLink(url);
+    const dup = mockRefs.find(
+      (r) => (res.url !== "" && r.url === res.url) || (res.doi && r.doi === res.doi),
+    );
     if (dup) {
       throw new Error(
         `already_in_library: \`${dup.title}\` — this reference is already in the library (added via ${dup.source ?? "arxiv"})`,
@@ -2331,27 +2581,29 @@ export const mockApi = {
       id: "r" + (mockRefs.length + 1) + "-" + Date.now(),
       project_id: "p1",
       collection_id: null,
-      title: seed.title,
-      authors: seed.authors,
-      year: seed.year ?? new Date().getFullYear(),
-      venue: "arXiv",
-      doi,
-      url: urlNorm,
+      title: res.title,
+      authors: res.authors,
+      year: res.year ?? new Date().getFullYear(),
+      venue: res.venue,
+      doi: res.doi ?? "",
+      url: res.url,
       isbn: "",
       attachment: null,
       status: "unread",
-      tags: `arXiv,${arxivId}`,
+      tags: res.source === "arxiv" && res.arxivId ? `arXiv,${res.arxivId}` : res.source,
       used: 0,
       citation_count: 0,
       created_at: nowISO(),
-      source: "arxiv",
+      source: res.source,
       removed: false,
-      arxiv_id: arxivId,
+      arxiv_id: res.arxivId ?? undefined,
       timeline: [{ seq: mockEventSeq, ts: nowISO(), actor: "user", kind: "ref.added" }],
     };
     mockRefs.push(ref);
     return { ...ref, timeline: (ref.timeline ?? []).map((e) => ({ ...e })) };
   },
+  // the v1 name, kept as an alias of the multi-source door
+  addRefFromArxiv: async (url: string): Promise<Ref> => mockApi.addRefFromLink(url),
   addRefManual: async (
     title: string,
     authors: string,
@@ -4304,17 +4556,20 @@ export const mockApi = {
     };
   },
 
-  // onboarding (Story 1.9) — the arXiv paste door and the Zotero library
-  // door, mirroring the typed core end to end.
+  // onboarding (Story 1.9) — the multi-source link paste door and the Zotero
+  // library door, mirroring the typed core end to end.
   runFirstValue: async (url: string) => {
-    const arxivId = parseMockArxivUrl(url);
-    const seed = seedPaper(arxivId);
+    const res = resolveMockLink(url);
     return mockFirstValue({
-      title: seed.title,
-      authors: seed.authors,
-      year: seed.year,
-      url: `https://arxiv.org/abs/${arxivId}`,
-      arxivId,
+      title: res.title,
+      authors: res.authors,
+      year: res.year,
+      url: res.url,
+      arxivId: res.arxivId ?? "",
+      source: res.source,
+      doi: res.doi,
+      venue: res.venue,
+      abstract: res.abstract,
     });
   },
   runFirstValueFromRef: async (refId: string) => {
@@ -4328,7 +4583,8 @@ export const mockApi = {
       authors: ref.authors ?? "",
       year: ref.year ?? null,
       url: ref.url ?? "",
-      arxivId: (ref.doi ?? "").replace("10.48550/arXiv.", ""),
+      arxivId: ref.arxiv_id ?? (ref.doi ?? "").replace("10.48550/arXiv.", ""),
+      source: "zotero",
     });
   },
 
