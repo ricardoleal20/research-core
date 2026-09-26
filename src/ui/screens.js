@@ -13,14 +13,23 @@ import { RC, ctx } from "./rc";
 
 // ========== REFERENCES ==========
 const refSource = (r) =>
-  r.source === "arxiv" || r.source === "zotero" || r.source === "manual"
-    ? { arxiv: "arXiv", zotero: "Zotero", manual: "Manual" }[r.source]
+  ["arxiv", "zotero", "manual", "doi", "crossref", "pubmed", "s2", "openalex"].includes(r.source)
+    ? {
+        arxiv: "arXiv",
+        zotero: "Zotero",
+        manual: "Manual",
+        doi: "DOI",
+        crossref: "Crossref",
+        pubmed: "PubMed",
+        s2: "Semantic Scholar",
+        openalex: "OpenAlex",
+      }[r.source]
     : (r.doi || "").startsWith("10.48550/arXiv.")
       ? "arXiv"
       : r.attachment
         ? "Zotero"
         : "Manual";
-const refSourceColor = { arXiv: "primary", Zotero: "warning", "Semantic Scholar": "success", Manual: "muted", MCP: "medium" };
+const refSourceColor = { arXiv: "primary", Zotero: "warning", "Semantic Scholar": "success", Manual: "muted", MCP: "medium", DOI: "primary", Crossref: "primary", PubMed: "success", OpenAlex: "medium" };
 const refReviewed = (r) => r.status === "read" || r.status === "reviewed";
 
 export function renderRefs(app) {
@@ -1447,7 +1456,7 @@ Object.assign(RC, {
     f.saving = true;
     f.error = null;
     try {
-      await api.addRefFromArxiv(url);
+      await api.addRefFromLink(url);
       RC.closeRefDetail();
       await ctx.loadRefs();
     } catch (e) {

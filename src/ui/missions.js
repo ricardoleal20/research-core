@@ -89,9 +89,10 @@ function renderEmptyHome(app) {
             </div>
             <p class="text-sm text-muted leading-relaxed">${t("missions.emptyHint")}</p>
             <div class="flex gap-2">
-              <input id="first-value-url" value="${esc(w.initUrl)}" placeholder="https://arxiv.org/abs/1706.03762" class="flex-1 rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
+              <input id="first-value-url" value="${esc(w.initUrl)}" placeholder="${esc(t("onb.urlPh"))}" class="flex-1 rounded-lg border border-border bg-white px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30">
               ${btn({ label: w.initLoading ? t("onb.generating") : t("onb.generate"), variant: "default", iconName: "sparkle", onClick: "RC.firstValue()", disabled: w.initLoading })}
             </div>
+            <p class="text-xs text-muted">${t("onb.urlHint")}</p>
             ${w.initResult ? renderFirstValueCard(w.initResult) : ""}
           </div>`)}
       </div>
