@@ -801,12 +801,39 @@ pub async fn test_provider_connection(db: State<'_, Db>) -> Result<Value, String
     }))
 }
 
-/// The model list one provider's picker offers (Story 5.9): the curated
-/// per-provider list in v1; empty for custom base URLs (free entry). CLI
-/// bridges list exactly ["default"] ("vía CLI").
+/// List one provider's LIVE models (the explore path, restoring the bible
+/// wizard's EXPLORE action): one GET against the provider's real models
+/// endpoint with the keychain-stored key (AD-9 — through the provider
+/// layer's own HTTP surface; AD-16 — the key never rides the result, and
+/// never the URI: Google's rides its documented header). Model ids come
+/// back sorted + deduped with the provider attribution; every refusal is
+/// the typed honest error (`provider_not_configured:` /
+/// `models_fetch_failed:`). The local (Ollama) provider reuses its own
+/// /api/tags discovery — no key. Falls back to nothing: an empty list is
+/// an honest empty list (the picker falls back to the curated list).
 #[tauri::command]
-pub async fn list_provider_models(provider: String) -> Result<Vec<String>, String> {
-    Ok(crate::adapters::providers::curated_models(&provider))
+pub async fn list_provider_models(
+    db: State<'_, Db>,
+    provider: String,
+    base_url: Option<String>,
+) -> Result<Value, String> {
+    // read the key + base URL under the lock, then drop it before the
+    // outbound call — never a guard held across an await
+    let s = {
+        let c = db.0.lock().await;
+        crate::adapters::providers::ProviderSettings::for_listing(
+            &c,
+            &provider,
+            base_url.as_deref().unwrap_or(""),
+        )
+    };
+    let models = crate::adapters::providers::models::list_models(&s)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "provider": s.name.trim(),
+        "models": models,
+    }))
 }
 
 

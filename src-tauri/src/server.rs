@@ -25,7 +25,7 @@ use crate::domain::search::SearchDisclosure;
 use crate::domain::skills::Skill;
 use crate::readiness_commands::readiness_report_inner;
 use crate::search_commands::search_disclosure_inner;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -109,6 +109,7 @@ pub(crate) fn read_api_router() -> Router<ServerState> {
         .route("/api/adapters", get(registered_adapters))
         .route("/api/skills", get(list_skills))
         .route("/api/ai-config", get(ai_config))
+        .route("/api/ai/models", get(ai_models))
         .route("/api/host-allowlist", get(host_allowlist))
         .route("/api/refs", get(library_refs))
         // The manuscript reads (Story 6.6, FR-20.2 — read-only per AD-14):
@@ -297,6 +298,53 @@ async fn ai_config(State(state): State<ServerState>) -> Result<Json<Value>, Stat
     crate::commands::ai_config_inner(&c, Some(local))
         .map(Json)
         .map_err(|_| internal())
+}
+
+/// The provider models listing query (the explore path):
+/// `GET /api/ai/models?provider=…&base_url=…`.
+#[derive(serde::Deserialize)]
+struct AiModelsQuery {
+    provider: String,
+    base_url: Option<String>,
+}
+
+/// One provider's LIVE model list (the explore path, read-only per AD-14 —
+/// a listing appends nothing to the log): one GET against the provider's
+/// real models endpoint with the keychain-stored key. The key never rides
+/// the URI (Google's rides its documented header) and never the response;
+/// failures are the typed honest errors — 400 `provider_not_configured:`,
+/// 502 `models_fetch_failed:` — never a silent empty list.
+async fn ai_models(
+    State(state): State<ServerState>,
+    Query(q): Query<AiModelsQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // read the key + base URL under the lock, then drop it before the
+    // outbound call — never a guard held across an await
+    let s = {
+        let c = state.db.0.lock().await;
+        crate::adapters::providers::ProviderSettings::for_listing(
+            &c,
+            &q.provider,
+            q.base_url.as_deref().unwrap_or(""),
+        )
+    };
+    match crate::adapters::providers::models::list_models(&s).await {
+        Ok(models) => Ok(Json(serde_json::json!({
+            "provider": s.name.trim(),
+            "models": models,
+        }))),
+        Err(e) => {
+            let code = match &e {
+                crate::adapters::providers::models::ModelsError::NotConfigured(_) => {
+                    StatusCode::BAD_REQUEST
+                }
+                crate::adapters::providers::models::ModelsError::FetchFailed { .. } => {
+                    StatusCode::BAD_GATEWAY
+                }
+            };
+            Err((code, Json(serde_json::json!({ "error": e.to_string() }))))
+        }
+    }
 }
 
 /// The hypothesis board of one mission (Story 1.5, read-only per AD-14).
@@ -1954,5 +2002,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// The explore route (the explore path over the read-only API): the
+    /// listing rides the keychain-stored key to the provider's real models
+    /// endpoint (captured by a one-shot local stand-in), comes back with
+    /// the provider attribution + sorted/deduped ids, and never carries the
+    /// key in the response. An unconfigured provider is the typed 400 —
+    /// never a silent empty list.
+    #[tokio::test]
+    async fn get_api_ai_models_lists_the_providers_live_models() {
+        use std::sync::{Arc, Mutex};
+        const SENTINEL: &str = "sk-route-explore-SENTINEL-4c2f";
+        // a probe provider name unique to this test — the keychain account
+        // must not race the other BYOK tests' "custom" account (same test
+        // binary, parallel threads)
+        const PROBE: &str = "route-explore";
+        const PROBE_STR: &str = "route-explore";
+
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let seen = captured.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let provider = axum::Router::new().route(
+            "/v1/models",
+            axum::routing::get(move |req: axum::extract::Request<axum::body::Body>| {
+                let seen = seen.clone();
+                async move {
+                    let (parts, _) = req.into_parts();
+                    let auth = parts
+                        .headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    *seen.lock().unwrap() = Some(auth);
+                    axum::Json(serde_json::json!({
+                        "data": [{ "id": "m-z" }, { "id": "m-a" }, { "id": "m-a" }]
+                    }))
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, provider).await;
+        });
+
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::Db::migrate(&conn).unwrap();
+        EventStore::init(&conn).unwrap();
+        let db = Db(std::sync::Arc::new(tokio::sync::Mutex::new(conn)));
+        // the key: keychain when available, else the legacy settings
+        // fallback (both are the BYOK store — never the query string)
+        let keychain_ok = match keyring::Entry::new(
+            crate::eventstore::migration::KEYCHAIN_SERVICE,
+            &crate::eventstore::migration::keychain_account(PROBE),
+        ) {
+            Ok(entry) => entry.set_password(SENTINEL).is_ok(),
+            Err(_) => false,
+        };
+        if !keychain_ok {
+            let c = db.0.lock().await;
+            crate::db::set_setting(&c, "provider", PROBE_STR).unwrap();
+            crate::db::set_setting(&c, "api_key", SENTINEL).unwrap();
+        }
+
+        let res = app(db.clone())
+            .oneshot(
+                Request::get(format!(
+                    "/api/ai/models?provider={PROBE}&base_url=http://{addr}/v1"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listing: serde_json::Value = body_json(res.into_body()).await;
+        assert_eq!(listing["provider"], PROBE_STR);
+        assert_eq!(
+            listing["models"],
+            serde_json::json!(["m-a", "m-z"]),
+            "sorted + deduped"
+        );
+        assert!(
+            !listing.to_string().contains(SENTINEL),
+            "the response never carries the key"
+        );
+        assert_eq!(
+            captured.lock().unwrap().clone().expect("the provider saw the request"),
+            format!("Bearer {SENTINEL}"),
+            "the listing rode the keychain-stored key"
+        );
+
+        // an unconfigured provider is the typed 400 refusal
+        let res = app(db)
+            .oneshot(
+                Request::get("/api/ai/models?provider=openai")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let refused: serde_json::Value = body_json(res.into_body()).await;
+        assert!(
+            refused["error"].as_str().unwrap().starts_with("provider_not_configured:"),
+            "{refused}"
+        );
+
+        if keychain_ok {
+            if let Ok(entry) = keyring::Entry::new(
+                crate::eventstore::migration::KEYCHAIN_SERVICE,
+                &crate::eventstore::migration::keychain_account(PROBE),
+            ) {
+                let _ = entry.delete_credential();
+            }
+        }
     }
 }
