@@ -1,8 +1,10 @@
 // Library domain (FR-15, Epic 5 — references CRUD): the reference manager
 // becomes evented. Adds land as `ref.added` events carrying their source
-// (arxiv | zotero | manual); removal is an auditable `ref.removed` state
-// transition (never a destructive delete — the log stays the single source
-// of truth, zero data loss); restore is the un-event `ref.restored`.
+// (arxiv | zotero | manual, or one of the resolved link sources — doi |
+// crossref | pubmed | s2 | openalex, where the multi-source resolver
+// answered); removal is an auditable `ref.removed` state transition (never a
+// destructive delete — the log stays the single source of truth, zero data
+// loss); restore is the un-event `ref.restored`.
 //
 // The library projection seeds from the legacy relational `refs` table (the
 // v1 migration's output — read-only per AD-16) and folds the event log on
@@ -11,39 +13,32 @@
 // `ref.restored` event un-masks it. Replaying the log yields the identical
 // library state, archived flags included (NFR-8).
 //
-// The arXiv fetch adapter is shared with the onboarding first-value flow
-// (FR-15.1 reuses the FR-8.1 URL parsing + fetch verbatim): both the
-// onboarding paste and the library add resolve through
-// `fetch_arxiv_metadata`, so the two doors can never drift.
+// Link adds resolve through the shared multi-source resolver
+// (domain/resolver.rs — arXiv, DOI/Crossref, PubMed, Semantic Scholar,
+// OpenAlex): both the onboarding paste and the library add call
+// `resolve_link`, so the two doors can never drift.
 //
 // Errors are coded and bilingual-safe (codes are never translated,
-// EXPERIENCE.md): `invalid_url:`, `fetch_failed:`, `already_in_library:`,
-// `not_found:`, `invalid_state:`.
+// EXPERIENCE.md): `already_in_library:`, `not_found:`, `invalid_state:`.
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::onboarding::{self, OnboardingError};
 use crate::eventstore::{Actor, EventError, NewEvent, StoredEvent};
 
 pub const REF_ADDED: &str = "ref.added";
 pub const REF_REMOVED: &str = "ref.removed";
 pub const REF_RESTORED: &str = "ref.restored";
 
-/// The closed `ref.added` source vocabulary (FR-15.1/15.2/15.3). Legacy
-/// baseline rows carry their derived source (`legacy` is never appended).
-pub const REF_SOURCES: [&str; 3] = ["arxiv", "zotero", "manual"];
-
-#[derive(Debug, thiserror::Error)]
-pub enum LibraryError {
-    #[error(transparent)]
-    Onboarding(#[from] OnboardingError),
-    #[error(transparent)]
-    Event(#[from] EventError),
-    #[error("database error: {0}")]
-    Db(#[from] rusqlite::Error),
-}
+/// The closed `ref.added` source vocabulary (FR-15.1/15.2/15.3): the three
+/// add doors (arxiv paste / zotero import / manual entry) plus the resolved
+/// link sources the multi-source resolver answers with (doi | crossref |
+/// pubmed | s2 | openalex). Legacy baseline rows carry their derived source
+/// (`legacy` is never appended).
+pub const REF_SOURCES: [&str; 8] = [
+    "arxiv", "zotero", "manual", "doi", "crossref", "pubmed", "s2", "openalex",
+];
 
 /// The `ref.added` payload — everything the library fold needs to grow a
 /// ref from the log alone. `ref_id` is the ref's identity (a uuid string);
@@ -66,7 +61,8 @@ pub struct RefAddedPayload {
     pub url: String,
     #[serde(default)]
     pub tags: String,
-    /// arxiv | zotero | manual (the closed vocabulary above).
+    /// arxiv | zotero | manual | doi | crossref | pubmed | s2 | openalex (the
+    /// closed vocabulary above).
     pub source: String,
     #[serde(default)]
     pub zotero_item_key: Option<String>,
@@ -193,7 +189,8 @@ pub struct LibraryRef {
     pub used: i64,
     pub citation_count: i64,
     pub created_at: String,
-    /// arxiv | zotero | manual (evented) or the derived legacy badge source.
+    /// arxiv | zotero | manual | doi | crossref | pubmed | s2 | openalex
+    /// (evented) or the derived legacy badge source.
     pub source: String,
     #[serde(default)]
     pub zotero_item_key: Option<String>,
@@ -401,44 +398,6 @@ pub fn find_duplicate<'a>(
         (!doi.is_empty() && !r.doi.is_empty() && r.doi == doi)
             || (!url.is_empty() && !r.url.is_empty() && r.url == url)
             || zotero_item_key.is_some_and(|k| r.zotero_item_key.as_deref() == Some(k))
-    })
-}
-
-/// The arXiv paper's metadata as fetched — the shared adapter's output.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ArxivMetadata {
-    pub arxiv_id: String,
-    pub title: String,
-    pub authors: String,
-    pub year: Option<i64>,
-    pub venue: String,
-    pub doi: String,
-    pub url: String,
-    pub abstract_text: Option<String>,
-}
-
-/// The shared arXiv fetch adapter (FR-15.1 reusing FR-8.1 verbatim): the
-/// same URL parsing (`invalid_url:` before any network) and the same export
-/// API fetch behind `run_first_value` — the onboarding paste door and the
-/// library add door resolve through this one function, so they can never
-/// drift. A data fetch, not an LLM call (AD-9 governs LLM calls only).
-pub async fn fetch_arxiv_metadata(url: &str) -> Result<ArxivMetadata, LibraryError> {
-    let arxiv_id = onboarding::parse_arxiv_url(url)?;
-    let search = crate::mcp::arxiv_fetch(&arxiv_id)
-        .await
-        .map_err(OnboardingError::FetchFailed)?
-        .ok_or_else(|| {
-            OnboardingError::FetchFailed(format!("arXiv has no paper with id `{arxiv_id}`"))
-        })?;
-    Ok(ArxivMetadata {
-        arxiv_id,
-        title: search.title,
-        authors: search.authors,
-        year: search.year,
-        venue: search.venue,
-        doi: search.doi,
-        url: search.url,
-        abstract_text: search.abstract_text,
     })
 }
 

@@ -1,23 +1,25 @@
 // Library shell commands (AD-15a, FR-15, Epic 5): the typed core APIs the
 // references view calls. Adds land as `ref.added` events through the domain
-// constructors (arXiv paste / manual entry / Zotero import), removal is an
+// constructors (link paste / manual entry / Zotero import), removal is an
 // auditable `ref.removed` event, restore the `ref.restored` un-event — the
 // legacy `create_ref`/`delete_ref` relational paths stay dead (AD-16).
 // Reads re-fold the library projection (legacy baseline + event log).
 //
 // Errors lead with stable codes (`already_in_library:`, `invalid_ref:`,
 // `not_found:`, `invalid_state:`, `zotero_unreachable:`,
-// `zotero_fetch_failed:`) and stay in code form — bilingual-safe by
-// construction (codes are never translated, EXPERIENCE.md).
+// `zotero_fetch_failed:`, and the resolver's `unsupported_source:` /
+// `invalid_url:` / `resolve_failed:`) and stay in code form — bilingual-safe
+// by construction (codes are never translated, EXPERIENCE.md).
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::db::Db;
 use crate::domain::library::{
-    find_duplicate, fetch_arxiv_metadata, ArxivMetadata, LibraryProjection, LibraryRef,
-    RefAddedPayload, REF_ADDED, REF_REMOVED, REF_RESTORED,
+    find_duplicate, LibraryProjection, LibraryRef, RefAddedPayload, REF_ADDED, REF_REMOVED,
+    REF_RESTORED,
 };
+use crate::domain::resolver::{resolve_link, ResolvedPaper};
 use crate::eventstore::{EventStore, NewEvent, StoredEvent};
 use rusqlite::Connection;
 use tauri::State;
@@ -120,21 +122,38 @@ fn append_ref_added(
     ))
 }
 
-/// Add a reference by pasting an arXiv URL (FR-15.1): parse (typed
-/// `invalid_url:` before any network), fetch through the SAME shared
-/// adapter the onboarding first-value flow uses, then append one
-/// `ref.added` event (actor=user, source: arxiv) with the metadata filled
-/// from the fetch. A url/doi already in the library is refused honestly.
+/// Add a reference by pasting a link (FR-15.1, multi-source): resolve the
+/// link through the SAME shared multi-source resolver the onboarding
+/// first-value flow uses (arXiv, DOI/Crossref, PubMed, Semantic Scholar,
+/// OpenAlex — typed `unsupported_source:` / `invalid_url:` /
+/// `resolve_failed:` before or during the fetch), then append one
+/// `ref.added` event (actor=user, source: the resolved source) with the
+/// metadata filled from the fetch, carrying the doi and arXiv id. A url/doi
+/// already in the library is refused honestly.
 #[tauri::command]
-pub async fn add_ref_from_arxiv(db: State<'_, Db>, url: String) -> Result<LibraryRef, String> {
-    // No lock across the network fetch.
-    let meta = fetch_arxiv_metadata(&url).await.map_err(err)?;
-    let c = db.0.lock().await;
-    add_ref_from_arxiv_inner(&c, meta)
+pub async fn add_ref_from_link(db: State<'_, Db>, url: String) -> Result<LibraryRef, String> {
+    add_ref_from_link_impl(db, url).await
 }
 
-/// Plain inner (testable): the append half of the arXiv add.
-fn add_ref_from_arxiv_inner(conn: &Connection, meta: ArxivMetadata) -> Result<LibraryRef, String> {
+/// The v1 command name, kept as an alias: the same door, the same resolver.
+#[tauri::command]
+pub async fn add_ref_from_arxiv(db: State<'_, Db>, url: String) -> Result<LibraryRef, String> {
+    add_ref_from_link_impl(db, url).await
+}
+
+/// Shared shell (both command names): resolve (no lock across the network
+/// fetch), then append.
+async fn add_ref_from_link_impl(
+    db: State<'_, Db>,
+    url: String,
+) -> Result<LibraryRef, String> {
+    let meta = resolve_link(&url).await.map_err(err)?;
+    let c = db.0.lock().await;
+    add_ref_from_link_inner(&c, meta)
+}
+
+/// Plain inner (testable): the append half of the link add.
+fn add_ref_from_link_inner(conn: &Connection, meta: ResolvedPaper) -> Result<LibraryRef, String> {
     let project = ensure_project(conn)?;
     append_ref_added(
         conn,
@@ -145,12 +164,15 @@ fn add_ref_from_arxiv_inner(conn: &Connection, meta: ArxivMetadata) -> Result<Li
             authors: meta.authors,
             year: meta.year,
             venue: meta.venue,
-            doi: meta.doi,
+            doi: meta.doi.unwrap_or_default(),
             url: meta.url,
-            tags: format!("arXiv,{}", meta.arxiv_id),
-            source: "arxiv".into(),
+            tags: match (&meta.arxiv_id, meta.source.as_str()) {
+                (Some(arxiv_id), "arxiv") => format!("arXiv,{arxiv_id}"),
+                (_, source) => source.to_string(),
+            },
+            source: meta.source,
             zotero_item_key: None,
-            arxiv_id: Some(meta.arxiv_id),
+            arxiv_id: meta.arxiv_id,
             abstract_text: meta.abstract_text,
         },
     )
@@ -584,14 +606,15 @@ mod tests {
         conn
     }
 
-    fn meta(url: &str, doi: &str) -> ArxivMetadata {
-        ArxivMetadata {
-            arxiv_id: "2401.00001".into(),
+    fn meta(url: &str, doi: &str) -> ResolvedPaper {
+        ResolvedPaper {
+            source: "arxiv".into(),
+            arxiv_id: Some("2401.00001".into()),
             title: "A Fresh Paper".into(),
             authors: "Ngo et al.".into(),
             year: Some(2024),
             venue: "arXiv".into(),
-            doi: doi.into(),
+            doi: Some(doi.into()),
             url: url.into(),
             abstract_text: Some("Abstract.".into()),
         }
@@ -639,17 +662,84 @@ mod tests {
     fn arxiv_add_reuses_the_library_dedup_against_legacy_rows() {
         let c = test_db();
         // the seeded legacy "Attention Is All You Need" url → honest refusal
-        let e = add_ref_from_arxiv_inner(
+        let e = add_ref_from_link_inner(
             &c,
             meta("https://arxiv.org/abs/1706.03762", "10.48550/arXiv.1706.03762"),
         )
         .unwrap_err();
         assert!(e.starts_with("already_in_library:"), "{e}");
         // a fresh paper appends one ref.added (source: arxiv, tags carry it)
-        let r = add_ref_from_arxiv_inner(&c, meta("https://arxiv.org/abs/2401.00001", "10.48550/arXiv.2401.00001")).unwrap();
+        let r = add_ref_from_link_inner(
+            &c,
+            meta("https://arxiv.org/abs/2401.00001", "10.48550/arXiv.2401.00001"),
+        )
+        .unwrap();
         assert_eq!(r.source, "arxiv");
         assert_eq!(r.arxiv_id.as_deref(), Some("2401.00001"));
         assert!(r.tags.contains("arXiv"));
+    }
+
+    #[test]
+    fn a_resolved_doi_paper_lands_as_a_ref_added_carrying_its_source_and_doi() {
+        let c = test_db();
+        let r = add_ref_from_link_inner(
+            &c,
+            ResolvedPaper {
+                source: "doi".into(),
+                arxiv_id: None,
+                title: "Deep learning".into(),
+                authors: "LeCun, Yann, Bengio, Yoshua, Hinton, Geoffrey".into(),
+                year: Some(2015),
+                venue: "Nature".into(),
+                doi: Some("10.1038/nature14539".into()),
+                url: "https://doi.org/10.1038/nature14539".into(),
+                abstract_text: Some("Deep learning allows computational models.".into()),
+            },
+        )
+        .unwrap();
+        // the event carries the resolved source + doi (the ref.added fold)
+        assert_eq!(r.source, "doi");
+        assert_eq!(r.doi, "10.1038/nature14539");
+        assert_eq!(r.url, "https://doi.org/10.1038/nature14539");
+        assert_eq!(r.arxiv_id, None);
+        assert_eq!(r.tags, "doi");
+        assert!(!r.removed);
+        // the doi is the dedup identity: a second add is refused honestly
+        let e = add_ref_from_link_inner(
+            &c,
+            ResolvedPaper {
+                source: "crossref".into(),
+                arxiv_id: None,
+                title: "Deep learning (again)".into(),
+                authors: String::new(),
+                year: None,
+                venue: String::new(),
+                doi: Some("10.1038/nature14539".into()),
+                url: "https://doi.org/10.1038/nature14539".into(),
+                abstract_text: None,
+            },
+        )
+        .unwrap_err();
+        assert!(e.starts_with("already_in_library:"), "{e}");
+        // the closed vocabulary accepts every resolved source
+        for source in ["pubmed", "s2", "openalex", "crossref"] {
+            let r = add_ref_from_link_inner(
+                &c,
+                ResolvedPaper {
+                    source: source.into(),
+                    arxiv_id: None,
+                    title: format!("Paper from {source}"),
+                    authors: String::new(),
+                    year: None,
+                    venue: String::new(),
+                    doi: Some(format!("10.1/{source}")),
+                    url: format!("https://example.org/{source}"),
+                    abstract_text: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(r.source, source);
+        }
     }
 
     #[test]

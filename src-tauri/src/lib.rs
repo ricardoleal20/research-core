@@ -275,6 +275,7 @@ pub fn run() {
             // (arXiv paste / manual / Zotero import) and the auditable
             // remove/restore pair — mutations are evented in domain/library
             // (AD-16); the legacy create_ref/delete_ref paths stay dead.
+            library_commands::add_ref_from_link,
             library_commands::add_ref_from_arxiv,
             library_commands::add_ref_manual,
             library_commands::import_refs_from_zotero,

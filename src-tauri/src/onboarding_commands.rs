@@ -1,9 +1,11 @@
 // Onboarding shell commands (AD-15a, FR-8.1 — the sixty-second first value):
 // the two doors of the first-run surface. `run_first_value` takes a pasted
-// arXiv URL — parsed (typed `invalid_url:` before any fetch), fetched via the
-// arXiv export adapter, then orchestrated in the core. `run_first_value_from_ref`
-// is the Zotero door: the connector's minimal stub — the already-migrated
-// library is the connector's output, and a chosen ref becomes the paper.
+// link — resolved through the SHARED multi-source resolver (arXiv, DOI/
+// Crossref, PubMed, Semantic Scholar, OpenAlex — the same `resolve_link` the
+// library add uses, FR-15.1, so the two doors can never drift), then
+// orchestrated in the core. `run_first_value_from_ref` is the Zotero door:
+// the connector's minimal stub — the already-migrated library is the
+// connector's output, and a chosen ref becomes the paper.
 //
 // The candidate generation flows through the provider layer (AD-9), resolved
 // from settings + keychain — the simulated fallback fires when no key is
@@ -19,28 +21,26 @@ fn err(e: impl ToString) -> String {
     e.to_string()
 }
 
-/// Run the first-value flow from a pasted arXiv URL: parse (typed error
-/// before any network), fetch the paper's metadata through the SHARED
-/// arXiv adapter (the same `fetch_arxiv_metadata` the library add uses,
-/// FR-15.1 — the two doors can never drift), then the core orchestration —
-/// library upsert, candidates through the provider layer, starter mission,
-/// candidate hypotheses on the board.
+/// Run the first-value flow from a pasted link: resolve through the shared
+/// multi-source resolver (typed `unsupported_source:` / `invalid_url:` /
+/// `resolve_failed:` errors, never fabricated metadata), then the core
+/// orchestration — library upsert, candidates through the provider layer,
+/// starter mission, candidate hypotheses on the board.
 #[tauri::command]
 pub async fn run_first_value(
     db: State<'_, Db>,
     url: String,
 ) -> Result<FirstValueResult, String> {
-    let meta = crate::domain::library::fetch_arxiv_metadata(&url)
-        .await
-        .map_err(err)?;
+    let meta = crate::domain::resolver::resolve_link(&url).await.map_err(err)?;
     let paper = Paper {
         title: meta.title,
         authors: meta.authors,
         year: meta.year,
         venue: meta.venue,
-        doi: meta.doi,
+        doi: meta.doi.unwrap_or_default(),
         url: meta.url,
-        arxiv_id: meta.arxiv_id,
+        arxiv_id: meta.arxiv_id.unwrap_or_default(),
+        source: meta.source,
         abstract_text: meta.abstract_text,
     };
     orchestrate(&db, paper).await

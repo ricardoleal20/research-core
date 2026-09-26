@@ -149,8 +149,9 @@ fn valid_id_chars(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '/' | '_'))
 }
 
-/// The paper the first-value flow works from — either fetched from arXiv or
-/// read from the migrated library (the Zotero connector stub).
+/// The paper the first-value flow works from — either resolved from a
+/// pasted link (any source the multi-source resolver answers) or read from
+/// the migrated library (the Zotero connector stub).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Paper {
     pub title: String,
@@ -160,6 +161,9 @@ pub struct Paper {
     pub doi: String,
     pub url: String,
     pub arxiv_id: String,
+    /// Where the paper came from (the resolver's source, or `zotero` for
+    /// the library door) — carried into the upsert's tags.
+    pub source: String,
     pub abstract_text: Option<String>,
 }
 
@@ -422,9 +426,10 @@ fn upsert_ref(conn: &rusqlite::Connection, paper: &Paper) -> Result<String, Onbo
     let project = ensure_project(conn)?;
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    let source_tag = if paper.source == "arxiv" { "arXiv" } else { paper.source.as_str() };
     conn.execute(
         "INSERT INTO refs(id,project_id,title,authors,year,venue,doi,url,tags,status,used,citation_count,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'arXiv,onboarding','unread',0,0,?9)",
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'unread',0,0,?10)",
         params![
             id,
             project,
@@ -434,6 +439,7 @@ fn upsert_ref(conn: &rusqlite::Connection, paper: &Paper) -> Result<String, Onbo
             paper.venue,
             paper.doi,
             paper.url,
+            format!("{source_tag},onboarding"),
             now
         ],
     )?;
@@ -460,6 +466,7 @@ pub fn paper_from_ref(
                 doi: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
                 url: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 arxiv_id: String::new(),
+                source: "zotero".into(),
                 abstract_text: None,
             })
         },
@@ -583,6 +590,7 @@ mod tests {
             doi: "10.48550/arXiv.1706.03762".into(),
             url: "https://arxiv.org/abs/1706.03762".into(),
             arxiv_id: "1706.03762".into(),
+            source: "arxiv".into(),
             abstract_text: Some(
                 "The dominant sequence transduction models are based on recurrent networks."
                     .into(),
@@ -663,6 +671,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ref_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_resolved_doi_paper_flows_the_same_sixty_seconds() {
+        // the multi-source door: a paper resolved from a DOI (Crossref)
+        // runs the identical flow — upsert (badged doi), candidates, mission
+        let db = test_db();
+        let layer = sim_layer(&db);
+        let doi_paper = Paper {
+            title: "Deep learning".into(),
+            authors: "LeCun, Yann, Bengio, Yoshua, Hinton, Geoffrey".into(),
+            year: Some(2015),
+            venue: "Nature".into(),
+            doi: "10.1038/nature14539".into(),
+            url: "https://doi.org/10.1038/nature14539".into(),
+            arxiv_id: String::new(),
+            source: "doi".into(),
+            abstract_text: Some("Deep learning allows computational models.".into()),
+        };
+        let result = run_first_value(&db, &layer, doi_paper).await.unwrap();
+        assert_eq!(result.candidates.len(), 3);
+        assert_eq!(result.paper.title, "Deep learning");
+        // the upsert carries the resolved source in its tags (not arXiv)
+        let conn = db.0.lock().await;
+        let tags: String = conn
+            .query_row(
+                "SELECT tags FROM refs WHERE doi = ?1",
+                params!["10.1038/nature14539"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tags, "doi,onboarding");
     }
 
     #[tokio::test]
