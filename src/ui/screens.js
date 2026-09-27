@@ -809,6 +809,21 @@ export function renderStatus(app) {
 }
 
 // ========== SETTINGS (bible tabs + the v1 trust center) ==========
+// The demo-data card's confirmation state (the user-testing harness): what
+// the last seed run appended — or the honest error, never a silent nothing.
+function renderDemoSeedState(app) {
+  const d = app.state.demoSeed;
+  if (!d || d.status === "seeding") return "";
+  if (d.status === "done") {
+    return `
+      <div class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+        <p class="text-sm text-emerald-700">${t("demo.seeded", { gen: d.generation, events: d.events })}</p>
+        <button onclick="RC.navigate('dashboard')" class="text-sm text-primary hover:underline mt-1">${t("demo.goDashboard")} →</button>
+      </div>`;
+  }
+  return `<p class="mt-3 text-sm text-rose-600">${t("demo.error")}${esc(d.message || "")}</p>`;
+}
+
 export function renderSettings(app) {
   const activeTab = app.state.settingsTab || "interface";
   const tabs = [
@@ -842,6 +857,16 @@ export function renderSettings(app) {
     </div>`;
   else content = `
     <div class="space-y-4">
+      <div class="rounded-xl border border-border bg-card p-5">
+        ${demoChip()}
+        <h3 class="font-semibold mt-3">${t("demo.title")}</h3>
+        <p class="text-sm text-muted mt-2">${t("demo.desc")}</p>
+        ${renderDemoSeedState(app)}
+        <div class="mt-4 flex flex-wrap gap-2">
+          ${btn({ label: app.state.demoSeed?.status === "seeding" ? t("demo.seeding") : t("demo.seed"), variant: "default", size: "sm", iconName: "sparkle", onClick: "RC.seedDemoData()", disabled: app.state.demoSeed?.status === "seeding" })}
+          ${btn({ label: t("demo.reseed"), variant: "outline", size: "sm", onClick: "RC.reseedDemoData()", disabled: app.state.demoSeed?.status === "seeding" })}
+        </div>
+      </div>
       <div class="rounded-xl border border-rose-200 bg-rose-50 p-5">
         <h3 class="font-semibold text-rose-700 flex items-center gap-2">${icon("danger", "w-5 h-5")} ${t("rc.settings.reset")}</h3>
         <p class="text-sm text-rose-600 mt-2">${t("rc.settings.resetDesc")}</p>
@@ -2228,6 +2253,36 @@ Object.assign(RC, {
     } catch (e) {
       app.state.targetProbes[name] = { status: "unreachable", detail: (e?.message || String(e)) };
     }
+    ctx.renderMainOnly();
+  },
+  // ---- The demo workspace seed (the user-testing harness): populate every
+  // screen with honestly-labeled sample data — one command, idempotent; the
+  // force action appends a fresh generation (history is never modified).
+  async seedDemoData() {
+    const app = ctx.app;
+    app.state.demoSeed = { status: "seeding" };
+    ctx.renderMainOnly();
+    try {
+      const outcome = await api.seedDemoWorkspace(false);
+      app.state.demoSeed = { status: "done", generation: outcome.generation, events: outcome.eventsAppended };
+    } catch (e) {
+      app.state.demoSeed = { status: "error", message: e?.message || String(e) };
+    }
+    await ctx.loadMissions();
+    ctx.renderMainOnly();
+  },
+  async reseedDemoData() {
+    if (!window.confirm(t("demo.reseedConfirm"))) return;
+    const app = ctx.app;
+    app.state.demoSeed = { status: "seeding" };
+    ctx.renderMainOnly();
+    try {
+      const outcome = await api.seedDemoWorkspace(true);
+      app.state.demoSeed = { status: "done", generation: outcome.generation, events: outcome.eventsAppended };
+    } catch (e) {
+      app.state.demoSeed = { status: "error", message: e?.message || String(e) };
+    }
+    await ctx.loadMissions();
     ctx.renderMainOnly();
   },
 });

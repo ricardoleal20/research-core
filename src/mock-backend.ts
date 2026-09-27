@@ -6,7 +6,7 @@
 // When Tauri is present (real app or `tauri dev`), this module is never used —
 // api.ts routes to the real `invoke` calls instead.
 
-import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, VenueTemplate, VenueCriterion, ProposedSubmission, ProposedSubmissionItem, FitCandidate, JournalFitResult, TierTwoReport, TierTwoItem, SubmissionView, SubmissionMission, SubmissionItem, CheckStamp, ZoteroImportResult, AiModelsListing, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, SupportCheckRecord, SupportVerdict } from "./types";
+import type { Project, Ref, Review, Action, Chat, ChatAttachment, Agent, McpServer, Message, Mission, MissionRun, Autonomy, Hypothesis, HypothesisStatus, RelationKind, RelationChip, Claim, Skill, FirstValueResult, HypothesisCandidate, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, ProposedPin, ProposedTransition, MorningDigest, DigestRow, TrustStatus, EvidencePin, DemoSeedOutcome, RuntimeState, SpendState, ScopeDial, ScopeCeiling, MissionMeter, TargetMeter, LastRunSpend, RunReceipt, ReceiptRow, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, OrphanedEvent, OrphanedProposal, RollbackRecord, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchDisclosureRow, SearchResult, SearchRunView, ReadinessReport, ReadinessVerdict, ReadinessItem, ReadinessItemKind, ReadinessTrailRow, VenueTemplate, VenueCriterion, ProposedSubmission, ProposedSubmissionItem, FitCandidate, JournalFitResult, TierTwoReport, TierTwoItem, SubmissionView, SubmissionMission, SubmissionItem, CheckStamp, ZoteroImportResult, AiModelsListing, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, SupportCheckRecord, SupportVerdict } from "./types";
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -1946,11 +1946,18 @@ function mockReceiptFor(runId: string): RunReceipt | null {
   return null;
 }
 
-/** The mock digest: the seed plus one live row per active mock mission that
- *  has run (the manual trigger appends them — mirrors the core's fold). */
+// The demo workspace seed's state (the user-testing harness): how many
+// generations the mock carries + the live connection alerts a demo
+// generation appends (mirroring the core's connection.failed events).
+let demoGeneration = 0;
+const demoConnectionAlerts: { connection: string; errorCode: string; failedTs: string }[] = [];
+
+/** The mock digest: the seed plus one live row per mock mission that has run
+ *  (any lifecycle status — the row's chip carries it, mirroring the core's
+ *  fold), the live dead-run alerts folded from the run lists, and the live
+ *  connection alerts. */
 function currentMockDigest(): MorningDigest {
   const liveRows: DigestRow[] = missions
-    .filter((m) => m.status === "active")
     .map((m) => {
       const runs = missionRuns[m.id] ?? [];
       const started = runs.filter((r) => r.kind === "run.started").length;
@@ -2015,14 +2022,391 @@ function currentMockDigest(): MorningDigest {
       : allRuns.f === 0
         ? "all_failed"
         : "partial_success";
+  // Live dead-run alerts (mirrors the core's `run.dead` fold): one per dead
+  // run in the live run lists, anchored to its run.started's receipt seq.
+  const liveAlerts: MorningDigest["alerts"] = [];
+  for (const [missionId, runs] of Object.entries(missionRuns)) {
+    const mission = missions.find((m) => m.id === missionId);
+    for (const dead of runs.filter((r) => r.kind === "run.dead")) {
+      const started = runs.find((r) => r.kind === "run.started" && r.runId === dead.runId);
+      if (!started || !mission) continue;
+      liveAlerts.push({
+        runId: dead.runId ?? "",
+        missionId,
+        missionSeq: mission.seq,
+        heartbeatTs: dead.ts,
+        receiptSeq: started.seq,
+      });
+    }
+  }
   return {
     generatedAt: seededAt,
     outcome,
     spendCents: rows.reduce((a, r) => a + r.spendCents, 0),
     ceilingCents: rows.reduce((a, r) => a + r.ceilingCents, 0),
     rows,
-    alerts: seededDigest.alerts,
-    connectionAlerts: seededDigest.connectionAlerts,
+    alerts: [...liveAlerts, ...seededDigest.alerts],
+    connectionAlerts: [...demoConnectionAlerts, ...seededDigest.connectionAlerts],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The demo workspace seed (the user-testing harness): the mock mirror of the
+// core's seed_demo_workspace — the SAME inventory appended into the live mock
+// arrays (deterministic ids and seqs, one seq block per generation), so
+// vite dev browses every screen identically to the desktop demo workspace.
+// Idempotent: refuses `already_seeded:` unless forced; force appends a NEW
+// generation (fresh ids and seqs — nothing is mutated or removed).
+// ---------------------------------------------------------------------------
+
+/** One demo run row — a MissionRun that may carry a terminal `reason`. */
+type DemoRunRow = MissionRun & { reason?: string };
+
+async function seedDemoWorkspaceIntoMock(force: boolean): Promise<DemoSeedOutcome> {
+  if (demoGeneration > 0 && !force) {
+    throw new Error(
+      `already_seeded: the demo workspace is present (generation ${demoGeneration}) — pass force to append a fresh generation`,
+    );
+  }
+  demoGeneration += 1;
+  const g = demoGeneration;
+  const base = 200 + (g - 1) * 100; // the generation's deterministic seq block
+  const ts = nowISO();
+  const id = (name: string) => `demo-${g}-${name}`;
+  let appended = 0;
+
+  // -- missions in every lifecycle status (the draft included) ------------
+  const pushMission = (i: number, m: Omit<Mission, "id" | "seq" | "ts">): Mission => {
+    const mission: Mission = { id: `demo-${g}-m${i}`, seq: base + i, ts, ...m };
+    missions.push(mission);
+    missionSeq = Math.max(missionSeq, mission.seq);
+    appended += 1;
+    return mission;
+  };
+  const roles: RoleConfig[] = [
+    { name: "drafter", provider: "simulated", model: "simulated" },
+    { name: "critic", provider: "simulated", model: "simulated" },
+  ];
+  const mA = pushMission(1, {
+    question: "Does retrieval-augmented grounding reduce hallucination in long-form answers?",
+    stopCondition: "Stop after 14 nightly scans or 40 sources reviewed.",
+    successCriterion: "Hallucination rate drops on at least 4 of 5 benchmark sets.",
+    autonomy: "suggest", spendCeilingCents: 500, roles, schedule: "daily-03:00",
+    status: "active", spendCents: 147, spendState: "ok",
+  });
+  const mB = pushMission(2, {
+    question: "Do scaling laws predict small-model loss plateaus?",
+    stopCondition: "Stop after 10 nightly scans or 25 sources reviewed.",
+    successCriterion: "The plateau prediction holds within 5% on 3 of 4 model families.",
+    autonomy: "suggest", spendCeilingCents: 400, roles, schedule: "daily-03:00",
+    status: "awaiting_review", spendCents: 0, spendState: "ok",
+  });
+  const mC = pushMission(3, {
+    question: "Does kNN augmentation improve factual recall without hurting fluency?",
+    stopCondition: "Stop after 6 nightly scans or 15 sources reviewed.",
+    successCriterion: "Recall improves on 4 of 5 probes with fluency within 2%.",
+    autonomy: "suggest", spendCeilingCents: 300, roles, schedule: "daily-03:00",
+    status: "completed", spendCents: 31, spendState: "ok",
+  });
+  pushMission(4, {
+    question: "Is citation grounding verifiable with non-LLM fetchers at scale?",
+    stopCondition: "Stop when the $3.00 spend ceiling is hit.",
+    successCriterion: "95% of pins verify within one pass over 100 sources.",
+    autonomy: "act_with_receipts", spendCeilingCents: 300, roles, schedule: "daily-03:00",
+    status: "stopped", spendCents: 300, spendState: "blocked",
+  });
+  pushMission(5, {
+    question: "Can lossless compression bounds bound LLM reasoning depth?",
+    stopCondition: "Stop after 4 nightly scans or 10 sources reviewed.",
+    successCriterion: "A tight bound holds on 2 of 3 reasoning suites.",
+    autonomy: "watch", spendCeilingCents: 200, roles, schedule: "daily-03:00",
+    status: "failed", spendCents: 0, spendState: "ok",
+  });
+  const mF = pushMission(6, {
+    question: "Does context rotation mitigate lost-in-the-middle effects?",
+    stopCondition: "Stop after 8 nightly scans or 20 sources reviewed.",
+    successCriterion: "Mid-context accuracy improves on 3 of 4 retrieval suites.",
+    autonomy: "suggest", spendCeilingCents: 350, roles, schedule: "daily-03:00",
+    status: "active", spendCents: 0, spendState: "ok",
+  });
+  const mG = pushMission(7, {
+    question: "Does sparse attention match full attention at 32k context?",
+    stopCondition: "Stop after 3 runs or 20 sources reviewed.",
+    successCriterion: "The gain holds on 4 of 5 seeds.",
+    autonomy: "suggest", spendCeilingCents: 500, roles, schedule: "daily-03:00",
+    status: "active", spendCents: 42, spendState: "ok",
+  });
+  pushMission(8, {
+    question: "Does the erratum change the verdict?",
+    stopCondition: "", successCriterion: "", autonomy: "watch",
+    spendCeilingCents: 0, roles: [], schedule: "off",
+    status: "draft", spendCents: 0, spendState: "ok",
+  });
+
+  // -- hypotheses across the lifecycle, with typed relations ---------------
+  const pushHyp = (
+    i: number, missionId: string, statement: string, status: HypothesisStatus,
+    audit: { seq: number; actor: string; basis: string }, relations: RelationChip[] = [],
+  ): Hypothesis => {
+    const h: Hypothesis = {
+      id: id(`h${i}`), seq: base + 20 + i, ts, statement, missionId, status,
+      relations, audit: { seq: audit.seq, ts, actor: audit.actor, basis: audit.basis },
+    };
+    hypotheses.push(h);
+    hypSeq = Math.max(hypSeq, h.seq);
+    appended += 1;
+    return h;
+  };
+  const hA1 = pushHyp(1, mA.id, "Retrieval grounding cuts the hallucination rate on long-form QA.", "testing",
+    { seq: base + 60, actor: "user", basis: "Trial 1 is running on the seeded benchmark." });
+  const hA2 = pushHyp(2, mA.id, "Grounding only helps when citations are verified first.", "proposed",
+    { seq: base + 21, actor: "user", basis: "proposed" });
+  const hA3 = pushHyp(3, mA.id, "Grounding helps less as the context window grows.", "proposed",
+    { seq: base + 22, actor: "user", basis: "proposed" });
+  const hA4 = pushHyp(4, mA.id, "Verified citations are the binding constraint on grounding gains.", "supported",
+    { seq: base + 86, actor: "agent", basis: "trial 1 isolated the verification variable and held" });
+  pushHyp(5, mA.id, "The fluency cost of grounding is negligible.", "revised",
+    { seq: base + 63, actor: "user", basis: "The critic asked for a revised statement after the new seeds." });
+  pushHyp(6, mB.id, "The plateau is predicted by compute-effective data scaling.", "supported",
+    { seq: base + 64, actor: "user", basis: "The prediction held within 5% on three families." });
+  pushHyp(7, mC.id, "kNN augmentation improves factual recall on closed-book QA.", "supported",
+    { seq: base + 65, actor: "user", basis: "the measures held on the probe set." });
+  pushHyp(10, mC.id, "The recall gain disappears when the datastore is stale.", "refuted",
+    { seq: base + 69, actor: "user", basis: "the measures held on the probe set." });
+  const hG1 = pushHyp(8, mG.id, "Sparse attention matches full attention within 0.3 BLEU at 32k.", "supported",
+    { seq: base + 66, actor: "user", basis: "the measures held." });
+  pushHyp(9, mG.id, "The gain disappears beyond 64k context.", "refuted",
+    { seq: base + 67, actor: "user", basis: "the measures held." });
+  // typed relations (both directions, latest-wins chips)
+  hypSeq += 1;
+  const relSeq = hypSeq;
+  upsertMockRelation(hA2, relSeq, "contradicts", "outgoing", hA3);
+  upsertMockRelation(hA3, relSeq, "contradicts", "incoming", hA2);
+  hypSeq += 1;
+  const relSeq2 = hypSeq;
+  upsertMockRelation(hA4, relSeq2, "extends", "outgoing", hA1);
+  upsertMockRelation(hA1, relSeq2, "extends", "incoming", hA4);
+  appended += 2;
+
+  // -- claims: citation + numerical pins, one unpinned, verification and
+  //    support verdicts across the spectrum (three signals, never conflated)
+  let demoPinSeq = base + 80;
+  const demoPin = (
+    claimId: string, hypothesisId: string, kind: "citation" | "numerical",
+    refId: string | null, artifactRef: string | null, excerpt: string,
+    confidence: number, verification: "verified" | "failed" | null,
+    support: "supported" | "partially" | "unsupported" | null,
+  ): EvidencePin => ({
+    seq: ++demoPinSeq, ts, claimId, hypothesisId, kind, refId, artifactRef, excerpt,
+    digest: mockDigest(excerpt), confidence, assessingModel: "GLM-5.3",
+    refLabel: refId === `demo-${g}-ref-arxiv` ? "Beltagy et al. 2020" : refId ? "Romero and Watanabe 2025" : null,
+    verification: verification
+      ? { status: verification, detail: verification === "verified" ? "excerpt_matched" : "fetch_error",
+          source: refId === `demo-${g}-ref-arxiv` ? "arxiv:2004.05150" : "https://example.org/paper/sparse-32k", ts }
+      : null,
+    support: support
+      ? { status: support, confidence: support === "supported" ? 0.9 : 0.62, judgingModel: "simulated", ts }
+      : null,
+  });
+  const pushClaim = (i: number, hypothesisId: string, text: string, pin: EvidencePin | null): Claim => {
+    const c: Claim = {
+      id: id(`cl${i}`), seq: base + 40 + i, ts, hypothesisId, text,
+      sourceMessageId: null, pinned: pin !== null, pin,
+    };
+    claims.push(c);
+    claimSeq = Math.max(claimSeq, c.seq);
+    appended += 1;
+    return c;
+  };
+  const refArxiv = `demo-${g}-ref-arxiv`;
+  const refDoi = `demo-${g}-ref-doi`;
+  pushClaim(1, hA1.id, "Grounded answers cite their sources 82% of the time on the long-form set.",
+    demoPin(id("cl1"), hA1.id, "citation", refArxiv, null,
+      "Grounded answers cite their sources 82% of the time on the long-form set.", 0.82, "verified", "supported"));
+  pushClaim(2, hA1.id, "The hallucination rate drops from 31% to 9% with grounding enabled.",
+    demoPin(id("cl2"), hA1.id, "numerical", null, "results/table1.csv",
+      "31% -> 9% hallucination over four seeds", 0.9, "verified", "partially"));
+  pushClaim(3, hA2.id, "Verification must precede generation for the gain to hold.", null);
+  pushClaim(4, hA4.id, "Unverified citations account for 74% of remaining hallucinations.",
+    demoPin(id("cl4"), hA4.id, "citation", refArxiv, null,
+      "Unverified citations account for 74% of remaining hallucinations.", 0.71, "verified", "unsupported"));
+  const cG1 = pushClaim(5, hG1.id, "Sparse attention runs within 0.3 BLEU of full attention.",
+    demoPin(id("cl5"), hG1.id, "citation", refDoi, null,
+      "Sparse attention runs within 0.3 BLEU of full attention.", 0.82, "verified", "supported"));
+  pushClaim(6, hG1.id, "The gain holds across four seeds at 32k context.",
+    demoPin(id("cl6"), hG1.id, "citation", refArxiv, null,
+      "The gain holds across four seeds at 32k context.", 0.75, "verified", "supported"));
+
+  // -- the quarantine: one pending, one rejected, one merged ----------------
+  const pushProposal = (
+    name: string, target: Hypothesis, from: HypothesisStatus, to: HypothesisStatus,
+    basis: string, status: "pending" | "rejected" | "merged",
+  ): Proposal => {
+    proposalSeq += 1;
+    mockEventSeq += 1;
+    const seq = mockEventSeq;
+    const p: Proposal = {
+      id: id(name), seq, ts, runId: id(name), missionId: target.missionId,
+      targetEntity: target.id, targetLabel: target.statement, targetSeq: target.seq,
+      proposedKind: "hypothesis.status_changed",
+      proposedPayload: { from, to, basis },
+      basisSeq: target.audit.seq, basisStale: false, status, decided: null, supersededBy: null,
+    };
+    if (status !== "pending") {
+      mockEventSeq += 1;
+      p.decided = { seq: mockEventSeq, ts, actor: "user" };
+    }
+    proposals.push(p);
+    appended += 1;
+    return p;
+  };
+  pushProposal("propose-pending", hA1, "testing", "supported", "the drafter's scan suggests advancing after trial 1", "pending");
+  pushProposal("propose-reject", hA2, "proposed", "testing", "the critic wants trial 1 to start from the verified set", "rejected");
+  pushProposal("propose-merge", hA4, "testing", "supported", "trial 1 isolated the verification variable and held", "merged");
+
+  // -- night-shift runs: finished rows, a failed row, a dead-run alert -----
+  const pushRun = (missionId: string, rows: DemoRunRow[]) => {
+    missionRuns[missionId] = [...(missionRuns[missionId] ?? []), ...rows];
+    appended += rows.length;
+  };
+  const runRow = (i: number, kind: string, runId: string, actor = "system:scheduler", reason?: string): DemoRunRow =>
+    ({ seq: base + 60 + i, id: id(`r${i}`), ts, kind, actor, runId, ...(reason ? { reason } : {}) });
+  pushRun(mA.id, [
+    runRow(1, "run.started", id("ns-a1")),
+    runRow(2, "run.heartbeat", id("ns-a1"), "system:telemetry"),
+    runRow(3, "run.finished", id("ns-a1")),
+    runRow(4, "run.started", id("ns-a2")),
+    runRow(5, "run.heartbeat", id("ns-a2"), "system:telemetry"),
+    runRow(6, "run.finished", id("ns-a2")),
+    { seq: base + 67, id: id("sp1"), ts, kind: "spend.recorded", actor: "system:telemetry", role: "drafter", runId: id("ns-a1") },
+    { seq: base + 68, id: id("sp2"), ts, kind: "spend.recorded", actor: "system:telemetry", role: "critic", runId: id("ns-a1") },
+  ]);
+  pushRun(id("m5"), [
+    runRow(10, "run.started", id("ns-e1")),
+    runRow(11, "run.heartbeat", id("ns-e1"), "system:telemetry"),
+    runRow(12, "run.failed", id("ns-e1"), "system:scheduler", "provider_error"),
+  ]);
+  pushRun(mF.id, [
+    runRow(20, "run.started", id("ns-f1")),
+    runRow(21, "run.heartbeat", id("ns-f1"), "system:telemetry"),
+    runRow(22, "run.dead", id("ns-f1"), "system:telemetry"),
+    runRow(23, "run.failed", id("ns-f1"), "system:scheduler", "silently_dead"),
+    runRow(24, "run.started", id("ns-f2")),
+    runRow(25, "run.heartbeat", id("ns-f2"), "system:telemetry"),
+    runRow(26, "run.finished", id("ns-f2")),
+  ]);
+  pushRun(id("m4"), [
+    { seq: base + 75, id: id("sp3"), ts, kind: "spend.recorded", actor: "system:telemetry", role: "drafter", runId: id("ns-d1") },
+    { seq: base + 76, id: id("sp4"), ts, kind: "spend.recorded", actor: "system:telemetry", role: "drafter", runId: id("ns-d1") },
+    { seq: base + 77, id: id("sp5"), ts, kind: "spend.refused", actor: "system:runtime", runId: id("ns-d1"), detail: "cost_ceiling_reached" },
+  ]);
+  // the connection alert (the core's connection.failed): semantic_scholar is
+  // down in the demo night — the digest's connection alert row
+  demoConnectionAlerts.push({ connection: "semantic_scholar", errorCode: "conn_refused", failedTs: ts });
+
+  // -- the demo refs (one archived) + the searches (one null) --------------
+  const refRow = (name: string, title: string, authors: string, year: number, venue: string, doi: string, url: string, source: string, removed: boolean): Ref => ({
+    id: `demo-${g}-ref-${name}`, project_id: "p1", collection_id: null, title, authors, year,
+    venue, doi, url, isbn: "", attachment: null, status: "read", tags: "demo",
+    used: removed ? 0 : 1, citation_count: 0, created_at: ts, source,
+    removed,
+    timeline: [
+      { seq: base + 70, ts, actor: "user", kind: "ref.added" },
+      ...(removed ? [{ seq: base + 71, ts, actor: "user", kind: "ref.removed" }] : []),
+    ],
+  });
+  mockRefs.push(
+    refRow("arxiv", "Sparse Attention Memory Costs at Long Context", "Beltagy et al.", 2020, "arxiv", "", "https://arxiv.org/abs/2004.05150", "arxiv", false),
+    refRow("doi", "Sparse Attention at Thirty-Two Thousand Tokens", "Romero and Watanabe", 2025, "Journal of Honest Benchmarks", "10.1000/xyz123", "https://example.org/paper/sparse-32k", "doi", false),
+    refRow("manual", "Grounded Generation: A Survey", "Ito et al.", 2024, "arXiv", "", "", "manual", false),
+    refRow("s2", "Lost in the Middle: Context Confuses Language Models", "Liu et al.", 2023, "arxiv", "", "https://arxiv.org/abs/2307.03172", "s2", false),
+    refRow("archived", "A superseded preprint on grounding", "Old Author", 2019, "arXiv", "", "", "manual", true),
+  );
+  appended += 5;
+  liveSearches.push(
+    {
+      seq: (searchSeq = Math.max(searchSeq, base + 50) + 1), startedAt: ts,
+      query: "retrieval-augmented generation hallucination long-form",
+      database: "arxiv", filters: { from_year: 2019 }, order: "relevance", firstPage: true,
+      resultCount: 3, nullResult: false, missionId: mA.id, runId: id("ns-a1"),
+    },
+    {
+      seq: (searchSeq = Math.max(searchSeq, base + 51) + 1), startedAt: ts,
+      query: "perplexity-aware dense retrieval in low-resource Tigris",
+      database: "arxiv", filters: {}, order: null, firstPage: true,
+      resultCount: 0, nullResult: true, missionId: mA.id, runId: id("ns-a1"),
+    },
+  );
+  appended += 2;
+
+  // -- the demo manuscript (registered + compiled) on the clean mission ----
+  mockManuscriptSeq += 1;
+  mockManuscripts.push({
+    missionId: mG.id, seq: mockManuscriptSeq, ts,
+    dir: `~/research/demo-${g}/manuscript`, mainFile: "main.tex",
+  });
+  mockTexFiles[mG.id] = [
+    {
+      path: "main.tex",
+      content:
+        "\\documentclass{article}\n" +
+        "\\usepackage{natbib}\n" +
+        "\\begin{abstract}\n" +
+        "We show sparse attention matches full attention at 32k context.\n" +
+        "\\end{abstract}\n" +
+        "\\section*{Data availability}\n" +
+        "All data is available.\n" +
+        "\\section{Results}\n" +
+        `The gain holds \\hyp{H-${hG1.seq}} and the claim \\claim{CLAIMS-${cG1.seq}}, as \\cite{smith2020} shows.\n` +
+        "\\begin{figure}\\includegraphics{fig1}\\end{figure}\n" +
+        "\\bibliographystyle{siam}\n",
+    },
+  ];
+  mockCompileSeq += 1;
+  mockManuscriptCompiles[mG.id] = {
+    seq: mockCompileSeq, ts, outcome: "ok", tool: "latexmk",
+    logTail: "Output written on main.pdf (12 pages, 250000 bytes).", pdfUrl: null,
+  };
+  appended += 2;
+
+  // -- the tier-2 flight: the submission checklist on the clean mission ----
+  const venue = mockVenues.find((v) => v.id === "siam-jsc")!;
+  mockSubmissionSeq += 1;
+  const subId = id("submission");
+  mockSubmissions.push({
+    id: subId, seq: mockSubmissionSeq, ts, venueId: venue.id, venueName: venue.name,
+    question: `Submit to ${venue.name}`,
+    stopCondition: "submission-ready",
+    successCriterion: "every checklist item is checked",
+    sourceMissionId: mG.id, status: "active",
+    items: venue.criteria.map((c) => ({
+      itemId: c.id, human: c.human, kind: c.check || "human_only", checked: null,
+    })),
+  });
+  appended += 1;
+  // the machine items that PASS pre-check (the mock's tier-2 fold decides —
+  // the same rule the core's seed applies); the human items stay flagged.
+  const tierTwo = mockJournalReadiness(mG.id, venue.id);
+  const passing = tierTwo.items.filter((i) => i.kind !== "human_only" && i.status === "pass");
+  mockSubmissionChecks[subId] = {};
+  for (const item of passing) {
+    mockEventSeq += 1;
+    mockSubmissionChecks[subId][item.criterionId] = {
+      seq: mockEventSeq, ts, actor: "user", note: "machine check passed",
+    };
+    appended += 1;
+  }
+
+  return {
+    generation: g,
+    eventsAppended: appended,
+    markerSeq: base + 99,
+    missions: 8,
+    hypotheses: hypotheses.filter((h) => h.id.startsWith(`demo-${g}-`)).length,
+    claims: claims.filter((c) => c.id.startsWith(`demo-${g}-`)).length,
+    refs: 5,
+    proposals: 3,
+    searches: 2,
   };
 }
 
@@ -4712,6 +5096,13 @@ export const mockApi = {
 
   // danger zone
   resetDatabase: async () => { await delay(); },
+  // The demo workspace seed (the user-testing harness): the mock mirror of
+  // the core's seed_demo_workspace — one rich generation into the live mock
+  // arrays, idempotent, force appends a fresh generation.
+  seedDemoWorkspace: async (force: boolean): Promise<DemoSeedOutcome> => {
+    await delay(240);
+    return seedDemoWorkspaceIntoMock(force);
+  },
 
   // open export (Story 3.1, FR-7.1/7.2): renders the mock's read model at
   // ONE cut (the head at render start) into a recorded folder — the same

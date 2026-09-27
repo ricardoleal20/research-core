@@ -1220,6 +1220,20 @@ export interface DashboardSummary {
   readiness: ReadinessReport; // widget 6 (FR-18.7): workspace-scoped verdict
 }
 
+// The demo workspace seed's outcome (the user-testing harness): what one
+// generation appended — the confirmation the settings card renders.
+export interface DemoSeedOutcome {
+  generation: number; // 1 for the first generation, +1 per forced re-seed
+  eventsAppended: number; // total events this generation appended
+  markerSeq: number; // the `setup.demo_seeded` marker's seq (the cut point)
+  missions: number;
+  hypotheses: number;
+  claims: number;
+  refs: number;
+  proposals: number;
+  searches: number;
+}
+
 // The AI provider configuration (Stories 5.7–5.9 + 6.1, FR-17/FR-24): what
 // Ajustes → IA and the assistant surface render. The key itself NEVER
 // crosses this boundary — only its presence (NFR-10: keychain-only
