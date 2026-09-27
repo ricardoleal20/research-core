@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, VenueTemplate, TierTwoReport, JournalFitResult, SubmissionView, SubmissionMission, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, AiModelsListing, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary } from "./types";
+import type { Ref, Chat, ChatAttachment, Agent, McpServer, Review, Action, Project, Mission, MissionRun, Autonomy, Hypothesis, Claim, FirstValueResult, RoleConfig, AgentStepResult, Proposal, ApproveOutcome, MorningDigest, TrustStatus, RunReceipt, Checkpoint, CheckpointsView, RollbackPlan, RollbackOutcome, ExportOutcome, ExportInspect, Job, JobSpec, JobResult, FetchedJobResults, ComputeTargetView, RegisteredAdapter, TargetProbe, SearchDisclosure, SearchRunView, ReadinessReport, VenueTemplate, TierTwoReport, JournalFitResult, SubmissionView, SubmissionMission, ZoteroImportResult, Skill, AiConfig, AiConnectionTest, AiModelsListing, DashboardSummary, Manuscript, ManuscriptView, ManuscriptFileView, CompileView, ManuscriptDiffProposal, ManuscriptDiffHunk, BridgeStatusView, PairedDevice, PairingReceipt, NotificationItem, SupportRunSummary, DemoSeedOutcome } from "./types";
 import { mockApi, mockActive } from "./mock-backend";
 
 // One attachment as picked, shaped for both transports: the desktop sends
@@ -139,6 +139,18 @@ export const mobileApi = {
       });
     }
     return mockApi.rejectProposal(proposalId);
+  },
+  // The demo workspace seed (the user-testing harness): in the pure-vite
+  // mock it appends the demo generation into the mock arrays; the served
+  // read-only view refuses — seeding is a write, the desktop app's command.
+  seedDemoWorkspace: async (_force: boolean): Promise<DemoSeedOutcome> => {
+    if (await servedByCore) {
+      throw new Error(
+        "Read-only view — seed demo data from the desktop app / " +
+          "Vista de solo lectura — siembra los datos de ejemplo desde la app de escritorio",
+      );
+    }
+    return mockApi.seedDemoWorkspace(_force);
   },
 };
 
@@ -1479,6 +1491,12 @@ export const api = mockActive ? browserApi : {
 
   // danger zone — wipe & recreate the database from scratch
   resetDatabase: () => invoke<void>("reset_database"),
+
+  // The demo workspace seed (the user-testing harness): one rich demo
+  // generation appended as REAL events — every screen gets representative
+  // data to browse. Idempotent; force appends a fresh generation.
+  seedDemoWorkspace: (force: boolean) =>
+    invoke<DemoSeedOutcome>("seed_demo_workspace", { force }),
 
   // manuscript (Stories 6.6–6.8, FR-20): the .tex repo IS the manuscript —
   // registration references the dir on disk (never copies it); reads scan

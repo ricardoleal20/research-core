@@ -93,6 +93,10 @@ function renderEmptyHome(app) {
               ${btn({ label: w.initLoading ? t("onb.generating") : t("onb.generate"), variant: "default", iconName: "sparkle", onClick: "RC.firstValue()", disabled: w.initLoading })}
             </div>
             <p class="text-xs text-muted">${t("onb.urlHint")}</p>
+            <div class="pt-1">
+              <button onclick="RC.seedDemoData()" class="text-xs text-primary hover:underline">${t("demo.seedLink")}</button>
+            </div>
+            ${app.state.demoSeed?.status === "done" ? `<p class="text-xs text-emerald-600">${t("demo.seeded", { gen: app.state.demoSeed.generation, events: app.state.demoSeed.events })}</p>` : ""}
             ${w.initResult ? renderFirstValueCard(w.initResult) : ""}
           </div>`)}
       </div>
