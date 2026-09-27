@@ -6,6 +6,7 @@ mod checkpoints_commands;
 mod commands;
 mod dashboard_commands;
 pub mod db;
+mod demo_commands;
 mod evidence_commands;
 mod export_commands;
 mod hypotheses_commands;
@@ -189,6 +190,11 @@ pub fn run() {
             commands::update_setting,
             commands::set_provider_key,
             commands::reset_database,
+            // The user-testing harness seed (demo workspace): one command
+            // appends a rich, honestly-labeled demo generation as REAL events
+            // — every screen gets representative data to browse. Idempotent
+            // behind a `setup.demo_seeded` marker; force appends a new one.
+            demo_commands::seed_demo_workspace,
             commands::app_log,
             commands::get_app_paths,
             commands::reveal_path,
